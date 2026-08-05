@@ -1,0 +1,1692 @@
+{
+  "rounds": [
+    {
+      "observations": [
+        {
+          "experiment": {
+            "rationale": "This design strictly dissociates Take The Best (TTB) from Tallying by pitting the highest-validity discriminating cue against the sheer number of winning cues. In each trial, one option wins on the most valid discriminating cue (thus chosen by TTB), while the other option wins on a strictly greater number of lower-validity cues (thus chosen by Tallying). By varying which cue is the highest discriminating one (1st, 2nd, or 3rd validities), we can thoroughly test whether subjects rely on a single reason or sum the features.",
+            "validities": [
+              0.9,
+              0.8,
+              0.7,
+              0.6,
+              0.5
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                1,
+                1
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                0
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    \n    ttb_matches = 0\n    valid_trials = 0\n    \n    for _, row in data.iterrows():\n        a = row['option_a_ratings']\n        b = row['option_b_ratings']\n        \n        # TTB compares cues in order 0 to n_features-1\n        ttb_choice = None\n        for i in range(len(a)):\n            if a[i] > b[i]:\n                ttb_choice = 0\n                break\n            elif b[i] > a[i]:\n                ttb_choice = 1\n                break\n                \n        if ttb_choice is not None:\n            if row['response'] == ttb_choice:\n                ttb_matches += 1\n            valid_trials += 1\n            \n    return float(ttb_matches / valid_trials) if valid_trials > 0 else 0.5",
+            "rationale": "The experimental design pits Take The Best perfectly against Tallying: in every single trial, the option favored by the first discriminating cue (TTB) is opposed by the option with a higher sheer number of winning cues (Tallying). This metric simply computes the proportion of choices that align with the TTB prediction. Under TTB, this proportion will be high (approaching 1 depending on noise levels). Under Tallying, this proportion will be low (approaching 0), providing a maximal and highly stable contrast between the two theories."
+          },
+          "proposer_theory": {
+            "description": "People compare two options by consulting cues one at a time in order of validity, stopping at the first cue that discriminates between the two options. That cue alone determines the choice: the option with the higher value on the discriminating cue wins, and no other cue is consulted. Cues with lower validity are never reached when a higher-validity cue already discriminates, so Take The Best is a \"one-reason\" decision rule \u2014 only a single feature is ever used on any given choice. Because only the sign of the comparison on the top discriminating cue matters, TTB ignores both the magnitude of that difference and all information on lower-validity cues, making it maximally frugal in the use of evidence. Cue validities are subjective and can be learned, inferred from instructions, or fixed by task structure. When no cue discriminates (all feature-wise comparisons tie) the learner has no basis for preference and must guess. Response noise enters through a softmax over the binary TTB score (winner = 1, loser = 0) with inverse temperature beta, plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+            "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Take The Best (Gigerenzer & Goldstein 1996).\n    # Stimulus is the pair of option feature vectors for the current\n    # trial: array-like of shape (2, n_features), row 0 = option A,\n    # row 1 = option B. Cue cascade: features are consulted in order\n    # of descending validity; the first discriminating cue (strict\n    # inequality) determines the winner; if no cue discriminates,\n    # the model guesses uniformly. History is ignored.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"TTB expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n    n_features = stim.shape[1]\n\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    if val.shape[0] != n_features:\n        raise ValueError(\n            f\"validities length {val.shape[0]} != n_features {n_features}.\"\n        )\n    # Descending validity; argsort is stable so validity ties break\n    # toward the earlier feature index.\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n\n    a, b = stim[0], stim[1]\n    winner = None\n    for j in cue_order:\n        if a[j] > b[j]:\n            winner = 0\n            break\n        if b[j] > a[j]:\n            winner = 1\n            break\n\n    if winner is None:\n        # No discriminating cue \u2014 pure guess.\n        return np.ones(2) / 2.0\n\n    scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. For the\n    # binary TTB score this collapses to sigmoid(beta) for the winner,\n    # giving a direct mapping from beta onto the paper's flip-noise\n    # levels (beta=0 \u2194 50/50; beta \u226b 1 \u2194 deterministic).\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]",
+              "validities": "validities"
+            },
+            "rationale": null
+          },
+          "proposer_label": "pi_1",
+          "real_value": 0.47368421052631576,
+          "real_variance": 0.004627146814404432,
+          "predicted_values": [
+            {
+              "value": 0.8528421052631578,
+              "variance": 0.007355080332409972,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.15157894736842106,
+              "variance": 0.013123545706371193,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.44863157894736844,
+              "variance": 0.04303995567867037,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.49642105263157893,
+              "variance": 0.002257551246537395,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.4397894736842105,
+              "variance": 0.005576908587257618,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.6071578947368421,
+              "variance": 0.006605828254847646,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.4326315789473684,
+              "variance": 0.004100831024930748,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_000_obs_00.jsonl"
+        },
+        {
+          "experiment": {
+            "rationale": "This design quantitatively dissociates Tallying from Take The Best (TTB) by systematically pitting the highest-validity discriminating cue against the unweighted sum of lower-validity cues. We use 5 features with strictly decreasing validities. In every trial, one option is favored by TTB because it wins on the single most predictive cue that discriminates the options, whereas the other option is favored by Tallying because it wins on a strictly greater number of lower-validity cues. By shifting which cue is the highest discriminating one (1st, 2nd, or 3rd validity) across trials, we can rule out alternative heuristics like simple weighting and confirm whether subjects are purely counting features (Tallying) or adopting a one-reason stopping rule (TTB).",
+            "validities": [
+              0.95,
+              0.85,
+              0.75,
+              0.65,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                1
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                0
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    a_ratings = np.stack(data['option_a_ratings'].values)\n    b_ratings = np.stack(data['option_b_ratings'].values)\n    tally_a = np.sum(a_ratings > b_ratings, axis=1)\n    tally_b = np.sum(b_ratings > a_ratings, axis=1)\n    valid = tally_a != tally_b\n    if not np.any(valid):\n        return 0.5\n    pred = np.where(tally_a > tally_b, 0, 1)\n    return float((pred[valid] == data['response'].values[valid]).mean())",
+            "rationale": "Calculates the proportion of trials where the participant's choice aligns with the Tallying heuristic. Because the experiment is designed such that Tallying and Take The Best make strictly opposing predictions on every trial, this metric will yield values close to 1 for data simulated under Tallying and close to 0 for data simulated under TTB."
+          },
+          "proposer_theory": {
+            "description": "People compare two options by counting, across all features, how often one option has a higher value than the other. The option that wins on more features is chosen. Tallying discards cardinal magnitudes \u2014 only the sign of each feature-wise comparison matters \u2014 so the heuristic is robust to monotone rescaling of individual features and cannot be swayed by a single large feature difference in the way Equal-Weight can. Ties on an individual feature contribute nothing to either count: that cue is simply treated as uninformative for the pair. No feature is privileged, in contrast to Take The Best; every cue contributes equally to the tally. When the two counts are equal the heuristic has no basis for preference and the learner must guess. Response noise enters through a softmax over the two tallies with inverse temperature beta (interpolating between fully deterministic choice at large beta and uniform guessing at beta = 0), plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+            "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Tallying heuristic (Dawes 1979; Gigerenzer &\n    # Goldstein 1999). Stimulus is the pair of option feature vectors\n    # for the current trial: array-like of shape (2, n_features),\n    # with row 0 = option A, row 1 = option B. History is ignored.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"Tallying expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n\n    a, b = stim[0], stim[1]\n    # Count strict feature-wise wins; ties contribute to neither option.\n    a_wins = float(np.sum(a > b))\n    b_wins = float(np.sum(b > a))\n    scores = np.array([a_wins, b_wins])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. When\n    # a_wins == b_wins the softmax is exactly uniform regardless of\n    # beta, which is the correct behavior for an undiscriminating\n    # tally.\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]"
+            },
+            "rationale": null
+          },
+          "proposer_label": "pi_2",
+          "real_value": 0.5479166666666667,
+          "real_variance": 0.0019965277777777785,
+          "predicted_values": [
+            {
+              "value": 0.8822916666666667,
+              "variance": 0.006528862847222222,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.17145833333333332,
+              "variance": 0.01379865451388889,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.5289583333333333,
+              "variance": 0.0540724392361111,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.5008333333333334,
+              "variance": 0.002173784722222223,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.565,
+              "variance": 0.003465972222222222,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.4008333333333333,
+              "variance": 0.006034027777777777,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.5552083333333333,
+              "variance": 0.0038205295138888902,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_000_obs_01.jsonl"
+        }
+      ],
+      "next_theory": {
+        "description": "Generalized Weighted Additive (WADD) Theory: Decision-makers evaluate options by computing a compensatory weighted sum of their features. However, instead of using raw cue validities as weights, individuals scale the validities non-linearly using a parameter gamma. This scaling allows the decision process to smoothly interpolate between Tallying (gamma=0, where all cues are weighted equally), standard WADD (gamma=1), and Take The Best (gamma -> infinity, where the most valid cue dominates). The final choice is made probabilistically via a softmax function over the computed option values, mixed with a random lapse rate.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"WADD expects a (2, n_features) stimulus; got shape {stim.shape}.\")\n    \n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    if val.shape[0] != stim.shape[1]:\n        raise ValueError(\"Length of validities must match number of features.\")\n        \n    gamma = float(parameters[\"gamma\"])\n    weights = val ** gamma\n    \n    a, b = stim[0], stim[1]\n    \n    # Calculate weighted sums for each option\n    score_a = np.sum(weights * a)\n    score_b = np.sum(weights * b)\n    scores = np.array([score_a, score_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax over scores with max-subtraction for numerical stability\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()  # Ensure valid probabilities\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "gamma": "[0.0, 10.0]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's advice, a non-linear scaling parameter `gamma` has been introduced to the WADD model. Instead of using raw validities, the weights are computed as `validities ** gamma`. This allows the model to flexibly adjust the relative influence of the cues, smoothly interpolating between Tallying (gamma=0) and TTB (gamma -> infinity). This modification prevents the sum of weaker cues from systematically outweighing the best cue in ways inconsistent with human behavior, enabling the model to better capture the intermediate choice proportions observed in both experiments."
+      },
+      "next_theory_idx": 1,
+      "next_theory_label": "pi_3"
+    },
+    {
+      "observations": [
+        {
+          "experiment": {
+            "rationale": "This design strictly dissociates Generalized Weighted Additive (WADD) Theory from Tallying. Tallying ignores cue validities and simply counts the number of features favoring each option, treating all features equally. WADD, on the other hand, weights features by their non-linearly scaled validities (parameterized by gamma). The trials are carefully constructed to include: (1) pairs where Tallying predicts a tie (equal number of winning features) but WADD strongly prefers one option due to validity differences; (2) pairs where Tallying prefers one option because it wins on more features, but WADD prefers the other because its fewer winning features have a higher combined validity (even at gamma=1); and (3) pairs that distinguish different ranges of the WADD gamma parameter, where Tallying and WADD (at gamma=1) agree, but WADD at higher gamma values (approaching Take The Best) flips its preference.",
+            "validities": [
+              0.9,
+              0.8,
+              0.6,
+              0.55,
+              0.5
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                0,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    wadd_choices = 0\n    total = 0\n    for _, row in data.iterrows():\n        a = tuple(row['option_a_ratings'])\n        b = tuple(row['option_b_ratings'])\n        resp = row['response']\n        \n        if a == (1, 1, 0, 0, 0) and b == (0, 0, 1, 1, 1):\n            if resp == 0:\n                wadd_choices += 1\n            total += 1\n        elif a == (0, 0, 1, 1, 1) and b == (1, 1, 0, 0, 0):\n            if resp == 1:\n                wadd_choices += 1\n            total += 1\n            \n    return wadd_choices / total if total > 0 else 0.5",
+            "rationale": "Focuses strictly on trials where Tallying and WADD make diametrically opposite predictions. On these trials, one option has more positive features (3 vs 2), which Tallying strictly prefers. However, the option with fewer features contains the two most valid cues, which WADD strictly prefers (even at gamma=1). Tallying will yield a metric near 0 (minus noise), while WADD will yield a metric near 1 (minus noise)."
+          },
+          "proposer_theory": {
+            "description": "Generalized Weighted Additive (WADD) Theory: Decision-makers evaluate options by computing a compensatory weighted sum of their features. However, instead of using raw cue validities as weights, individuals scale the validities non-linearly using a parameter gamma. This scaling allows the decision process to smoothly interpolate between Tallying (gamma=0, where all cues are weighted equally), standard WADD (gamma=1), and Take The Best (gamma -> infinity, where the most valid cue dominates). The final choice is made probabilistically via a softmax function over the computed option values, mixed with a random lapse rate.",
+            "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"WADD expects a (2, n_features) stimulus; got shape {stim.shape}.\")\n    \n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    if val.shape[0] != stim.shape[1]:\n        raise ValueError(\"Length of validities must match number of features.\")\n        \n    gamma = float(parameters[\"gamma\"])\n    weights = val ** gamma\n    \n    a, b = stim[0], stim[1]\n    \n    # Calculate weighted sums for each option\n    score_a = np.sum(weights * a)\n    score_b = np.sum(weights * b)\n    scores = np.array([score_a, score_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax over scores with max-subtraction for numerical stability\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()  # Ensure valid probabilities\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]",
+              "gamma": "[0.0, 10.0]",
+              "validities": "validities"
+            },
+            "rationale": "Following the critic's advice, a non-linear scaling parameter `gamma` has been introduced to the WADD model. Instead of using raw validities, the weights are computed as `validities ** gamma`. This allows the model to flexibly adjust the relative influence of the cues, smoothly interpolating between Tallying (gamma=0) and TTB (gamma -> infinity). This modification prevents the sum of weaker cues from systematically outweighing the best cue in ways inconsistent with human behavior, enabling the model to better capture the intermediate choice proportions observed in both experiments."
+          },
+          "proposer_label": "pi_3",
+          "real_value": 0.48,
+          "real_variance": 0.02335,
+          "predicted_values": [
+            {
+              "value": 0.8066666666666666,
+              "variance": 0.04331666666666667,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.12833333333333333,
+              "variance": 0.010544444444444445,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.8891666666666667,
+              "variance": 0.00893125,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.49916666666666665,
+              "variance": 0.008367361111111112,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.4483333333333333,
+              "variance": 0.011636111111111111,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.615,
+              "variance": 0.011497222222222225,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.535,
+              "variance": 0.006900000000000002,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_001_obs_00.jsonl"
+        },
+        {
+          "experiment": {
+            "rationale": "To quantitatively dissociate Tallying from Generalized WADD, we must exploit the fact that Tallying strictly ignores cue validities (effectively fixing the WADD gamma parameter to 0). In this design, we pit the sheer number of winning features against the validities of those features. Several trials are constructed such that Tallying predicts a strict tie (equal number of winning features) while WADD predicts a strong preference for the option with the higher-validity feature. Other trials present a scenario where one option has fewer winning features but higher validities (benefiting WADD with gamma >= 1), while the other option has more winning features of lower validity (favored by Tallying). If subjects use Tallying, they will show indifference on the tied trials and a preference for the option with more winning features on the others, a pattern WADD can only fit by collapsing gamma to 0.",
+            "validities": [
+              0.95,
+              0.85,
+              0.75,
+              0.65,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                0
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import pandas as pd\n    \n    # Identify Trial 3: A=[0, 0, 1, 1, 1], B=[1, 1, 0, 0, 0]\n    # Tallying favors A (3 vs 2), meaning response should be closer to 0.\n    # WADD with gamma > 1 favors B (due to the 0.95 and 0.85 validities), meaning response closer to 1.\n    is_trial_3 = data['option_a_ratings'].apply(lambda x: tuple(x) == (0, 0, 1, 1, 1))\n    \n    # Identify Trial 4: A=[1, 0, 0, 1, 0], B=[0, 1, 1, 0, 1]\n    # Tallying favors B (2 vs 3), meaning response should be closer to 1.\n    # WADD with gamma > 1 favors A (due to the 0.95 validity), meaning response closer to 0.\n    is_trial_4 = data['option_a_ratings'].apply(lambda x: tuple(x) == (1, 0, 0, 1, 0))\n    \n    resp_3 = data.loc[is_trial_3, 'response'].mean()\n    resp_4 = data.loc[is_trial_4, 'response'].mean()\n    \n    if pd.isna(resp_3):\n        resp_3 = 0.5\n    if pd.isna(resp_4):\n        resp_4 = 0.5\n        \n    # Tallying: resp_4 (high) - resp_3 (low) -> Positive\n    # WADD: resp_4 (low) - resp_3 (high) -> Negative\n    return float(resp_4 - resp_3)",
+            "rationale": "This metric calculates the difference in choice proportions (specifically, the probability of choosing option B) between Trial 4 and Trial 3. In Trial 3, Tallying counts more winning features for A (3 vs 2), predicting a preference for A, while Generalized WADD (with gamma > ~1) heavily weights B's top features, predicting a preference for B. Conversely, in Trial 4, Tallying counts more winning features for B (3 vs 2), whereas WADD weights A's top feature strongly, predicting a preference for A. Subtracting the response rate of Trial 3 from Trial 4 yields a strongly positive value for Tallying and a strongly negative value for Generalized WADD, perfectly dissociating the two theories."
+          },
+          "proposer_theory": {
+            "description": "People compare two options by counting, across all features, how often one option has a higher value than the other. The option that wins on more features is chosen. Tallying discards cardinal magnitudes \u2014 only the sign of each feature-wise comparison matters \u2014 so the heuristic is robust to monotone rescaling of individual features and cannot be swayed by a single large feature difference in the way Equal-Weight can. Ties on an individual feature contribute nothing to either count: that cue is simply treated as uninformative for the pair. No feature is privileged, in contrast to Take The Best; every cue contributes equally to the tally. When the two counts are equal the heuristic has no basis for preference and the learner must guess. Response noise enters through a softmax over the two tallies with inverse temperature beta (interpolating between fully deterministic choice at large beta and uniform guessing at beta = 0), plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+            "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Tallying heuristic (Dawes 1979; Gigerenzer &\n    # Goldstein 1999). Stimulus is the pair of option feature vectors\n    # for the current trial: array-like of shape (2, n_features),\n    # with row 0 = option A, row 1 = option B. History is ignored.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"Tallying expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n\n    a, b = stim[0], stim[1]\n    # Count strict feature-wise wins; ties contribute to neither option.\n    a_wins = float(np.sum(a > b))\n    b_wins = float(np.sum(b > a))\n    scores = np.array([a_wins, b_wins])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. When\n    # a_wins == b_wins the softmax is exactly uniform regardless of\n    # beta, which is the correct behavior for an undiscriminating\n    # tally.\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]"
+            },
+            "rationale": null
+          },
+          "proposer_label": "pi_2",
+          "real_value": -0.0025000000000000022,
+          "real_variance": 0.058899999999999994,
+          "predicted_values": [
+            {
+              "value": 0.6824999999999999,
+              "variance": 0.06341250000000001,
+              "label": "pi_2"
+            },
+            {
+              "value": -0.285,
+              "variance": 0.23486875000000002,
+              "label": "pi_3"
+            },
+            {
+              "value": -0.70125,
+              "variance": 0.0509828125,
+              "label": "pi_1"
+            },
+            {
+              "value": -0.02124999999999999,
+              "variance": 0.027907812499999997,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.06500000000000006,
+              "variance": 0.024368749999999998,
+              "label": "pi_5"
+            },
+            {
+              "value": -0.1925,
+              "variance": 0.03888125,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.08875000000000005,
+              "variance": 0.037514062499999994,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_001_obs_01.jsonl"
+        }
+      ],
+      "next_theory": {
+        "description": "Random Guessing (Zero-Intelligence) Theory: Without trial-by-trial feedback, subjects find the multi-attribute binary feature task too cognitively demanding or unengaging. As a result, they do not attempt to integrate the cue validities or compare the feature values. Instead, they simply guess uniformly at random on every trial.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    # The model assumes pure random guessing, ignoring stimulus and history entirely.\n    return np.array([0.5, 0.5])",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))",
+        "parameters": {},
+        "rationale": "Following the arbiter's suggestion, this theory replaces the previous heuristic models with a Zero-Intelligence Random Guessing model. Looking at the empirical data across all four experiments, the observed values are extremely close to 0.5 (Experiment 1: 0.47, Experiment 2: 0.54, Experiment 3: 0.48) and 0.0 for the difference metric in Experiment 4. Complex models like TTB, Tallying, and WADD produce extreme metric values (e.g., 0.85 or 0.15) that fail to capture this baseline behavior. By outputting exactly [0.5, 0.5] on every trial, this model accurately captures the empirical reality that subjects are, on average, guessing."
+      },
+      "next_theory_idx": 2,
+      "next_theory_label": "pi_4"
+    },
+    {
+      "observations": [
+        {
+          "experiment": {
+            "rationale": "To quantitatively dissociate the Generalized Weighted Additive (WADD) Theory from the Random Guessing Theory, we need to present trials where WADD predicts a systematic, varying preference across trials while Random Guessing predicts a flat 50% choice probability everywhere. We use four features with evenly spaced validities. The trials range from complete dominance (where WADD predicts near 100% preference) to partial conflicts (where WADD predicts moderate preferences depending on the gamma and beta parameters). If subjects are merely guessing randomly, all trials will yield ~50% choice rates. If they are evaluating features as WADD predicts, their choice probabilities will systematically track the difference in the non-linearly weighted feature sums.",
+            "validities": [
+              0.9,
+              0.8,
+              0.7,
+              0.6
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    \n    val = np.array([0.9, 0.8, 0.7, 0.6])\n    a_ratings = np.array(data['option_a_ratings'].tolist())\n    b_ratings = np.array(data['option_b_ratings'].tolist())\n    \n    score_a = a_ratings.dot(val)\n    score_b = b_ratings.dot(val)\n    \n    mask = score_a != score_b\n    if not np.any(mask):\n        return 0.5\n        \n    expected = (score_b > score_a).astype(int)\n    actual = data['response'].values\n    \n    return float(np.mean(expected[mask] == actual[mask]))",
+            "rationale": "This metric calculates the proportion of choices that align with the higher validity-weighted sum of features. For the Random Guessing theory, subjects choose A or B randomly, so this metric will be approximately 0.5. For the WADD theory, subjects systematically favor the option with the higher weighted sum (scaled by gamma and mixed with lapse, but still directionally consistent), so this metric will be significantly higher than 0.5."
+          },
+          "proposer_theory": {
+            "description": "Generalized Weighted Additive (WADD) Theory: Decision-makers evaluate options by computing a compensatory weighted sum of their features. However, instead of using raw cue validities as weights, individuals scale the validities non-linearly using a parameter gamma. This scaling allows the decision process to smoothly interpolate between Tallying (gamma=0, where all cues are weighted equally), standard WADD (gamma=1), and Take The Best (gamma -> infinity, where the most valid cue dominates). The final choice is made probabilistically via a softmax function over the computed option values, mixed with a random lapse rate.",
+            "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"WADD expects a (2, n_features) stimulus; got shape {stim.shape}.\")\n    \n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    if val.shape[0] != stim.shape[1]:\n        raise ValueError(\"Length of validities must match number of features.\")\n        \n    gamma = float(parameters[\"gamma\"])\n    weights = val ** gamma\n    \n    a, b = stim[0], stim[1]\n    \n    # Calculate weighted sums for each option\n    score_a = np.sum(weights * a)\n    score_b = np.sum(weights * b)\n    scores = np.array([score_a, score_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax over scores with max-subtraction for numerical stability\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()  # Ensure valid probabilities\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]",
+              "gamma": "[0.0, 10.0]",
+              "validities": "validities"
+            },
+            "rationale": "Following the critic's advice, a non-linear scaling parameter `gamma` has been introduced to the WADD model. Instead of using raw validities, the weights are computed as `validities ** gamma`. This allows the model to flexibly adjust the relative influence of the cues, smoothly interpolating between Tallying (gamma=0) and TTB (gamma -> infinity). This modification prevents the sum of weaker cues from systematically outweighing the best cue in ways inconsistent with human behavior, enabling the model to better capture the intermediate choice proportions observed in both experiments."
+          },
+          "proposer_label": "pi_3",
+          "real_value": 0.5742857142857143,
+          "real_variance": 0.003710657596371882,
+          "predicted_values": [
+            {
+              "value": 0.746904761904762,
+              "variance": 0.009919557823129253,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.49404761904761907,
+              "variance": 0.0020479024943310655,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.6542857142857142,
+              "variance": 0.002601814058956916,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.7102380952380952,
+              "variance": 0.005604365079365079,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.5471428571428572,
+              "variance": 0.0035485260770975057,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.5433333333333333,
+              "variance": 0.0027253968253968253,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.5566666666666666,
+              "variance": 0.0060519274376417236,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_002_obs_00.jsonl"
+        },
+        {
+          "experiment": {
+            "rationale": "To quantitatively dissociate the Generalized Weighted Additive (WADD) Theory from the Random Guessing Theory, we use a 5-feature design with a wide spread of validities. Random Guessing predicts a flat 50% choice probability across all trials, regardless of the features presented. WADD predicts systematic deviations from 50% based on the weighted sum of the features. We include trials ranging from complete dominance (where WADD predicts near 100% preference for one option) to complex trade-offs (e.g., the highest validity cue versus multiple lower validity cues). If subjects are merely guessing, their choice rates will remain at 50% across all these diverse trial types. If they follow a compensatory or heuristic-like strategy captured by WADD, their choice probabilities will systematically track the differences in feature values and validities.",
+            "validities": [
+              0.9,
+              0.8,
+              0.7,
+              0.6,
+              0.5
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                1,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import pandas as pd\n    import numpy as np\n    keys = [tuple(a) + tuple(b) for a, b in zip(data['option_a_ratings'], data['option_b_ratings'])]\n    df = pd.DataFrame({\n        'subject_id': data['subject_id'],\n        'trial_key': keys,\n        'response': data['response']\n    })\n    grouped = df.groupby(['subject_id', 'trial_key'])['response'].mean()\n    return float((grouped - 0.5).abs().mean())",
+            "rationale": "Random Guessing predicts that subjects choose completely at random, meaning the proportion of choosing option A (or B) for any specific trial type will tightly hover around 0.5. The WADD model, however, predicts systematic preferences driven by feature values and validities, meaning choice proportions will reliably deviate from 0.5 (often approaching 0 or 1 on easy trials like A dominating B). By calculating the mean absolute deviation of choice proportions from 0.5 across all unique trial types and subjects, we directly measure this systematicity. Random guessing will yield a low value (driven only by binomial noise, ~0.14 for 12 reps), while WADD will yield a significantly higher value."
+          },
+          "proposer_theory": {
+            "description": "Random Guessing (Zero-Intelligence) Theory: Without trial-by-trial feedback, subjects find the multi-attribute binary feature task too cognitively demanding or unengaging. As a result, they do not attempt to integrate the cue validities or compare the feature values. Instead, they simply guess uniformly at random on every trial.",
+            "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    # The model assumes pure random guessing, ignoring stimulus and history entirely.\n    return np.array([0.5, 0.5])",
+            "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))",
+            "parameters": {},
+            "rationale": "Following the arbiter's suggestion, this theory replaces the previous heuristic models with a Zero-Intelligence Random Guessing model. Looking at the empirical data across all four experiments, the observed values are extremely close to 0.5 (Experiment 1: 0.47, Experiment 2: 0.54, Experiment 3: 0.48) and 0.0 for the difference metric in Experiment 4. Complex models like TTB, Tallying, and WADD produce extreme metric values (e.g., 0.85 or 0.15) that fail to capture this baseline behavior. By outputting exactly [0.5, 0.5] on every trial, this model accurately captures the empirical reality that subjects are, on average, guessing."
+          },
+          "proposer_label": "pi_4",
+          "real_value": 0.13708333333333333,
+          "real_variance": 0.0006222222222222223,
+          "predicted_values": [
+            {
+              "value": 0.111875,
+              "variance": 0.0011884114583333334,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.3,
+              "variance": 0.0064366319444444445,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.35041666666666665,
+              "variance": 0.007919965277777778,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.28604166666666664,
+              "variance": 0.004579904513888888,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.126875,
+              "variance": 0.0010186197916666666,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.14625,
+              "variance": 0.0019920138888888895,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.12375,
+              "variance": 0.001126909722222222,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_002_obs_01.jsonl"
+        }
+      ],
+      "next_theory": {
+        "description": "High-Lapse Tallying Theory: Subjects find the multi-attribute binary feature task cognitively demanding, leading to a very high rate of random guessing. However, when they do engage with the stimulus, they rely on a simple unweighted tally of positive features (Tallying) rather than integrating complex cue validities. This produces a very weak but non-zero behavioral signal that slightly favors options with a higher simple count of positive features.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be shape (2, n_features).\")\n        \n    a, b = stim[0], stim[1]\n    \n    # Unweighted tally of positive features for each option\n    score_a = np.sum(a)\n    score_b = np.sum(b)\n    scores = np.array([score_a, score_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax over tallies for the engaged decision process\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    # Mix with a high lapse rate (random guessing)\n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))",
+        "parameters": {
+          "beta": "[0.1, 5.0]",
+          "epsilon": "[0.7, 1.0]"
+        },
+        "rationale": "The arbiter noted that subjects exhibit a very weak but non-zero signal that aligns more with unweighted feature counts (Tallying) than with validity-weighted sums. The previous Random Guessing model captured the overall lack of signal but missed the subtle structure. By introducing a Noisy Tallying model with a high lapse rate (epsilon between 0.7 and 1.0), we can explain both the predominantly random behavior and the slight preference for options with more positive features observed in the data."
+      },
+      "next_theory_idx": 2,
+      "next_theory_label": "pi_5"
+    },
+    {
+      "observations": [
+        {
+          "experiment": {
+            "rationale": "To quantitatively dissociate Generalized WADD from High-Lapse Tallying, we exploit two main differences: the integration of cue validities and the base lapse rate. High-Lapse Tallying strictly counts positive features (ignoring validities) and assumes a high random guessing rate (epsilon >= 0.7), capping its maximum predicted choice probability around 65%. Generalized WADD accounts for validities (scaled non-linearly) and allows for much lower lapse rates, thus predicting extreme choice probabilities on dominant trials. We include trials where Tallying predicts a tie but WADD predicts a strong preference (e.g., A=[1,0,0,0] vs B=[0,1,0,0]), trials where Tallying prefers one option but WADD prefers the other due to high-validity cues (e.g., A=[1,0,0,0] vs B=[0,1,1,1]), and dominance trials to expose the difference in maximum choice probabilities (e.g., A=[1,1,1,0] vs B=[0,0,0,1]).",
+            "validities": [
+              0.9,
+              0.7,
+              0.6,
+              0.5
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    a_sums = data['option_a_ratings'].apply(sum)\n    b_sums = data['option_b_ratings'].apply(sum)\n    a_first = data['option_a_ratings'].apply(lambda x: x[0])\n    \n    mask = (a_sums >= b_sums) & (a_first == 1)\n    subset = data[mask]\n    \n    if len(subset) == 0:\n        return 0.5\n        \n    return float((subset['response'] == 0).mean())",
+            "rationale": "We isolate trials where Option A has at least as many positive features as Option B, AND Option A possesses the most valid feature (cue 1). These correspond to trials 2, 3, and 6. Under High-Lapse Tallying, these trials yield a weak preference for A or a tie, heavily diluted by random guessing, resulting in a choice probability for A near 50-55%. Under Generalized WADD, Option A is strongly preferred due to the integration of the high-validity cue and lower lapse rates, yielding a much higher choice probability for A."
+          },
+          "proposer_theory": {
+            "description": "Generalized Weighted Additive (WADD) Theory: Decision-makers evaluate options by computing a compensatory weighted sum of their features. However, instead of using raw cue validities as weights, individuals scale the validities non-linearly using a parameter gamma. This scaling allows the decision process to smoothly interpolate between Tallying (gamma=0, where all cues are weighted equally), standard WADD (gamma=1), and Take The Best (gamma -> infinity, where the most valid cue dominates). The final choice is made probabilistically via a softmax function over the computed option values, mixed with a random lapse rate.",
+            "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"WADD expects a (2, n_features) stimulus; got shape {stim.shape}.\")\n    \n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    if val.shape[0] != stim.shape[1]:\n        raise ValueError(\"Length of validities must match number of features.\")\n        \n    gamma = float(parameters[\"gamma\"])\n    weights = val ** gamma\n    \n    a, b = stim[0], stim[1]\n    \n    # Calculate weighted sums for each option\n    score_a = np.sum(weights * a)\n    score_b = np.sum(weights * b)\n    scores = np.array([score_a, score_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax over scores with max-subtraction for numerical stability\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()  # Ensure valid probabilities\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]",
+              "gamma": "[0.0, 10.0]",
+              "validities": "validities"
+            },
+            "rationale": "Following the critic's advice, a non-linear scaling parameter `gamma` has been introduced to the WADD model. Instead of using raw validities, the weights are computed as `validities ** gamma`. This allows the model to flexibly adjust the relative influence of the cues, smoothly interpolating between Tallying (gamma=0) and TTB (gamma -> infinity). This modification prevents the sum of weaker cues from systematically outweighing the best cue in ways inconsistent with human behavior, enabling the model to better capture the intermediate choice proportions observed in both experiments."
+          },
+          "proposer_label": "pi_3",
+          "real_value": 0.53,
+          "real_variance": 0.007329166666666665,
+          "predicted_values": [
+            {
+              "value": 0.8029166666666666,
+              "variance": 0.011687673611111114,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.5245833333333333,
+              "variance": 0.006557118055555556,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.85625,
+              "variance": 0.008528645833333333,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.6170833333333333,
+              "variance": 0.005640451388888888,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.4741666666666667,
+              "variance": 0.005599999999999999,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.58625,
+              "variance": 0.007656423611111112,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.55875,
+              "variance": 0.006991145833333334,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_003_obs_00.jsonl"
+        },
+        {
+          "experiment": {
+            "rationale": "To quantitatively dissociate High-Lapse Tallying from Generalized WADD, we exploit their differences in both feature weighting and base lapse rates. High-Lapse Tallying strictly counts positive features (ignoring validities) and assumes a high random guessing rate (capping its maximum choice probability around 65%). Generalized WADD accounts for validities (scaled non-linearly) and allows for much lower lapse rates, thus predicting extreme choice probabilities on dominant trials. We include: (1) trials where Tallying predicts a tie but WADD predicts a strong preference based on validity differences, (2) conflict trials where Tallying prefers one option because it has more positive features but WADD prefers the other due to high-validity cues, and (3) a pure dominance trial to expose the difference in maximum predicted choice probabilities due to the distinct epsilon bounds.",
+            "validities": [
+              0.95,
+              0.85,
+              0.6,
+              0.55,
+              0.5
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    # Identify Trial 5, where Option A is strictly dominant (all 1s) and Option B has all 0s.\n    is_trial_5 = data['option_a_ratings'].apply(lambda x: sum(x) == 5)\n    \n    if not is_trial_5.any():\n        return 0.5\n        \n    # Calculate the proportion of times Option A was chosen (response == 0)\n    return float((data.loc[is_trial_5, 'response'] == 0).mean())",
+            "rationale": "This metric isolates the pure dominance trial (Trial 5). High-Lapse Tallying enforces a very high lapse rate (epsilon in [0.7, 1.0]), which strictly bounds its maximum choice probability for the dominant option to ~0.65. In contrast, Generalized WADD allows for much lower lapse rates (epsilon in [0.0, 0.5]) and will predict a choice probability for the dominant option near 1.0. By directly computing the empirical probability of choosing the dominant option on this specific trial, we obtain a stark, structural dissociation between the two theories' bounds on decision determinism."
+          },
+          "proposer_theory": {
+            "description": "High-Lapse Tallying Theory: Subjects find the multi-attribute binary feature task cognitively demanding, leading to a very high rate of random guessing. However, when they do engage with the stimulus, they rely on a simple unweighted tally of positive features (Tallying) rather than integrating complex cue validities. This produces a very weak but non-zero behavioral signal that slightly favors options with a higher simple count of positive features.",
+            "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be shape (2, n_features).\")\n        \n    a, b = stim[0], stim[1]\n    \n    # Unweighted tally of positive features for each option\n    score_a = np.sum(a)\n    score_b = np.sum(b)\n    scores = np.array([score_a, score_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax over tallies for the engaged decision process\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    # Mix with a high lapse rate (random guessing)\n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])",
+            "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))",
+            "parameters": {
+              "beta": "[0.1, 5.0]",
+              "epsilon": "[0.7, 1.0]"
+            },
+            "rationale": "The arbiter noted that subjects exhibit a very weak but non-zero signal that aligns more with unweighted feature counts (Tallying) than with validity-weighted sums. The previous Random Guessing model captured the overall lack of signal but missed the subtle structure. By introducing a Noisy Tallying model with a high lapse rate (epsilon between 0.7 and 1.0), we can explain both the predominantly random behavior and the slight preference for options with more positive features observed in the data."
+          },
+          "proposer_label": "pi_5",
+          "real_value": 0.5876923076923077,
+          "real_variance": 0.01887810650887574,
+          "predicted_values": [
+            {
+              "value": 0.583076923076923,
+              "variance": 0.02061301775147929,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.8769230769230769,
+              "variance": 0.013254437869822486,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.8107692307692308,
+              "variance": 0.014724260355029585,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.8630769230769231,
+              "variance": 0.022080473372781063,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.5061538461538462,
+              "variance": 0.01966627218934911,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.6046153846153847,
+              "variance": 0.022724260355029585,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.5861538461538461,
+              "variance": 0.02648284023668639,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_003_obs_01.jsonl"
+        }
+      ],
+      "next_theory": {
+        "description": "High-Lapse Take-The-Best (TTB) Theory: Subjects generally find the multi-attribute choice task tedious without trial-by-trial feedback, leading to a very high rate of random guessing (high lapse rate). However, on the small fraction of trials where they actively engage, they do not integrate all features or tally them. Instead, they use a fast-and-frugal lexicographic heuristic (Take-The-Best): they inspect cues in descending order of their validity and make a deterministic choice based entirely on the single most valid cue that discriminates between the two options.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be shape (2, n_features).\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Sort cues by validity in descending order\n    order = np.argsort(val)[::-1]\n    \n    ttb_choice = -1\n    for idx in order:\n        if a[idx] > b[idx]:\n            ttb_choice = 0\n            break\n        elif b[idx] > a[idx]:\n            ttb_choice = 1\n            break\n            \n    if ttb_choice == 0:\n        p_core = np.array([1.0, 0.0])\n    elif ttb_choice == 1:\n        p_core = np.array([0.0, 1.0])\n    else:\n        p_core = np.array([0.5, 0.5])\n        \n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Mix the deterministic TTB choice with a high lapse rate (random guessing)\n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))",
+        "parameters": {
+          "epsilon": "[0.6, 1.0]",
+          "validities": "validities"
+        },
+        "rationale": "Following the arbiter's feedback, this model instantiates a 'High-Lapse Take-The-Best' mechanism. It acknowledges the high noise floor in the experimental data by retaining a large lapse rate (epsilon > 0.6), but replaces the compensatory tallying mechanism of Theory 2 with a purely non-compensatory, lexicographic one. When subjects engage, they simply identify the most valid cue that discriminates the options and choose accordingly, completely ignoring all other cues. This directly tests whether the weak behavioral signal present in the data is driven by a fast-and-frugal lexicographic process rather than unweighted feature summation."
+      },
+      "next_theory_idx": 1,
+      "next_theory_label": "pi_6"
+    },
+    {
+      "observations": [
+        {
+          "experiment": {
+            "rationale": "To quantitatively dissociate High-Lapse Take-The-Best (TTB) from High-Lapse Tallying, we exploit their core decision rules when subjects are engaged. TTB relies solely on the highest-validity discriminating cue, whereas Tallying relies on the unweighted sum of positive features. The trials are constructed to pit these two mechanisms directly against each other: in several trials, one option possesses the single most valid cue (favored by TTB) while the other option possesses a greater total number of lower-validity cues (favored by Tallying). We also include trials where Tallying predicts a strict tie (equal number of positive features) but TTB predicts a clear preference based on validity rank.",
+            "validities": [
+              0.95,
+              0.85,
+              0.75,
+              0.65,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                1,
+                0
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    \n    matches = 0\n    total = 0\n    \n    for a, b, resp in zip(data['option_a_ratings'], data['option_b_ratings'], data['response']):\n        ttb_pred = -1\n        for i in range(len(a)):\n            if a[i] > b[i]:\n                ttb_pred = 0\n                break\n            elif b[i] > a[i]:\n                ttb_pred = 1\n                break\n        if ttb_pred != -1:\n            if ttb_pred == resp:\n                matches += 1\n            total += 1\n            \n    return float(matches / total) if total > 0 else 0.5",
+            "rationale": "This metric calculates the proportion of trials where the subject's choice matches the prediction of the Take-The-Best (TTB) heuristic. Because the experimental design heavily features trials where TTB and Tallying make diametrically opposed predictions, the TTB theory will yield a match rate significantly above 0.5 (even with high lapsing), whereas the Tallying theory will yield a match rate significantly below 0.5. This clear directional split ensures robust discrimination between the two theories."
+          },
+          "proposer_theory": {
+            "description": "High-Lapse Take-The-Best (TTB) Theory: Subjects generally find the multi-attribute choice task tedious without trial-by-trial feedback, leading to a very high rate of random guessing (high lapse rate). However, on the small fraction of trials where they actively engage, they do not integrate all features or tally them. Instead, they use a fast-and-frugal lexicographic heuristic (Take-The-Best): they inspect cues in descending order of their validity and make a deterministic choice based entirely on the single most valid cue that discriminates between the two options.",
+            "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be shape (2, n_features).\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Sort cues by validity in descending order\n    order = np.argsort(val)[::-1]\n    \n    ttb_choice = -1\n    for idx in order:\n        if a[idx] > b[idx]:\n            ttb_choice = 0\n            break\n        elif b[idx] > a[idx]:\n            ttb_choice = 1\n            break\n            \n    if ttb_choice == 0:\n        p_core = np.array([1.0, 0.0])\n    elif ttb_choice == 1:\n        p_core = np.array([0.0, 1.0])\n    else:\n        p_core = np.array([0.5, 0.5])\n        \n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Mix the deterministic TTB choice with a high lapse rate (random guessing)\n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])",
+            "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))",
+            "parameters": {
+              "epsilon": "[0.6, 1.0]",
+              "validities": "validities"
+            },
+            "rationale": "Following the arbiter's feedback, this model instantiates a 'High-Lapse Take-The-Best' mechanism. It acknowledges the high noise floor in the experimental data by retaining a large lapse rate (epsilon > 0.6), but replaces the compensatory tallying mechanism of Theory 2 with a purely non-compensatory, lexicographic one. When subjects engage, they simply identify the most valid cue that discriminates the options and choose accordingly, completely ignoring all other cues. This directly tests whether the weak behavioral signal present in the data is driven by a fast-and-frugal lexicographic process rather than unweighted feature summation."
+          },
+          "proposer_label": "pi_6",
+          "real_value": 0.4454736842105263,
+          "real_variance": 0.00400416620498615,
+          "predicted_values": [
+            {
+              "value": 0.5951578947368421,
+              "variance": 0.0060640886426592796,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.4530526315789474,
+              "variance": 0.0036386038781163425,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.8568421052631578,
+              "variance": 0.009586703601108032,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.20905263157894738,
+              "variance": 0.0071313462603878105,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.4985263157894737,
+              "variance": 0.059128022160664824,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.4966315789473684,
+              "variance": 0.0020817285318559552,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.43094736842105263,
+              "variance": 0.004850570637119113,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_004_obs_00.jsonl"
+        },
+        {
+          "experiment": {
+            "rationale": "To quantitatively dissociate High-Lapse Tallying from High-Lapse TTB, we exploit the fundamental difference in their core decision mechanisms while holding the assumption of a high lapse rate constant. High-Lapse Tallying relies on an unweighted sum of positive features, whereas High-Lapse TTB relies exclusively on the highest-validity discriminating cue. We construct trials that pit these two mechanisms directly against each other: in several trials, one option possesses the single most valid cue (favored by TTB) while the other option possesses a strictly greater total number of lower-validity cues (favored by Tallying). We also include trials where Tallying predicts a strict tie (equal number of positive features) but TTB predicts a clear preference based on validity rank.",
+            "validities": [
+              0.95,
+              0.85,
+              0.75,
+              0.65,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    \n    a_tallies = data['option_a_ratings'].apply(sum)\n    b_tallies = data['option_b_ratings'].apply(sum)\n    \n    diff_mask = a_tallies != b_tallies\n    data_diff = data[diff_mask]\n    \n    if len(data_diff) == 0:\n        return 0.5\n        \n    tally_pred = (b_tallies[diff_mask] > a_tallies[diff_mask]).astype(int)\n    match = (data_diff['response'] == tally_pred).mean()\n    \n    return float(match)",
+            "rationale": "This metric calculates the proportion of choices that are consistent with the High-Lapse Tallying theory on trials where the two options have a different number of positive features. By experimental design, the trials where the tally differs (Trials 1, 2, 4, and 5) are constructed such that Take-The-Best (TTB) predicts the exact opposite choice of Tallying. Thus, data simulated under Tallying will yield a metric value > 0.5 (as the weak signal pushes choices towards the higher tally), whereas data simulated under TTB will yield a metric value < 0.5 (as its weak signal pushes choices towards the lower tally but higher validity cue). This structural opposition guarantees strong discrimination between the theories."
+          },
+          "proposer_theory": {
+            "description": "High-Lapse Tallying Theory: Subjects find the multi-attribute binary feature task cognitively demanding, leading to a very high rate of random guessing. However, when they do engage with the stimulus, they rely on a simple unweighted tally of positive features (Tallying) rather than integrating complex cue validities. This produces a very weak but non-zero behavioral signal that slightly favors options with a higher simple count of positive features.",
+            "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be shape (2, n_features).\")\n        \n    a, b = stim[0], stim[1]\n    \n    # Unweighted tally of positive features for each option\n    score_a = np.sum(a)\n    score_b = np.sum(b)\n    scores = np.array([score_a, score_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax over tallies for the engaged decision process\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    # Mix with a high lapse rate (random guessing)\n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])",
+            "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))",
+            "parameters": {
+              "beta": "[0.1, 5.0]",
+              "epsilon": "[0.7, 1.0]"
+            },
+            "rationale": "The arbiter noted that subjects exhibit a very weak but non-zero signal that aligns more with unweighted feature counts (Tallying) than with validity-weighted sums. The previous Random Guessing model captured the overall lack of signal but missed the subtle structure. By introducing a Noisy Tallying model with a high lapse rate (epsilon between 0.7 and 1.0), we can explain both the predominantly random behavior and the slight preference for options with more positive features observed in the data."
+          },
+          "proposer_label": "pi_5",
+          "real_value": 0.5384210526315789,
+          "real_variance": 0.0057052631578947376,
+          "predicted_values": [
+            {
+              "value": 0.5707894736842105,
+              "variance": 0.0052208448753462595,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.3894736842105263,
+              "variance": 0.003912742382271468,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.15210526315789474,
+              "variance": 0.008498337950138504,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.8552631578947368,
+              "variance": 0.0092797783933518,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.4255263157894737,
+              "variance": 0.059810318559556784,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.49894736842105264,
+              "variance": 0.0026581717451523556,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.5723684210526315,
+              "variance": 0.004212257617728531,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_004_obs_01.jsonl"
+        }
+      ],
+      "next_theory": {
+        "description": "High-Lapse Weighted Additive (WADD) Theory: Subjects find the multi-attribute binary feature task cognitively demanding without trial-by-trial feedback, leading to a high rate of random guessing. However, on the rare trials where they do actively engage, they do not rely on simple heuristics like Tallying or Take-The-Best. Instead, they integrate all available features by weighting them according to their given validities, producing a compensatory decision process that can account for situations where a few high-validity cues outweigh a larger number of low-validity cues.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be shape (2, n_features).\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Weighted additive sum of features\n    score_a = np.sum(a * val)\n    score_b = np.sum(b * val)\n    scores = np.array([score_a, score_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax over WADD utilities for the engaged decision process\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    # Mix with a high lapse rate (random guessing)\n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))",
+        "parameters": {
+          "beta": "[0.1, 15.0]",
+          "epsilon": "[0.7, 1.0]",
+          "validities": "validities"
+        },
+        "rationale": "Following the arbiter's feedback, this model replaces the non-compensatory Take-The-Best (TTB) and unweighted Tallying mechanisms with a fully compensatory Weighted Additive (WADD) model, while retaining the high lapse rate. This captures the baseline success of Tallying (since WADD often correlates with Tallying) but better explains the subtle variance in trials where high-validity cues override pure tally counts, which TTB's strict lexicographic rule and Tallying's unweighted rule fail to capture."
+      },
+      "next_theory_idx": 1,
+      "next_theory_label": "pi_7"
+    }
+  ]
+}

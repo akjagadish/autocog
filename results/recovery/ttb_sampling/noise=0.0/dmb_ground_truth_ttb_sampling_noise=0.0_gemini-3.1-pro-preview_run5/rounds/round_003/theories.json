@@ -1,0 +1,54 @@
+{
+  "round_idx": 3,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_3",
+      "killed": false,
+      "theory": {
+        "description": "Take The Best (TTB) posits that decision-makers do not integrate all available information. Instead, they rank features by their validity (informativeness) and search through them sequentially. The first feature that discriminates between the two options completely determines the choice, and all subsequent features are ignored. If no features discriminate, the decision-maker guesses randomly. This non-compensatory heuristic allows a single highly valid cue to decisively outweigh any number of less valid cues.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"TTB expects a (2, n_features) stimulus.\")\n    \n    a, b = stim[0], stim[1]\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Rank features by validity in descending order.\n    # We use a stable sort to maintain original order in case of ties.\n    order = np.argsort(-validities, kind='stable')\n    \n    score_a = 0.0\n    score_b = 0.0\n    \n    # Sequential search: find the first discriminating feature\n    for idx in order:\n        if a[idx] > b[idx]:\n            score_a = 1.0\n            break\n        elif b[idx] > a[idx]:\n            score_b = 1.0\n            break\n            \n    if score_a == score_b:\n        p_core = np.array([0.5, 0.5])\n    else:\n        p_core = np.array([score_a, score_b])\n        \n    epsilon = float(parameters[\"epsilon\"])\n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+        "parameters": {
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the arbiter's feedback, this model replaces Tallying with the non-compensatory 'Take The Best' (TTB) heuristic. Instead of aggregating features (which fails to capture how strongly subjects rely on the single most valid feature in Experiment 2), TTB sorts the features by validity and bases the decision entirely on the first cue that discriminates between the two options. This perfectly replicates the extreme >90% choice rate for the option favoured by the highest-validity cue, a magnitude that WADD and Tallying fail to capture due to their compensatory nature."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_5",
+      "killed": true,
+      "theory": {
+        "description": "Strategy Selection / Mixture Model: Decision-makers maintain a repertoire of distinct heuristics. On any given trial, a subject probabilistically samples a strategy from this repertoire\u2014mixing a non-compensatory lexicographic rule (Take The Best) and a compensatory rule (Weighted Additive). The WADD rule incorporates a softmax decision process to gracefully handle near-ties and deviations. Global response noise is heavily restricted because the probabilistic mixture and the WADD softmax already provide sufficient stochasticity without artificially flattening predictions.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Mixture Model expects a (2, n_features) stimulus.\")\n    \n    a, b = stim[0], stim[1]\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Strategy 1: Take The Best (TTB)\n    order = np.argsort(-validities, kind='stable')\n    score_a_ttb = 0.5\n    score_b_ttb = 0.5\n    for idx in order:\n        if a[idx] > b[idx]:\n            score_a_ttb = 1.0\n            score_b_ttb = 0.0\n            break\n        elif b[idx] > a[idx]:\n            score_a_ttb = 0.0\n            score_b_ttb = 1.0\n            break\n    p_ttb = np.array([score_a_ttb, score_b_ttb])\n    \n    # Strategy 2: Weighted Additive (WADD) with softmax\n    score_a_wadd = np.sum(a * validities)\n    score_b_wadd = np.sum(b * validities)\n    tau = float(parameters[\"tau\"])\n    z = np.array([score_a_wadd, score_b_wadd]) / tau\n    z -= np.max(z)\n    e = np.exp(z)\n    p_wadd = e / np.sum(e)\n        \n    # Mixture\n    p_mix = float(parameters[\"p_ttb\"])\n    p_core = p_mix * p_ttb + (1.0 - p_mix) * p_wadd\n    \n    # Response noise\n    epsilon = float(parameters[\"epsilon\"])\n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+        "parameters": {
+          "p_ttb": "[0.0, 1.0]",
+          "epsilon": "[0.0, 0.05]",
+          "tau": "[0.01, 5.0]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's feedback, we revert to the successful iteration 3 base (deterministic TTB + softmax WADD) but heavily restrict the global noise parameter `epsilon` to `[0.0, 0.05]`. The previous attempt to soften TTB over-parameterized the stochasticity and flattened predictions. The mixture probability `p_ttb` combined with the WADD softmax `tau` inherently guarantees that no choice probability is exactly zero (unless p_ttb=1.0 and TTB is decisive). Restricting epsilon prevents the likelihood optimization from inflating global noise, thereby sharpening the model's predictions across all experiments."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_6",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Probabilistic Cue Retrieval TTB: Decision-makers follow the non-compensatory, sequential search architecture of Take The Best (TTB), but execution is noisy at the cue level. When a discriminating cue is evaluated, there is a probability of skipping it or failing to retrieve its value. This skip probability is a function of a base skip rate and is inversely proportional to the cue's validity (operationalized as proportional to 1 - validity). If a cue is skipped, the decision-maker continues to the next most valid cue. This produces slightly higher deviation rates on trials where the best cue is noisy, without defaulting to a fully compensatory linear integration.",
+      "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Model expects a (2, n_features) stimulus.\")\n    \n    a, b = stim[0], stim[1]\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Rank features by validity in descending order.\n    order = np.argsort(-validities, kind='stable')\n    \n    p_skip_base = float(parameters[\"p_skip\"])\n    \n    p_A = 0.0\n    p_B = 0.0\n    p_continue = 1.0\n    \n    # Sequential search with probabilistic cue retrieval\n    for idx in order:\n        if a[idx] != b[idx]:\n            # Probability of skipping this cue is proportional to its invalidity\n            p_skip_cue = p_skip_base * (1.0 - validities[idx])\n            p_eval = 1.0 - p_skip_cue\n            \n            if a[idx] > b[idx]:\n                p_A += p_continue * p_eval\n            else:\n                p_B += p_continue * p_eval\n                \n            p_continue *= p_skip_cue\n            \n    # If all discriminating cues are skipped, or no cues discriminate, guess randomly\n    p_A += p_continue * 0.5\n    p_B += p_continue * 0.5\n    \n    p_core = np.array([p_A, p_B])\n    \n    # Global response noise\n    epsilon = float(parameters[\"epsilon\"])\n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n",
+      "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+      "parameters": {
+        "p_skip": "[0.0, 0.4]",
+        "epsilon": "[0.0, 0.4]",
+        "validities": "validities"
+      },
+      "rationale": "Following the critic's diagnosis, the previous model overcorrected by enforcing bounds that were too tight, preventing the model from matching the ~15-17% deviation rate and ~85% strict adherence rate observed in human data. The functional form of the skip probability is maintained, but the upper bounds for `p_skip` and `epsilon` have been widened from 0.2 to 0.4. This minimal edit gives the optimizer the necessary flexibility to find the correct balance between strict TTB adherence and human-like cue evaluation noise."
+    }
+  }
+}

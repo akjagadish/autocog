@@ -1,0 +1,268 @@
+# metric_exp00_attempt_02
+
+## System Prompt
+
+You are a psychology researcher proposing a metric in the Decision Making (Binary Features) domain.
+
+Your goal is adversarial: propose a metric that DISCRIMINATES the two theories — i.e., its value, computed on data simulated under your advocated theory, should be as far as possible from its value computed on data simulated under the competing theory. The direction of the gap does not matter; what matters is that the two theories produce visibly different numbers on this metric. The metric is computed on the data collected from the experimental design provided in the prompt. Produce a metric where you're prediction will be much more accurate than the competing theory's prediction on human data.
+
+Your metric is a Python function
+
+    metric(data: pd.DataFrame) -> float
+
+Available imports inside `metric`:
+- numpy as np
+- pandas as pd
+
+The system evaluates your metric in two ways and reports the pair as `point_estimate (var=between_subject_variance)` everywhere downstream:
+- `point_estimate` is `metric(data)` applied to the FULL pooled DataFrame (all subjects together) — the canonical scalar;
+- `between_subject_variance` is the population variance (`ddof=0`) of `metric(subj_df)` re-applied per `subject_id`, summarising how stable the metric is across subjects. If your metric only makes sense on multi-subject data this will fall back to `n/a` and the metric is rejected (the acceptance test below cannot run without it). Prefer metrics that work both on the pooled DataFrame and on a single subject's slice.
+
+Acceptance rule: the system simulates each theory and runs Welch's two-sample t-test on `(point_estimate_self, between_subject_variance_self, N)` vs. `(point_estimate_adv, between_subject_variance_adv, N)`, where N is the number of HUMAN subjects the experiment will actually be run with (a fixed small number, currently 25). Your metric is admitted iff the two-sided p-value is below the significance level (currently alpha=0.01). Implication: a large between-theory gap is NOT enough — if either theory's metric is also highly variable across subjects, N humans won't reliably distinguish them and the metric will be rejected. Aim for contrasts that are both large in mean AND tight per subject.
+
+Do NOT propose metrics that are trivially true for your theory.
+
+
+## User Prompt
+
+## EXPERIMENTAL DOMAIN
+Subjects repeatedly choose between two fictitious products, A and B. Each option is described by a vector of binary expert ratings (each 0 or 1). Every experiment fixes its own feature count (via `validities` length) and per-expert validities; both are LLM-proposed. The validities are communicated to the subject in the instructions. Subjects pick whichever product they believe is of higher quality. There is no trial-by-trial correctness feedback.
+
+Each subject completes ~96 trials in a single block, with order randomized independently per subject. On every trial the subject sees two options A and B, each described by `n_features` binary expert ratings (each 0 or 1). The per-feature validities and n_features are fixed per experiment (design-time choices). Validities are communicated to the subject in the instructions. Both `n_features` and `validities` are exposed to your `predict` via the `parameters` dict. The subject chooses A or B; no correctness feedback is provided after the choice.
+
+## CHOSEN EXPERIMENTAL DESIGN
+**Validities (n_features=5):** [0.95, 0.85, 0.75, 0.65, 0.55]
+
+**Trial pairs (n=8):**
+  trial 1: A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1]
+  trial 2: A=[1, 0, 1, 0, 0]  B=[0, 1, 0, 1, 1]
+  trial 3: A=[1, 0, 1, 1, 0]  B=[0, 1, 0, 0, 1]
+  trial 4: A=[1, 0, 1, 1, 1]  B=[0, 1, 0, 0, 0]
+  trial 5: A=[0, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0]
+  trial 6: A=[0, 1, 0, 1, 1]  B=[1, 0, 1, 0, 0]
+  trial 7: A=[1, 1, 0, 0, 0]  B=[0, 0, 1, 1, 1]
+  trial 8: A=[0, 0, 1, 1, 1]  B=[1, 1, 0, 0, 0]
+
+**Rationale:** To dissociate Strategy Selection (Mixture of TTB and WADD) from Stochastic Take-The-Best (Search Error), we exploit their differing sensitivities to the accumulation of lower-validity cues. In Stochastic TTB, the probability of choosing the option favored by lower-validity cues depends almost entirely on the rank of the first cue that favors it (since the model must skip higher-validity cues to reach it). In contrast, the Strategy Selection model includes a WADD component that integrates all cues, meaning the probability of choosing an option will scale with the overall sum of its favorable cues. By holding the rank of the first feature favoring Option B constant (always the 2nd most valid feature) while varying the number of subsequent lower-validity features that favor Option A versus Option B, Stochastic TTB predicts a relatively flat, low probability of choosing B across these trials. The Strategy Selection model, however, predicts a sharp decrease in the probability of choosing B as the WADD component shifts from favoring B to strongly favoring A.
+
+**Computed schedule:** 8 unique pairs × 12 reps = 96 trials per subject.
+
+
+
+## ADVOCATED THEORY
+**Description:** Strategy Selection (Mixture of TTB and WADD): Decision-makers are not strictly bound to a single decision strategy. Instead, there is a mixture of strategies used either across the population or within individuals on a trial-by-trial basis. Specifically, individuals choose between a non-compensatory heuristic (Take-The-Best) and a compensatory strategy (Weighted Additive Model). TTB relies solely on the highest-validity discriminating feature, while WADD computes a weighted sum of all features using their validities. The parameter 'p_wadd' dictates the probability of using WADD over TTB, allowing the model to capture both strict one-reason decision making and sensitivity to lower-validity cues when they strongly favor one option. The baseline probability of using WADD is restricted to reflect that non-compensatory heuristics are predominant.
+
+**Parameters:**
+- p_wadd: [0.1, 0.5]
+- beta: [0.1, 20.0]
+- epsilon: [0.0, 0.5]
+- validities: validities
+
+**`predict source code`:**
+```python
+def predict(parameters, state, history):
+    import numpy as np
+    
+    stim = np.asarray(state, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(f"Expected a (2, n_features) stimulus; got shape {stim.shape}.")
+        
+    a, b = stim[0], stim[1]
+    validities = np.asarray(parameters["validities"], dtype=float)
+    
+    # --- Take-The-Best (TTB) Strategy ---
+    order = np.argsort(validities)[::-1]
+    a_wins = 0.0
+    b_wins = 0.0
+    for idx in order:
+        if a[idx] > b[idx]:
+            a_wins = 1.0
+            break
+        elif b[idx] > a[idx]:
+            b_wins = 1.0
+            break
+            
+    if a_wins == 0.0 and b_wins == 0.0:
+        p_ttb = np.array([0.5, 0.5])
+    else:
+        p_ttb = np.array([a_wins, b_wins])
+        
+    # --- Weighted Additive (WADD) Strategy ---
+    scores = stim @ validities
+    beta = float(parameters["beta"])
+    z = beta * (scores - scores.max())
+    e = np.exp(z)
+    p_wadd_dist = e / e.sum()
+    
+    # --- Mixture Model ---
+    p_wadd = float(parameters["p_wadd"])
+    p_core = p_wadd * p_wadd_dist + (1.0 - p_wadd) * p_ttb
+    
+    # --- Lapse Rate ---
+    epsilon = float(parameters["epsilon"])
+    n_opts = p_core.shape[0]
+    
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+```
+
+**`policy source code`:**
+```python
+def policy(probs):
+    import numpy as np
+    probs = np.asarray(probs, dtype=np.float64)
+    probs /= probs.sum()
+    return int(np.random.choice(len(probs), p=probs))
+```
+
+
+## COMPETING THEORY
+**Description:** Stochastic Take-The-Best (Search Error)
+
+**Parameters:**
+- p_skip: [0.0, 0.5]
+- epsilon: [0.0, 0.5]
+- validities: validities
+
+**`predict source code`:**
+```python
+def predict(parameters, state, history):
+    import numpy as np
+    
+    stim = np.asarray(state, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(f"Expected a (2, n_features) stimulus; got shape {stim.shape}.")
+        
+    a, b = stim[0], stim[1]
+    validities = np.asarray(parameters["validities"], dtype=float)
+    
+    # Search through features in descending order of validity
+    order = np.argsort(validities)[::-1]
+    
+    p_skip = float(parameters["p_skip"])
+    epsilon = float(parameters["epsilon"])
+    
+    p_A_core = 0.0
+    p_B_core = 0.0
+    prob_reach = 1.0
+    
+    # For each feature, there is a chance (1 - p_skip) to evaluate it correctly.
+    # If it discriminates, we stop. Otherwise, or if skipped, we continue to the next.
+    for idx in order:
+        if a[idx] > b[idx]:
+            p_A_core += prob_reach * (1.0 - p_skip)
+            prob_reach *= p_skip
+        elif b[idx] > a[idx]:
+            p_B_core += prob_reach * (1.0 - p_skip)
+            prob_reach *= p_skip
+            
+    # If all features are skipped or none discriminate, guess randomly
+    p_A_core += prob_reach * 0.5
+    p_B_core += prob_reach * 0.5
+    
+    p_core = np.array([p_A_core, p_B_core])
+    
+    # Apply general response lapse
+    n_opts = p_core.shape[0]
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+```
+
+**`policy source code`:**
+```python
+def policy(probs):
+    import numpy as np
+    probs = np.asarray(probs, dtype=np.float64)
+    probs /= probs.sum()
+    return int(np.random.choice(len(probs), p=probs))
+```
+
+
+## DATA SCHEMA
+Your metric receives a tidy per-trial pandas DataFrame stacking all subjects (rows grouped by `subject_id`, in trial order). Columns:
+- subject_id: Subject identifier (one row per trial per subject).
+- option_a_ratings: List of n_features binary expert ratings (each 0 or 1) for option A on this trial.
+- option_b_ratings: List of n_features binary expert ratings (each 0 or 1) for option B on this trial.
+- response: 0 if subject chose A, 1 if subject chose B.
+
+## IMPLEMENTATION GUARDRAILS
+Any column in the schema above whose description names a list / tuple / np.ndarray (i.e. a per-trial sequence of values) holds non-scalar cells. Those cells are NOT hashable, so operations that hash row values fail with `TypeError: unhashable type: 'list'`. Treating `<seq_col>` as a placeholder for any such sequence-valued column:
+- Avoid: `data.groupby('<seq_col>')`, `data['<seq_col>'].value_counts()`,     `data['<seq_col>'].nunique()`, `data['<seq_col>'].unique()` (returns     an object array but downstream `set()` / `in dict` will crash),     `set(data['<seq_col>'])`, `data['<seq_col>'].isin([...])` against list     values, or using a list cell as a dict key.
+- If you need a hashable surrogate, project to one first, e.g.:
+    - `data['<seq_col>_key'] = data['<seq_col>'].apply(tuple)` then group by `<seq_col>_key`
+    - `data['<seq_col>_str'] = data['<seq_col>'].apply(lambda x: ''.join(map(str, x)))`
+    Scalar columns (ints, floats, strings like `subject_id`, integer     responses, etc.) hash fine and can be used directly.
+- Generator expressions inside function calls like `map()` or `join()` MUST be     parenthesized. For example:
+    - WRONG: `map(str, int(v) for v in x)` → SyntaxError
+    - RIGHT: `map(str, (int(v) for v in x))` or use a list comp: `[str(int(v)) for v in x]`
+- Always verify your code is syntactically valid Python before returning it.
+
+## METRICS YOU ALREADY TRIED AND FAILED ON
+Each entry below is a metric you previously proposed in this round that did NOT discriminate the two theories at the human sample size — either it errored, its between-subject variance was unavailable, or Welch's t-test on `(self mean, self var, N)` vs. `(adv mean, adv var, N)` returned p ≥ alpha. The `outcome` line is the simulation result (means, between-subject variances, t-statistic and p-value at the human N) on the same `data_self` / `data_adv` your next metric will be evaluated on. Use the numbers to see where your hypothesised contrast collapsed — small mean gap, large per-subject variance, or both — and propose something qualitatively different. Don't repeat the same idea with cosmetic tweaks.
+[0] rationale: This metric calculates the difference in the probability of choosing Option B between Trial 1 and Trial 4. In both trials, the most valid cue favors Option A, and the second most valid cue favors Option B. However, the remaining lower-validity cues all favor Option B in Trial 1, but favor Option A in Trial 4. The Stochastic TTB model (Search Error) relies on the sequential evaluation of cues, meaning the probability of choosing B is largely driven by skipping the first cue and evaluating the second, which is identical across both trials; thus, it predicts a near-zero difference. In contrast, the Strategy Selection model's WADD component integrates all cues, causing it to strongly favor B in Trial 1 and A in Trial 4. This results in a large positive difference in the choice rate of B between the two trials.
+metric_source:
+def metric(data: pd.DataFrame) -> float:
+    # Trial 1: TTB favors A, but WADD strongly favors B
+    t1_mask = data['option_a_ratings'].apply(lambda x: tuple(x) == (1, 0, 0, 0, 0)) & \
+              data['option_b_ratings'].apply(lambda x: tuple(x) == (0, 1, 1, 1, 1))
+    
+    # Trial 4: TTB favors A, and WADD strongly favors A
+    t4_mask = data['option_a_ratings'].apply(lambda x: tuple(x) == (1, 0, 1, 1, 1)) & \
+              data['option_b_ratings'].apply(lambda x: tuple(x) == (0, 1, 0, 0, 0))
+              
+    p_b_t1 = data.loc[t1_mask, 'response'].mean()
+    p_b_t4 = data.loc[t4_mask, 'response'].mean()
+    
+    # Return the difference in probability of choosing Option B
+    return float(p_b_t1 - p_b_t4)
+outcome: self_sim=0.1950 (var=0.0291) adversary_sim=0.0617 (var=0.0358) welch_t=+2.618 p=0.01183 (N=25, alpha=0.01) -> reject
+
+[1] rationale: This metric isolates the sensitivity of choices to the magnitude of the WADD score difference, controlling for the rank of the first discriminating cue. In both 'strong' (Trials 1 & 5) and 'weak' (Trials 2 & 6) conflict trials, the highest validity cue favors one option (TTB choice), while the remaining cues favor the other (WADD choice). Crucially, the second highest validity cue favors the WADD choice in all four trials. Stochastic TTB (Search Error) relies on skipping the first cue to select the WADD choice, making it primarily sensitive to the second cue; therefore, it predicts nearly identical, low choice rates for the WADD option across both strong and weak conflicts. Strategy Selection, however, integrates all cues in its WADD component, predicting a much higher rate of WADD choices in strong conflicts than in weak conflicts. By subtracting the weak WADD choice rate from the strong WADD choice rate, we expect a near-zero value for Stochastic TTB and a significantly positive value for Strategy Selection, while averaging over symmetric trials reduces per-subject variance.
+metric_source:
+def metric(data: pd.DataFrame) -> float:
+    data = data.copy()
+    data['a_tup'] = data['option_a_ratings'].apply(tuple)
+    data['b_tup'] = data['option_b_ratings'].apply(tuple)
+    
+    # Strong WADD conflict trials (WADD strongly opposes TTB)
+    t1_mask = (data['a_tup'] == (1, 0, 0, 0, 0)) & (data['b_tup'] == (0, 1, 1, 1, 1))
+    t5_mask = (data['a_tup'] == (0, 1, 1, 1, 1)) & (data['b_tup'] == (1, 0, 0, 0, 0))
+    
+    # Weak WADD conflict trials (WADD weakly opposes TTB)
+    t2_mask = (data['a_tup'] == (1, 0, 1, 0, 0)) & (data['b_tup'] == (0, 1, 0, 1, 1))
+    t6_mask = (data['a_tup'] == (0, 1, 0, 1, 1)) & (data['b_tup'] == (1, 0, 1, 0, 0))
+    
+    # Probability of choosing the WADD-favored option
+    p_b_t1 = data.loc[t1_mask, 'response'].mean()
+    p_a_t5 = 1.0 - data.loc[t5_mask, 'response'].mean()
+    p_strong = (p_b_t1 + p_a_t5) / 2.0
+    
+    p_b_t2 = data.loc[t2_mask, 'response'].mean()
+    p_a_t6 = 1.0 - data.loc[t6_mask, 'response'].mean()
+    p_weak = (p_b_t2 + p_a_t6) / 2.0
+    
+    return float(p_strong - p_weak)
+outcome: self_sim=-0.0192 (var=0.0189) adversary_sim=0.0542 (var=0.0210) welch_t=-1.836 p=0.0726 (N=25, alpha=0.01) -> reject
+
+## RESPONSE FORMAT
+Return a JSON object with the following fields:
+- metric: Python source defining def metric(data: pd.DataFrame) -> float.
+- rationale: Reasoning behind this metric; used when interpreting results.
+
+
+## Response
+
+```json
+{
+  "metric_source": "def metric(data: pd.DataFrame) -> float:\n    data = data.copy()\n    data['a_tup'] = data['option_a_ratings'].apply(tuple)\n    data['b_tup'] = data['option_b_ratings'].apply(tuple)\n    \n    # Align trials: WADD and TTB both favor Option A\n    align_mask = (\n        ((data['a_tup'] == (1, 0, 1, 1, 0)) & (data['b_tup'] == (0, 1, 0, 0, 1))) |\n        ((data['a_tup'] == (1, 0, 1, 1, 1)) & (data['b_tup'] == (0, 1, 0, 0, 0)))\n    )\n    # TTB choice is A (response == 0)\n    p_ttb_align = 1.0 - data.loc[align_mask, 'response'].mean()\n    \n    # Conflict trials A: TTB favors A, but WADD favors B\n    conflict_a_mask = (\n        ((data['a_tup'] == (1, 0, 0, 0, 0)) & (data['b_tup'] == (0, 1, 1, 1, 1))) |\n        ((data['a_tup'] == (1, 0, 1, 0, 0)) & (data['b_tup'] == (0, 1, 0, 1, 1)))\n    )\n    p_ttb_conflict_a = 1.0 - data.loc[conflict_a_mask, 'response'].mean()\n    \n    # Conflict trials B: TTB favors B, but WADD favors A\n    conflict_b_mask = (\n        ((data['a_tup'] == (0, 1, 1, 1, 1)) & (data['b_tup'] == (1, 0, 0, 0, 0))) |\n        ((data['a_tup'] == (0, 1, 0, 1, 1)) & (data['b_tup'] == (1, 0, 1, 0, 0)))\n    )\n    p_ttb_conflict_b = data.loc[conflict_b_mask, 'response'].mean()\n    \n    # Average P(TTB choice) across all conflict trials\n    p_ttb_conflict = (p_ttb_conflict_a + p_ttb_conflict_b) / 2.0\n    \n    # Return the difference in the probability of making the TTB choice\n    return float(p_ttb_align - p_ttb_conflict)",
+  "rationale": "This metric calculates the difference in the probability of making the Take-The-Best (TTB) choice between 'Align' trials (where TTB and WADD favor the same option) and 'Conflict' trials (where TTB and WADD favor opposite options). Under the Stochastic TTB (Search Error) model, the probability of choosing the TTB option is largely determined by skipping the first cue, which is identical across these trials; thus, it predicts a very small difference. Under the Strategy Selection model, the WADD component strongly pulls choices away from the TTB option in Conflict trials but reinforces it in Align trials, predicting a large positive difference. By pooling 6 out of 8 trial types, we significantly reduce within-subject variance compared to single-trial comparisons."
+}
+```
+
+## Usage
+
+```json
+{
+  "prompt_token_count": 4911,
+  "candidates_token_count": 833,
+  "total_token_count": 14118
+}
+```

@@ -1,0 +1,194 @@
+# metric_exp00_attempt_00
+
+## System Prompt
+
+You are a psychology researcher proposing a metric in the Decision Making (Binary Features) domain.
+
+Your goal is adversarial: propose a metric that DISCRIMINATES the two theories — i.e., its value, computed on data simulated under your advocated theory, should be as far as possible from its value computed on data simulated under the competing theory. The direction of the gap does not matter; what matters is that the two theories produce visibly different numbers on this metric. The metric is computed on the data collected from the experimental design provided in the prompt. Produce a metric where you're prediction will be much more accurate than the competing theory's prediction on human data.
+
+Your metric is a Python function
+
+    metric(data: pd.DataFrame) -> float
+
+Available imports inside `metric`:
+- numpy as np
+- pandas as pd
+
+The system evaluates your metric in two ways and reports the pair as `point_estimate (var=between_subject_variance)` everywhere downstream:
+- `point_estimate` is `metric(data)` applied to the FULL pooled DataFrame (all subjects together) — the canonical scalar;
+- `between_subject_variance` is the population variance (`ddof=0`) of `metric(subj_df)` re-applied per `subject_id`, summarising how stable the metric is across subjects. If your metric only makes sense on multi-subject data this will fall back to `n/a` and the metric is rejected (the acceptance test below cannot run without it). Prefer metrics that work both on the pooled DataFrame and on a single subject's slice.
+
+Acceptance rule: the system simulates each theory and runs Welch's two-sample t-test on `(point_estimate_self, between_subject_variance_self, N)` vs. `(point_estimate_adv, between_subject_variance_adv, N)`, where N is the number of HUMAN subjects the experiment will actually be run with (a fixed small number, currently 25). Your metric is admitted iff the two-sided p-value is below the significance level (currently alpha=0.01). Implication: a large between-theory gap is NOT enough — if either theory's metric is also highly variable across subjects, N humans won't reliably distinguish them and the metric will be rejected. Aim for contrasts that are both large in mean AND tight per subject.
+
+Do NOT propose metrics that are trivially true for your theory.
+
+
+## User Prompt
+
+## EXPERIMENTAL DOMAIN
+Subjects repeatedly choose between two fictitious products, A and B. Each option is described by a vector of binary expert ratings (each 0 or 1). Every experiment fixes its own feature count (via `validities` length) and per-expert validities; both are LLM-proposed. The validities are communicated to the subject in the instructions. Subjects pick whichever product they believe is of higher quality. There is no trial-by-trial correctness feedback.
+
+Each subject completes ~96 trials in a single block, with order randomized independently per subject. On every trial the subject sees two options A and B, each described by `n_features` binary expert ratings (each 0 or 1). The per-feature validities and n_features are fixed per experiment (design-time choices). Validities are communicated to the subject in the instructions. Both `n_features` and `validities` are exposed to your `predict` via the `parameters` dict. The subject chooses A or B; no correctness feedback is provided after the choice.
+
+## CHOSEN EXPERIMENTAL DESIGN
+**Validities (n_features=5):** [0.95, 0.85, 0.75, 0.65, 0.55]
+
+**Trial pairs (n=12):**
+  trial 1: A=[1, 0, 0, 0, 0]  B=[0, 1, 0, 0, 0]
+  trial 2: A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 0, 0]
+  trial 3: A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 1, 0]
+  trial 4: A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1]
+  trial 5: A=[1, 1, 0, 0, 0]  B=[1, 0, 1, 0, 0]
+  trial 6: A=[1, 1, 0, 0, 0]  B=[1, 0, 1, 1, 0]
+  trial 7: A=[1, 1, 0, 0, 0]  B=[1, 0, 1, 1, 1]
+  trial 8: A=[0, 1, 0, 0, 0]  B=[1, 0, 0, 0, 0]
+  trial 9: A=[0, 1, 1, 0, 0]  B=[1, 0, 0, 0, 0]
+  trial 10: A=[0, 1, 1, 1, 0]  B=[1, 0, 0, 0, 0]
+  trial 11: A=[0, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0]
+  trial 12: A=[1, 0, 1, 0, 0]  B=[1, 1, 0, 0, 0]
+
+**Rationale:** To quantitatively dissociate Take-The-Best (TTB) from the Weighted Additive Model (WADD), we exploit TTB's strict 'one-reason' stopping rule. TTB predicts that the choice probability is driven entirely by the first discriminating cue, making it perfectly invariant to the number of lower-validity cues that oppose the decision. WADD, in contrast, integrates all features, predicting that the probability of choosing the option favored by the best cue will monotonically decrease as the number of opposing lower-validity cues increases. By keeping the top discriminating cue constant across a set of trials while systematically increasing the number of opposing cues, we can test for the strict invariance predicted by TTB, which cannot be produced by WADD under any parameterization.
+
+**Computed schedule:** 12 unique pairs × 8 reps = 96 trials per subject.
+
+
+
+## ADVOCATED THEORY
+**Description:** Take-The-Best (TTB) Heuristic with High Decision Noise: Decision-makers evaluate cues sequentially in descending order of their validities. They stop at the first cue that discriminates between the options and choose the option favored by that cue. To account for the extremely high degree of randomness observed in the experimental data (where aggregate choices often hover near 0.50), the model forces a significantly high lapse rate (between 0.4 and 1.0), reflecting instances where decision-makers guess randomly instead of strictly applying the lexicographic rule.
+
+**Parameters:**
+- epsilon: [0.4, 1.0]
+- validities: validities
+
+**`predict source code`:**
+```python
+def predict(parameters, state, history):
+    import numpy as np
+    
+    stim = np.asarray(state, dtype=float)
+    validities = np.asarray(parameters["validities"], dtype=float)
+    
+    # Sort cues by validity in descending order
+    cue_order = np.argsort(-validities)
+    
+    # Iterate through cues to find the first that discriminates
+    decision = np.array([0.5, 0.5])
+    for cue_idx in cue_order:
+        val_a = stim[0, cue_idx]
+        val_b = stim[1, cue_idx]
+        if val_a > val_b:
+            decision = np.array([1.0, 0.0])
+            break
+        elif val_b > val_a:
+            decision = np.array([0.0, 1.0])
+            break
+            
+    epsilon = float(parameters["epsilon"])
+    
+    # Return the TTB decision mixed with random guessing (lapse rate)
+    return (1.0 - epsilon) * decision + epsilon * np.array([0.5, 0.5])
+```
+
+**`policy source code`:**
+```python
+def policy(probs):
+    import numpy as np
+    probs = np.asarray(probs, dtype=np.float64)
+    probs /= probs.sum()
+    return int(np.random.choice(len(probs), p=probs))
+```
+
+
+## COMPETING THEORY
+**Description:** Weighted Additive Model (WADD) with Subjective Validities: Decision-makers integrate all available features by computing a weighted sum of cue values for each option. The weights are subjective validities, modeled as a power transformation of the objective validities. Choices are made probabilistically using a softmax function over the options' weighted sums, along with an independent lapse rate. Limiting the softmax inverse temperature ensures higher decision noise, which tempers overconfidence when cue validities conflict.
+
+**Parameters:**
+- gamma: [0.0, 5.0]
+- beta: [0.0, 1.0]
+- epsilon: [0.0, 1.0]
+- validities: validities
+
+**`predict source code`:**
+```python
+def predict(parameters, state, history):
+    import numpy as np
+    
+    stim = np.asarray(state, dtype=float)
+    validities = np.asarray(parameters["validities"], dtype=float)
+    
+    gamma = float(parameters["gamma"])
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+    
+    # Transform objective validities into subjective weights
+    subj_weights = validities ** gamma
+    
+    # Compute WADD scores
+    scores = stim @ subj_weights
+    
+    # Softmax over scores
+    z = beta * (scores - np.max(scores))
+    e = np.exp(z)
+    p_core = e / np.sum(e)
+    
+    # Incorporate lapse rate
+    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])
+```
+
+**`policy source code`:**
+```python
+def policy(probs):
+    import numpy as np
+    probs = np.asarray(probs, dtype=np.float64)
+    probs /= probs.sum()
+    return int(np.random.choice(len(probs), p=probs))
+```
+
+
+## DATA SCHEMA
+Your metric receives a tidy per-trial pandas DataFrame stacking all subjects (rows grouped by `subject_id`, in trial order). Columns:
+- subject_id: Subject identifier (one row per trial per subject).
+- option_a_ratings: List of n_features binary expert ratings (each 0 or 1) for option A on this trial.
+- option_b_ratings: List of n_features binary expert ratings (each 0 or 1) for option B on this trial.
+- response: 0 if subject chose A, 1 if subject chose B.
+
+## IMPLEMENTATION GUARDRAILS
+Any column in the schema above whose description names a list / tuple / np.ndarray (i.e. a per-trial sequence of values) holds non-scalar cells. Those cells are NOT hashable, so operations that hash row values fail with `TypeError: unhashable type: 'list'`. Treating `<seq_col>` as a placeholder for any such sequence-valued column:
+- Avoid: `data.groupby('<seq_col>')`, `data['<seq_col>'].value_counts()`,     `data['<seq_col>'].nunique()`, `data['<seq_col>'].unique()` (returns     an object array but downstream `set()` / `in dict` will crash),     `set(data['<seq_col>'])`, `data['<seq_col>'].isin([...])` against list     values, or using a list cell as a dict key.
+- If you need a hashable surrogate, project to one first, e.g.:
+    - `data['<seq_col>_key'] = data['<seq_col>'].apply(tuple)` then group by `<seq_col>_key`
+    - `data['<seq_col>_str'] = data['<seq_col>'].apply(lambda x: ''.join(map(str, x)))`
+    Scalar columns (ints, floats, strings like `subject_id`, integer     responses, etc.) hash fine and can be used directly.
+- Generator expressions inside function calls like `map()` or `join()` MUST be     parenthesized. For example:
+    - WRONG: `map(str, int(v) for v in x)` → SyntaxError
+    - RIGHT: `map(str, (int(v) for v in x))` or use a list comp: `[str(int(v)) for v in x]`
+- Always verify your code is syntactically valid Python before returning it.
+
+## METRICS YOU ALREADY TRIED AND FAILED ON
+Each entry below is a metric you previously proposed in this round that did NOT discriminate the two theories at the human sample size — either it errored, its between-subject variance was unavailable, or Welch's t-test on `(self mean, self var, N)` vs. `(adv mean, adv var, N)` returned p ≥ alpha. The `outcome` line is the simulation result (means, between-subject variances, t-statistic and p-value at the human N) on the same `data_self` / `data_adv` your next metric will be evaluated on. Use the numbers to see where your hypothesised contrast collapsed — small mean gap, large per-subject variance, or both — and propose something qualitatively different. Don't repeat the same idea with cosmetic tweaks.
+(none yet)
+
+## RESPONSE FORMAT
+Return a JSON object with the following fields:
+- metric: Python source defining def metric(data: pd.DataFrame) -> float.
+- rationale: Reasoning behind this metric; used when interpreting results.
+
+
+## Response
+
+```json
+{
+  "metric_source": "def metric(data: pd.DataFrame) -> float:\n    data = data.copy()\n    data['A_tuple'] = data['option_a_ratings'].apply(tuple)\n    data['B_tuple'] = data['option_b_ratings'].apply(tuple)\n    \n    mask_1_opp = (data['A_tuple'] == (1, 0, 0, 0, 0)) & (data['B_tuple'] == (0, 1, 0, 0, 0))\n    mask_1_opp_rev = (data['A_tuple'] == (0, 1, 0, 0, 0)) & (data['B_tuple'] == (1, 0, 0, 0, 0))\n    \n    mask_4_opp = (data['A_tuple'] == (1, 0, 0, 0, 0)) & (data['B_tuple'] == (0, 1, 1, 1, 1))\n    mask_4_opp_rev = (data['A_tuple'] == (0, 1, 1, 1, 1)) & (data['B_tuple'] == (1, 0, 0, 0, 0))\n    \n    chose_1 = (data.loc[mask_1_opp, 'response'] == 0).sum() + (data.loc[mask_1_opp_rev, 'response'] == 1).sum()\n    total_1 = mask_1_opp.sum() + mask_1_opp_rev.sum()\n    \n    chose_4 = (data.loc[mask_4_opp, 'response'] == 0).sum() + (data.loc[mask_4_opp_rev, 'response'] == 1).sum()\n    total_4 = mask_4_opp.sum() + mask_4_opp_rev.sum()\n    \n    p_1 = chose_1 / total_1 if total_1 > 0 else 0.0\n    p_4 = chose_4 / total_4 if total_4 > 0 else 0.0\n    \n    return float(p_1 - p_4)",
+  "rationale": "TTB implies strict 'one-reason' decision making, meaning the probability of choosing the option favored by the most valid cue should be constant regardless of how many lower-validity cues oppose it. WADD predicts that as the number of opposing cues increases, the probability of choosing the option favored by the best cue should monotonically decline. This metric measures the drop in probability of choosing the cue-1-favored option when comparing trials with 1 opposing cue versus trials with 4 opposing cues. TTB predicts this difference to be roughly 0, while WADD predicts a substantial positive difference."
+}
+```
+
+## Usage
+
+```json
+{
+  "prompt_token_count": 3187,
+  "candidates_token_count": 655,
+  "total_token_count": 6879
+}
+```

@@ -1,0 +1,54 @@
+{
+  "round_idx": 1,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_3",
+      "killed": false,
+      "theory": {
+        "description": "Tallying (Equal-Weight) Theory: People compare two options by simply counting the number of positive cues (features) for each option and choosing the one with the higher count. This theory posits that decision-makers ignore the varying validities of the cues, treating all features as equally important. It is a compensatory strategy because multiple cues can outweigh a single cue, but it is more frugal than a Weighted Additive (WADD) rule because it avoids multiplying by or storing cardinal validities. Response noise is modeled via a softmax function over the tally scores, along with an independent lapse rate.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Tallying expects a (2, n_features) stimulus.\")\n    \n    # Tallying: count the number of positive cues for each option\n    # Since cues are binary (0 or 1), we can just sum them.\n    scores = np.sum(stim, axis=1)\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax over the tally scores\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    # Uniform lapse blended into the softmax\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))",
+        "parameters": {
+          "beta": "[0.0, 5.0]",
+          "epsilon": "[0.1, 0.5]"
+        },
+        "rationale": "Following the critic's feedback, the Tallying mechanism is retained exactly as before, but the parameter ranges have been constrained to induce more stochasticity. Specifically, the upper bound of beta has been reduced to 5.0, and the lower bound of epsilon has been raised to 0.1. This prevents the model from making overly deterministic predictions and brings the expected choice shares closer to the empirical observations (e.g., lowering the Exp 1 prediction from ~0.87 toward ~0.69)."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_2",
+      "killed": true,
+      "theory": {
+        "description": "People compare two options by computing, for each option, a weighted sum of its feature values, where each feature is weighted by its subjective validity (or importance). The option with the higher weighted sum is chosen. WADD is the compensatory benchmark against which one-reason heuristics like Take The Best are contrasted: a large deficit on a high-validity cue can be compensated by a sufficiently strong advantage on lower-validity cues, so no single feature is ever decisive on its own. Unlike Tallying, WADD uses cardinal feature magnitudes and weights them by validity, so it exploits both the sign and the size of each feature-wise comparison as well as inter-cue differences in informativeness. Unlike Equal-Weight, weights differ across features. Behavior is invariant to a shared affine rescaling across options but scales linearly with per-feature weight. When the two weighted sums are equal the model has no basis for preference and the learner must guess. Response noise enters through a softmax over the two weighted sums with inverse temperature beta (interpolating between fully deterministic choice at large beta and uniform guessing at beta = 0), plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+        "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Weighted Additive rule (Payne, Bettman & Johnson\n    # 1993). Stimulus is the pair of option feature vectors for the\n    # current trial: array-like of shape (2, n_features), row 0 =\n    # option A, row 1 = option B. Each option's score is the dot\n    # product of its feature vector with the (subjective) validity\n    # weights. History is ignored: the choice depends only on the\n    # current stimulus.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"WADD expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n    n_features = stim.shape[1]\n\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    w = np.asarray(parameters[\"weights\"], dtype=float)\n    if w.shape[0] != n_features:\n        raise ValueError(\n            f\"weights length {w.shape[0]} != n_features {n_features}.\"\n        )\n\n    # Weighted sum per option (dot product with per-feature weights).\n    scores = stim @ (validities * w)\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability.\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    # Uniform lapse blended into the softmax (standard choice-with-lapse\n    # formulation; epsilon=0.5 yields equiprobable options, matching\n    # the paper's maximum-noise condition).\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities",
+          "weights": "[(0.0, 1.0)] * n_features"
+        },
+        "rationale": null
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_4",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Noisy-Validity Take-The-Best (NV-TTB) Model: Decision makers use a strict lexicographic search (Take-The-Best), consulting cues in descending order of their validity and stopping at the first cue that discriminates between options. However, subjects have noisy internal representations of cue validities. On each choice, Gaussian noise is added to the objective validities, and cues are sorted based on these noisy values. This probabilistic cue ordering allows the model to capture aggregate deviations from pure TTB (and approach Tallying-like behavior when noise is high) while preserving the non-compensatory, one-reason decision mechanism at the single-trial level.",
+      "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Expects a (2, n_features) stimulus.\")\n    \n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    sigma = float(parameters[\"sigma\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    n_features = stim.shape[1]\n    \n    # Marginalize over noisy validities via sampling to produce choice probabilities\n    n_samples = 200\n    noise = np.random.normal(0, sigma + 1e-9, size=(n_samples, n_features))\n    noisy_validities = validities + noise\n    \n    # Sort cues for each sample (descending order of noisy validity)\n    cue_orders = np.argsort(-noisy_validities, axis=1)\n    \n    a, b = stim[0], stim[1]\n    wins = np.zeros(2)\n    \n    for i in range(n_samples):\n        winner = None\n        for j in cue_orders[i]:\n            if a[j] > b[j]:\n                winner = 0\n                break\n            elif b[j] > a[j]:\n                winner = 1\n                break\n        if winner is None:\n            wins += 0.5\n        else:\n            wins[winner] += 1.0\n            \n    p_core = wins / n_samples\n    \n    # Incorporate lapse rate\n    n_opts = 2\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+      "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+      "parameters": {
+        "sigma": "[0.0, 5.0]",
+        "epsilon": "[0.0, 0.5]",
+        "validities": "validities"
+      },
+      "rationale": "The previous accepted candidate (Power-Weighted Additive) was a compensatory model, which explicitly violated the arbiter's instruction to use the Take-The-Best (TTB) mechanism family. To comply with the critic's instruction to implement TTB with probabilistic cue ordering, a larger rewrite of `predict` was necessary to replace the additive weighted sum with a sequential lexicographic search. In this Noisy-Validity TTB model, Gaussian noise (parameterized by `sigma`) is added to the validities on each simulated trial to determine the search order, and the search stops strictly at the first discriminating cue. By marginalizing over these noisy orderings, the model introduces probabilistic variation into TTB, allowing it to capture aggregate deviations from pure TTB (bridging the gap to Tallying when noise is high) without using the previously rejected probabilistic stopping rule."
+    }
+  }
+}

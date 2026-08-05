@@ -1,0 +1,61 @@
+{
+  "round_idx": 4,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_5",
+      "killed": false,
+      "theory": {
+        "description": "Probabilistic Cue Search (Sequential Evidence Accumulation): Decision-makers evaluate features sequentially in descending order of validity. However, instead of strictly stopping at the first discriminating cue (as in pure Take-The-Best) or exhaustively accumulating all cues (as in Weighted Additive), they exhibit a probabilistic stopping rule. After evaluating each discriminating cue and updating their internal evidence, they stop searching and make a choice with probability `theta`. If they do not stop, they continue to the next discriminating cue, accumulating its evidence. This naturally produces a graded interpolation between non-compensatory and compensatory decision-making without relying on a discrete mixture of distinct strategies.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expects a (2, n_features) stimulus; got shape {stim.shape}.\")\n    \n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    theta = float(parameters[\"theta\"])\n    beta = float(parameters[\"beta\"])\n    gamma = float(parameters[\"gamma\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    a, b = stim[0], stim[1]\n    \n    # Subjective weights normalized so the sum of weights is 1.0\n    w = validities ** gamma\n    if np.sum(w) > 0:\n        w = w / np.sum(w)\n    \n    # Sort all features by validity descending\n    order = np.argsort(validities)[::-1]\n    \n    # Find discriminating cues in order of validity\n    discrim_indices = [i for i in order if a[i] != b[i]]\n    \n    if len(discrim_indices) == 0:\n        p_core = np.array([0.5, 0.5])\n    else:\n        p_A_total = 0.0\n        p_B_total = 0.0\n        p_continue = 1.0\n        \n        score_A = 0.0\n        score_B = 0.0\n        \n        for j, i in enumerate(discrim_indices):\n            # Accumulate evidence from the current discriminating cue\n            score_A += w[i] * a[i]\n            score_B += w[i] * b[i]\n            \n            # Determine stopping probability\n            if j < len(discrim_indices) - 1:\n                p_stop = theta\n            else:\n                p_stop = 1.0  # Must stop at the last discriminating cue\n                \n            # Softmax over accumulated scores so far\n            z_A = beta * score_A\n            z_B = beta * score_B\n            max_z = max(z_A, z_B)\n            e_A = np.exp(z_A - max_z)\n            e_B = np.exp(z_B - max_z)\n            p_A_given_stop = e_A / (e_A + e_B)\n            p_B_given_stop = e_B / (e_A + e_B)\n            \n            # Marginalize over the stopping probability\n            p_A_total += p_continue * p_stop * p_A_given_stop\n            p_B_total += p_continue * p_stop * p_B_given_stop\n            \n            # Update the probability of continuing to the next cue\n            p_continue *= (1.0 - p_stop)\n            \n        p_core = np.array([p_A_total, p_B_total])\n        \n    # Apply uniform lapse\n    n_opts = 2\n    p_final = (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n    \n    return p_final\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+        "parameters": {
+          "theta": "[0.0, 1.0]",
+          "beta": "[0.1, 20.0]",
+          "gamma": "[0.0, 5.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's feedback, the parameter ranges have been restored to their original wide bounds (e.g., gamma up to 5.0, beta up to 20.0) to ensure the model retains its ability to fit the non-compensatory majority in Exps 5-8. To address the underprediction of compensatory choices in Exps 1-3, the weight normalization has been changed from max-normalization (`w / np.max(w)`) to sum-normalization (`w / np.sum(w)`). This ensures the total accumulated score is always bounded within [0, 1], allowing the softmax `beta` parameter to act consistently across different experimental designs and validity structures, improving the model's balance between TTB-like and WADD-like behavior."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_4",
+      "killed": true,
+      "theory": {
+        "description": "Strategy Mixture Theory: Decision-makers do not uniformly apply a single choice rule. Instead, they possess a repertoire of strategies and flexibly draw from them. On any given trial, a subject acts as a mixture model, choosing to apply a non-compensatory heuristic (Take-The-Best) with probability alpha, and a compensatory rule (Weighted Additive / Tallying) with probability 1 - alpha. The compensatory rule weights features by its subjective validities, naturally subsuming Tallying and WADD. Crucially, the compensatory scores are normalized to the [0, 1] scale to perfectly match the scale of the heuristic's discrete scores, allowing a single temperature parameter to symmetrically control the determinism of both strategies without numerical compromise.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Mixture model expects a (2, n_features) stimulus; got shape {stim.shape}.\")\n    \n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    alpha = float(parameters[\"alpha\"])\n    beta = float(parameters[\"beta\"])\n    gamma = float(parameters[\"gamma\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # --- Take-The-Best (TTB) Prediction ---\n    order = np.argsort(validities)[::-1]\n    a, b = stim[0], stim[1]\n    ttb_scores = np.array([0.0, 0.0])\n    for idx in order:\n        if a[idx] > b[idx]:\n            ttb_scores[0] = 1.0\n            break\n        elif b[idx] > a[idx]:\n            ttb_scores[1] = 1.0\n            break\n            \n    z_ttb = beta * (ttb_scores - ttb_scores.max())\n    e_ttb = np.exp(z_ttb)\n    p_ttb = e_ttb / e_ttb.sum()\n    \n    # --- Compensatory (WADD/Tallying) Prediction ---\n    # Subjective validities: gamma=0 yields Tallying, gamma=1 yields strict WADD\n    subjective_weights = validities ** gamma\n    wadd_scores = stim @ subjective_weights\n    \n    # Normalize WADD scores to [0, 1] scale to match TTB scores\n    wadd_scores = wadd_scores / np.sum(subjective_weights)\n    \n    z_wadd = beta * (wadd_scores - wadd_scores.max())\n    e_wadd = np.exp(z_wadd)\n    p_wadd = e_wadd / e_wadd.sum()\n    \n    # --- Strategy Mixture ---\n    p_core = alpha * p_ttb + (1.0 - alpha) * p_wadd\n    \n    # --- Uniform Lapse ---\n    n_opts = p_core.shape[0]\n    p_final = (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n    \n    return p_final\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+        "parameters": {
+          "alpha": "[0.0, 1.0]",
+          "beta": "[0.1, 20.0]",
+          "gamma": "[0.0, 5.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the latest feedback, I reverted to the Iteration 1 base which uses a single beta parameter for both TTB and WADD. To fix the scaling mismatch that forces the optimization into a compromise, I normalized the WADD scores by dividing them by the sum of subjective weights. This strictly bounds the WADD scores to [0, 1], perfectly aligning with the 0/1 scale of the TTB scores. This minimal edit resolves the issue without introducing the degrees of freedom that caused the previous decoupling attempt to fail."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_6",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Parallel Leaky Evidence Accumulation: Decision-makers evaluate all available features in parallel, integrating their evidence into a single relative decision variable. However, this accumulation process is subject to a leak or decay over time. More valid cues drive the accumulator faster, but the leak prevents perfect compensatory integration. Because the accumulator reaches a steady-state bound if the drift is weak, the leak inherently limits the cumulative influence of many weak cues compared to strong cues. This provides a natural, single-process mechanism that seamlessly mimics both heuristic-like and compensatory behavior depending on the validities of the cues, avoiding the need for discrete strategy mixtures.",
+      "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    leak = float(parameters[\"leak\"])\n    theta = float(parameters[\"theta\"])\n    gamma = float(parameters[\"gamma\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    a, b = stim[0], stim[1]\n    \n    # Subjective weights for each feature\n    w = validities ** gamma\n    \n    # Overall drift rate (mu) representing parallel evidence accumulation\n    mu = beta * np.sum(w * (a - b))\n    \n    # Steady-state approximation of the leaky accumulator to avoid timeout\n    z = theta * mu / (leak + 1.0)\n    \n    # Stable sigmoid mapping to choice probability\n    if z >= 0:\n        p_A = 1.0 / (1.0 + np.exp(-z))\n    else:\n        p_A = np.exp(z) / (1.0 + np.exp(z))\n            \n    p_B = 1.0 - p_A\n    \n    # Apply uniform lapse rate\n    p_A = (1.0 - epsilon) * p_A + epsilon * 0.5\n    p_B = (1.0 - epsilon) * p_B + epsilon * 0.5\n    \n    return np.array([p_A, p_B])\n",
+      "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+      "parameters": {
+        "leak": "[0.0, 10.0]",
+        "theta": "[0.1, 40.0]",
+        "gamma": "[0.0, 40.0]",
+        "beta": "[0.1, 20.0]",
+        "epsilon": "[0.0, 0.5]",
+        "validities": "validities"
+      },
+      "rationale": "Following the critic's advice, the upper bounds for `gamma` and `theta` have been increased significantly (both up to 40.0). This allows the subjective weighting function to become extremely steep (near step-function behavior), enabling the model to effectively ignore weaker cues and fully capture the non-compensatory, TTB-like dynamics required to fit Experiment 7 and the zero-divergence in Experiment 10."
+    }
+  }
+}

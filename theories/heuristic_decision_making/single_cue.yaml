@@ -1,0 +1,60 @@
+name: "Single-Cue (least-valid cue only; extreme one-reason frugality)"
+theory: |
+  People base every choice on a SINGLE cue — the one with the lowest validity — and ignore all other cues entirely. The option that scores higher on that one least-valid cue is chosen; if the two options are tied on it, the learner consults nothing else and simply guesses. Unlike Take The Best (or its inverted cousin Take The Worst), there is no cue cascade: even when the least-valid cue fails to discriminate, the model never falls back to another cue. This makes it strictly more frugal than any lexicographic rule — exactly one feature is ever read, fixed in advance as the least-valid expert — and a pointed stress test of recovery, since the model is driven entirely by the cue the design treats as least informative. Response noise enters through a softmax over the binary score (winner = 1, loser = 0) with inverse temperature beta, plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.
+predict: |
+  def predict(parameters, stimulus, history):
+      # Single-Cue: read ONLY the least-valid cue; guess if it ties. No other
+      # cue is ever consulted (this is the contrast with take_the_worst, which
+      # cascades upward when the least-valid cue ties). Stimulus is the pair of
+      # option feature vectors: (2, n_features), row 0 = A, row 1 = B. History
+      # is ignored.
+      stim = np.asarray(stimulus, dtype=float)
+      if stim.ndim != 2 or stim.shape[0] != 2:
+          raise ValueError(
+              f"Single-Cue expects a (2, n_features) stimulus; got shape {stim.shape}."
+          )
+      n_features = stim.shape[1]
+
+      val = np.asarray(parameters["validities"], dtype=float)
+      if val.shape[0] != n_features:
+          raise ValueError(
+              f"validities length {val.shape[0]} != n_features {n_features}."
+          )
+      # The single least-valid cue; argmin returns the earliest index on ties.
+      j = int(np.argmin(val))
+
+      a, b = stim[0], stim[1]
+      if a[j] > b[j]:
+          winner = 0
+      elif b[j] > a[j]:
+          winner = 1
+      else:
+          # Least-valid cue ties — no fallback cue; pure guess.
+          return np.ones(2) / 2.0
+
+      scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])
+
+      beta = float(parameters["beta"])
+      epsilon = float(parameters["epsilon"])
+
+      # Softmax with max-subtraction for numerical stability. For the binary
+      # score this collapses to sigmoid(beta) for the winner (beta=0 ↔ 50/50;
+      # beta ≫ 1 ↔ deterministic).
+      z = beta * (scores - scores.max())
+      e = np.exp(z)
+      p_core = e / e.sum()
+
+      n_opts = p_core.shape[0]
+      return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+policy: |
+  def policy(probabilities):
+      probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.
+      return np.random.choice(len(probabilities), p=probabilities)
+parameters:
+  # Beta ranges cover near-random (0.1) to near-deterministic (20.0);
+  # epsilon's upper bound of 0.5 is the maximum-noise (uniform-guess)
+  # condition. Validities determine WHICH cue is read: the single least-valid
+  # one (argmin of this vector). Only that cue's comparison ever matters.
+  beta: "[0.1, 20.0]"
+  epsilon: "[0.0, 0.5]"
+  validities: "validities"  # Vector of length n_features; the read cue is its argmin.

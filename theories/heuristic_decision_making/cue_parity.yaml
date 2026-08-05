@@ -1,0 +1,46 @@
+name: "Cue-Parity (XOR of A-favoring cues; non-monotone in evidence)"
+theory: |
+  People decide by the PARITY of the evidence rather than its weight or direction. They count the number of cues on which option A strictly beats option B, and prefer A when that count is ODD and B when it is EVEN (zero counts as even). This is a deliberately non-monotone, XOR-like rule: adding one more cue in A's favor flips the preference rather than strengthening it, so option dominance does NOT imply choice — an option that wins on every cue (an even count, when the cue number is even) is rejected. The rule uses no validities and no magnitudes, only the parity of feature-wise wins, which makes it an adversarially hard recovery target: it is uncorrelated with any single cue and with the validity-weighted sum, yet perfectly deterministic, much like the anti-majority ensemble. Response noise enters through a softmax over the binary score (winner = 1, loser = 0) with inverse temperature beta, plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.
+predict: |
+  def predict(parameters, stimulus, history):
+      # Cue-Parity: prefer A iff the number of cues where A strictly beats B is
+      # ODD, else prefer B (zero A-wins is even -> B). Non-monotone in the
+      # evidence; uses neither validities nor magnitudes. Stimulus is the pair
+      # of option feature vectors: (2, n_features), row 0 = A, row 1 = B.
+      # History is ignored.
+      stim = np.asarray(stimulus, dtype=float)
+      if stim.ndim != 2 or stim.shape[0] != 2:
+          raise ValueError(
+              f"Cue-Parity expects a (2, n_features) stimulus; got shape {stim.shape}."
+          )
+
+      a, b = stim[0], stim[1]
+      a_wins = int(np.sum(a > b))
+      # Odd number of A-favoring cues -> A (0); even (including zero) -> B (1).
+      winner = 0 if (a_wins % 2 == 1) else 1
+
+      scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])
+
+      beta = float(parameters["beta"])
+      epsilon = float(parameters["epsilon"])
+
+      # Softmax with max-subtraction for numerical stability. For the binary
+      # score this collapses to sigmoid(beta) for the winner (beta=0 ↔ 50/50;
+      # beta ≫ 1 ↔ deterministic).
+      z = beta * (scores - scores.max())
+      e = np.exp(z)
+      p_core = e / e.sum()
+
+      n_opts = p_core.shape[0]
+      return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+policy: |
+  def policy(probabilities):
+      probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.
+      return np.random.choice(len(probabilities), p=probabilities)
+parameters:
+  # Beta ranges cover near-random (0.1) to near-deterministic (20.0);
+  # epsilon's upper bound of 0.5 is the maximum-noise (uniform-guess)
+  # condition. The rule itself uses no validities — only the parity of the
+  # count of cues on which A beats B — so validities are intentionally absent.
+  beta: "[0.1, 20.0]"
+  epsilon: "[0.0, 0.5]"

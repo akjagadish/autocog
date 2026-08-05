@@ -1,0 +1,297 @@
+# metric_exp00_attempt_02
+
+## System Prompt
+
+You are a psychology researcher proposing a metric in the Decision Making (Binary Features) domain.
+
+Your goal is adversarial: propose a metric that DISCRIMINATES the two theories — i.e., its value, computed on data simulated under your advocated theory, should be as far as possible from its value computed on data simulated under the competing theory. The direction of the gap does not matter; what matters is that the two theories produce visibly different numbers on this metric. The metric is computed on the data collected from the experimental design provided in the prompt. Produce a metric where you're prediction will be much more accurate than the competing theory's prediction on human data.
+
+Your metric is a Python function
+
+    metric(data: pd.DataFrame) -> float
+
+Available imports inside `metric`:
+- numpy as np
+- pandas as pd
+
+The system evaluates your metric in two ways and reports the pair as `point_estimate (var=between_subject_variance)` everywhere downstream:
+- `point_estimate` is `metric(data)` applied to the FULL pooled DataFrame (all subjects together) — the canonical scalar;
+- `between_subject_variance` is the population variance (`ddof=0`) of `metric(subj_df)` re-applied per `subject_id`, summarising how stable the metric is across subjects. If your metric only makes sense on multi-subject data this will fall back to `n/a` and the metric is rejected (the acceptance test below cannot run without it). Prefer metrics that work both on the pooled DataFrame and on a single subject's slice.
+
+Acceptance rule: the system simulates each theory and runs Welch's two-sample t-test on `(point_estimate_self, between_subject_variance_self, N)` vs. `(point_estimate_adv, between_subject_variance_adv, N)`, where N is the number of HUMAN subjects the experiment will actually be run with (a fixed small number, currently 25). Your metric is admitted iff the two-sided p-value is below the significance level (currently alpha=0.01). Implication: a large between-theory gap is NOT enough — if either theory's metric is also highly variable across subjects, N humans won't reliably distinguish them and the metric will be rejected. Aim for contrasts that are both large in mean AND tight per subject.
+
+Do NOT propose metrics that are trivially true for your theory.
+
+
+## User Prompt
+
+## EXPERIMENTAL DOMAIN
+Subjects repeatedly choose between two fictitious products, A and B. Each option is described by a vector of binary expert ratings (each 0 or 1). Every experiment fixes its own feature count (via `validities` length) and per-expert validities; both are LLM-proposed. The validities are communicated to the subject in the instructions. Subjects pick whichever product they believe is of higher quality. There is no trial-by-trial correctness feedback.
+
+Each subject completes ~96 trials in a single block, with order randomized independently per subject. On every trial the subject sees two options A and B, each described by `n_features` binary expert ratings (each 0 or 1). The per-feature validities and n_features are fixed per experiment (design-time choices). Validities are communicated to the subject in the instructions. Both `n_features` and `validities` are exposed to your `predict` via the `parameters` dict. The subject chooses A or B; no correctness feedback is provided after the choice.
+
+## CHOSEN EXPERIMENTAL DESIGN
+**Validities (n_features=5):** [0.9, 0.85, 0.65, 0.6, 0.55]
+
+**Trial pairs (n=10):**
+  trial 1: A=[1, 0, 1, 0, 0]  B=[0, 1, 0, 1, 1]
+  trial 2: A=[1, 1, 1, 0, 0]  B=[1, 1, 0, 1, 1]
+  trial 3: A=[1, 0, 1, 0, 0]  B=[0, 1, 0, 1, 0]
+  trial 4: A=[1, 1, 1, 0, 0]  B=[1, 1, 0, 1, 0]
+  trial 5: A=[1, 0, 1, 0, 0]  B=[0, 1, 0, 0, 1]
+  trial 6: A=[1, 1, 1, 0, 0]  B=[1, 1, 0, 0, 1]
+  trial 7: A=[0, 1, 0, 1, 1]  B=[1, 0, 1, 0, 0]
+  trial 8: A=[1, 1, 0, 1, 1]  B=[1, 1, 1, 0, 0]
+  trial 9: A=[1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0]
+  trial 10: A=[0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1]
+
+**Rationale:** This design quantitatively dissociates the Sequential Evidence Accumulation model from the Dual-Process Strategy Mixture (TTB + WADD) by exploiting a fundamental difference in their stopping rules: absolute evidence vs. relative rank. In the Sequential model, the decision to stop and choose depends on the absolute validity of the cue hitting a fixed threshold. A high-validity cue at the top of the hierarchy might exceed the threshold (acting non-compensatorily), but if top cues are tied, a lower-validity cue might fail to reach the threshold, forcing the model to integrate remaining cues (acting compensatorily). In contrast, the TTB component of the Mixture model is scale-invariant: it always stops at the first discriminating cue, regardless of whether it is the 1st or the 3rd cue, and regardless of its absolute validity. By creating matched pairs of trials where the conflict occurs either at the top of the cue hierarchy (Cue 1 vs rest) or at the bottom (Cue 3 vs rest) while keeping the WADD log-odds perfectly identical, the Mixture model predicts the exact same choice probabilities for both trial types. The Sequential model, however, predicts a massive shift in preference (e.g., from 100% Option A to favoring Option B) because the absolute evidence threshold is crossed in the top-conflict case but not in the bottom-conflict case.
+
+**Computed schedule:** 10 unique pairs × 9 reps = 90 trials per subject.
+
+
+
+## ADVOCATED THEORY
+**Description:** Sequential Evidence Accumulation: Decision-making is driven by a sequential sampling process where features are evaluated in order of their subjective validity. As each feature is processed, the validity-weighted difference between the options is added to a running accumulator. If this accumulated evidence reaches a predefined threshold at any point, search is immediately terminated and a choice is made (mimicking non-compensatory heuristics like Take-The-Best). If all features are exhausted without the evidence hitting the boundary, the subject makes a probabilistic choice based on the final accumulated tally (mimicking compensatory strategies like WADD). This single-process model naturally unifies fast-and-frugal heuristics and exhaustive compensatory integration depending on the height of the evidence threshold.
+
+**Parameters:**
+- threshold: [0.0, 5.0]
+- beta: [0.1, 1.5]
+- epsilon: [0.0, 0.5]
+- validities: validities
+
+**`predict source code`:**
+```python
+def predict(parameters, state, history):
+    import numpy as np
+    
+    stim = np.asarray(state, dtype=float)
+    val = np.asarray(parameters['validities'], dtype=float)
+    
+    threshold = float(parameters['threshold'])
+    beta = float(parameters['beta'])
+    epsilon = float(parameters['epsilon'])
+    
+    # Sort cues by descending validity; stable sort to preserve original order on ties
+    cue_order = np.argsort(-val, kind='stable')
+    
+    a, b = stim[0], stim[1]
+    
+    A_val = 0.0
+    decided = False
+    p_a = 0.5
+    
+    # Sequentially accumulate evidence
+    for j in cue_order:
+        A_val += val[j] * (a[j] - b[j])
+        if A_val >= threshold:
+            p_a = 1.0
+            decided = True
+            break
+        elif A_val <= -threshold:
+            p_a = 0.0
+            decided = True
+            break
+            
+    # If boundary not reached, make a soft choice based on the final tally
+    if not decided:
+        z = beta * A_val
+        # Numerically stable logistic function for P(A)
+        if z > 100:
+            p_a = 1.0
+        elif z < -100:
+            p_a = 0.0
+        else:
+            p_a = 1.0 / (1.0 + np.exp(-z))
+            
+    p_b = 1.0 - p_a
+    p_core = np.array([p_a, p_b])
+    
+    # Blend with standard uniform lapse rate
+    return (1.0 - epsilon) * p_core + epsilon * 0.5
+```
+
+**`policy source code`:**
+```python
+def policy(probs):
+    import numpy as np
+    probs = np.asarray(probs, dtype=np.float64)
+    probs /= probs.sum()
+    return int(np.random.choice(len(probs), p=probs))
+```
+
+
+## COMPETING THEORY
+**Description:** Dual-Process Strategy Mixture: Decision-making is driven by a probabilistic mixture of two distinct strategies. With a certain probability (mixture_p), subjects employ a non-compensatory Take-The-Best (TTB) heuristic, making a choice based solely on the most valid discriminating cue. Otherwise, they use a compensatory Weighted Additive (WADD) strategy, integrating all available features weighted by their validities into a comprehensive utility score. This blend captures both the strict, flat sensitivity of heuristic processing and the graded, trade-off sensitivity of compensatory processing.
+
+**Parameters:**
+- mixture_p: [0.0, 1.0]
+- beta: [0.1, 3.5]
+- epsilon: [0.0, 1.0]
+- validities: validities
+
+**`predict source code`:**
+```python
+def predict(parameters, state, history):
+    import numpy as np
+    
+    stim = np.asarray(state, dtype=float)
+    val = np.asarray(parameters['validities'], dtype=float)
+    
+    mixture_p = float(parameters['mixture_p'])
+    beta = float(parameters['beta'])
+    epsilon = float(parameters['epsilon'])
+    
+    # --- TTB Component ---
+    cue_order = np.argsort(-val, kind='stable')
+    a, b = stim[0], stim[1]
+    
+    p_ttb = np.array([0.5, 0.5])
+    for j in cue_order:
+        if a[j] > b[j]:
+            p_ttb = np.array([1.0, 0.0])
+            break
+        elif b[j] > a[j]:
+            p_ttb = np.array([0.0, 1.0])
+            break
+            
+    # --- WADD Component ---
+    # WADD uses validities as weights
+    scores = stim @ val
+    z = beta * (scores - scores.max())
+    e = np.exp(z)
+    p_wadd = e / e.sum()
+    
+    # --- Mixture ---
+    p_core = mixture_p * p_ttb + (1.0 - mixture_p) * p_wadd
+    
+    # --- Lapse ---
+    p_final = (1.0 - epsilon) * p_core + epsilon * 0.5
+    
+    return p_final
+```
+
+**`policy source code`:**
+```python
+def policy(probs):
+    import numpy as np
+    probs = np.asarray(probs, dtype=np.float64)
+    probs /= probs.sum()
+    return int(np.random.choice(len(probs), p=probs))
+```
+
+
+## DATA SCHEMA
+Your metric receives a tidy per-trial pandas DataFrame stacking all subjects (rows grouped by `subject_id`, in trial order). Columns:
+- subject_id: Subject identifier (one row per trial per subject).
+- option_a_ratings: List of n_features binary expert ratings (each 0 or 1) for option A on this trial.
+- option_b_ratings: List of n_features binary expert ratings (each 0 or 1) for option B on this trial.
+- response: 0 if subject chose A, 1 if subject chose B.
+
+## IMPLEMENTATION GUARDRAILS
+Any column in the schema above whose description names a list / tuple / np.ndarray (i.e. a per-trial sequence of values) holds non-scalar cells. Those cells are NOT hashable, so operations that hash row values fail with `TypeError: unhashable type: 'list'`. Treating `<seq_col>` as a placeholder for any such sequence-valued column:
+- Avoid: `data.groupby('<seq_col>')`, `data['<seq_col>'].value_counts()`,     `data['<seq_col>'].nunique()`, `data['<seq_col>'].unique()` (returns     an object array but downstream `set()` / `in dict` will crash),     `set(data['<seq_col>'])`, `data['<seq_col>'].isin([...])` against list     values, or using a list cell as a dict key.
+- If you need a hashable surrogate, project to one first, e.g.:
+    - `data['<seq_col>_key'] = data['<seq_col>'].apply(tuple)` then group by `<seq_col>_key`
+    - `data['<seq_col>_str'] = data['<seq_col>'].apply(lambda x: ''.join(map(str, x)))`
+    Scalar columns (ints, floats, strings like `subject_id`, integer     responses, etc.) hash fine and can be used directly.
+- Generator expressions inside function calls like `map()` or `join()` MUST be     parenthesized. For example:
+    - WRONG: `map(str, int(v) for v in x)` → SyntaxError
+    - RIGHT: `map(str, (int(v) for v in x))` or use a list comp: `[str(int(v)) for v in x]`
+- Always verify your code is syntactically valid Python before returning it.
+
+## METRICS YOU ALREADY TRIED AND FAILED ON
+Each entry below is a metric you previously proposed in this round that did NOT discriminate the two theories at the human sample size — either it errored, its between-subject variance was unavailable, or Welch's t-test on `(self mean, self var, N)` vs. `(adv mean, adv var, N)` returned p ≥ alpha. The `outcome` line is the simulation result (means, between-subject variances, t-statistic and p-value at the human N) on the same `data_self` / `data_adv` your next metric will be evaluated on. Use the numbers to see where your hypothesised contrast collapsed — small mean gap, large per-subject variance, or both — and propose something qualitatively different. Don't repeat the same idea with cosmetic tweaks.
+[0] rationale: This metric calculates the difference in the probability of choosing Option A between Trial 3 and Trial 6. In Trial 3, the conflict occurs at the top of the cue hierarchy (Cue 1 vs Cue 2), while in Trial 6, the top cues are tied and the conflict occurs lower down (Cue 3 vs Cue 5). Crucially, the WADD difference (0.10 in favor of A) and the TTB prediction (A wins) are perfectly identical across both trials. Therefore, the Dual-Process Strategy Mixture model predicts exactly the same choice probability for both trials, yielding a difference of 0. The Sequential Evidence Accumulation model, however, predicts a much higher probability of choosing A in Trial 3 because the absolute validity of the top cue is more likely to cross the stopping threshold than the validity of the 3rd cue, leading to a strong positive divergence.
+metric_source:
+def metric(data: pd.DataFrame) -> float:
+    a_str = data['option_a_ratings'].apply(lambda x: ''.join(map(str, x)))
+    b_str = data['option_b_ratings'].apply(lambda x: ''.join(map(str, x)))
+    
+    is_t3 = (a_str == '10100') & (b_str == '01010')
+    is_t3_flip = (a_str == '01010') & (b_str == '10100')
+    
+    is_t6 = (a_str == '11100') & (b_str == '11001')
+    is_t6_flip = (a_str == '11001') & (b_str == '11100')
+    
+    t3_responses = []
+    if is_t3.any():
+        t3_responses.extend((data.loc[is_t3, 'response'] == 0).tolist())
+    if is_t3_flip.any():
+        t3_responses.extend((data.loc[is_t3_flip, 'response'] == 1).tolist())
+        
+    t6_responses = []
+    if is_t6.any():
+        t6_responses.extend((data.loc[is_t6, 'response'] == 0).tolist())
+    if is_t6_flip.any():
+        t6_responses.extend((data.loc[is_t6_flip, 'response'] == 1).tolist())
+        
+    m_t3 = sum(t3_responses) / len(t3_responses) if t3_responses else 0.0
+    m_t6 = sum(t6_responses) / len(t6_responses) if t6_responses else 0.0
+    
+    return float(m_t3 - m_t6)
+outcome: self_sim=-0.0178 (var=0.0402) adversary_sim=0.0022 (var=0.0417) welch_t=-0.349 p=0.7283 (N=25, alpha=0.01) -> reject
+
+[1] rationale: This metric measures the proportion of 'Take-The-Best' (TTB) consistent choices in the conflict trials (Trials 1, 2, 7, and 8), where the most valid discriminating cue points to one option, but the overall Weighted Additive (WADD) score strongly favors the other. For the Dual-Process Strategy Mixture model, the TTB heuristic is explicitly chosen with probability `mixture_p` (uniformly distributed up to 1.0), leading to a high baseline rate of TTB choices (~50%). In contrast, the Sequential Evidence Accumulation model only mimics TTB if the absolute evidence hits the threshold before all cues are evaluated. Because the maximum possible running tally in these specific trials is small (0.9 or 0.65), and the threshold parameter is drawn uniformly from a large range [0.0, 5.0], the Sequential model will fail to reach the boundary in the vast majority of simulated subjects (>80%). Consequently, it will default to the compensatory final tally (WADD), resulting in a drastically lower rate of TTB choices.
+metric_source:
+def metric(data: pd.DataFrame) -> float:
+    a_str = data['option_a_ratings'].apply(lambda x: ''.join(map(str, x)))
+    b_str = data['option_b_ratings'].apply(lambda x: ''.join(map(str, x)))
+    
+    # Trial 1 and its A/B flip (Trial 7)
+    is_t1 = (a_str == '10100') & (b_str == '01011')
+    is_t1_flip = (a_str == '01011') & (b_str == '10100')
+    
+    # Trial 2 and its A/B flip (Trial 8)
+    is_t2 = (a_str == '11100') & (b_str == '11011')
+    is_t2_flip = (a_str == '11011') & (b_str == '11100')
+    
+    ttb_choices = 0
+    total = 0
+    
+    if is_t1.any():
+        ttb_choices += (data.loc[is_t1, 'response'] == 0).sum()
+        total += is_t1.sum()
+        
+    if is_t1_flip.any():
+        ttb_choices += (data.loc[is_t1_flip, 'response'] == 1).sum()
+        total += is_t1_flip.sum()
+        
+    if is_t2.any():
+        ttb_choices += (data.loc[is_t2, 'response'] == 0).sum()
+        total += is_t2.sum()
+        
+    if is_t2_flip.any():
+        ttb_choices += (data.loc[is_t2_flip, 'response'] == 1).sum()
+        total += is_t2_flip.sum()
+        
+    if total == 0:
+        return 0.0
+        
+    return float(ttb_choices / total)
+outcome: self_sim=0.5178 (var=0.0489) adversary_sim=0.5500 (var=0.0230) welch_t=-0.601 p=0.5513 (N=25, alpha=0.01) -> reject
+
+## RESPONSE FORMAT
+Return a JSON object with the following fields:
+- metric: Python source defining def metric(data: pd.DataFrame) -> float.
+- rationale: Reasoning behind this metric; used when interpreting results.
+
+
+## Response
+
+```json
+{
+  "metric_source": "def metric(data: pd.DataFrame) -> float:\n    a_str = data['option_a_ratings'].apply(lambda x: ''.join(map(str, x)))\n    b_str = data['option_b_ratings'].apply(lambda x: ''.join(map(str, x)))\n    \n    is_t9 = (a_str == '11111') & (b_str == '00000')\n    is_t10 = (a_str == '00000') & (b_str == '11111')\n    \n    is_t1 = (a_str == '10100') & (b_str == '01011')\n    is_t2 = (a_str == '11100') & (b_str == '11011')\n    is_t7 = (a_str == '01011') & (b_str == '10100')\n    is_t8 = (a_str == '11011') & (b_str == '11100')\n    \n    catch_hits = 0\n    n_catch = 0\n    if is_t9.any():\n        catch_hits += (data.loc[is_t9, 'response'] == 0).sum()\n        n_catch += is_t9.sum()\n    if is_t10.any():\n        catch_hits += (data.loc[is_t10, 'response'] == 1).sum()\n        n_catch += is_t10.sum()\n        \n    catch_rate = catch_hits / n_catch if n_catch > 0 else 0.0\n    \n    conf_hits = 0\n    n_conf = 0\n    if is_t1.any():\n        conf_hits += (data.loc[is_t1, 'response'] == 0).sum()\n        n_conf += is_t1.sum()\n    if is_t2.any():\n        conf_hits += (data.loc[is_t2, 'response'] == 0).sum()\n        n_conf += is_t2.sum()\n    if is_t7.any():\n        conf_hits += (data.loc[is_t7, 'response'] == 1).sum()\n        n_conf += is_t7.sum()\n    if is_t8.any():\n        conf_hits += (data.loc[is_t8, 'response'] == 1).sum()\n        n_conf += is_t8.sum()\n        \n    conf_rate = conf_hits / n_conf if n_conf > 0 else 0.0\n    \n    return float(catch_rate - conf_rate)",
+  "rationale": "This metric measures the difference in the rate of 'Take-The-Best' (TTB) consistent choices between trivial Catch trials (Trials 9 & 10) and high-conflict trials (Trials 1, 2, 7, & 8). In the Catch trials, both models predict a near-100% core probability of choosing the dominant option. In the conflict trials, the Sequential Evidence Accumulation model often fails to reach its absolute stopping threshold and falls back to a compensatory WADD strategy that strongly favors the non-TTB option, leading to a massive drop in TTB-consistent choices. In contrast, the Dual-Process Mixture model explicitly selects the TTB heuristic at a constant baseline rate across all trials, keeping the TTB choice rate relatively high even in conflict. Furthermore, the broader lapse rate (epsilon) prior in the Mixture model generally compresses its dynamic range. Consequently, the Sequential model predicts a much larger drop in accuracy between Catch and Conflict trials than the Mixture model."
+}
+```
+
+## Usage
+
+```json
+{
+  "prompt_token_count": 5177,
+  "candidates_token_count": 910,
+  "total_token_count": 29283
+}
+```

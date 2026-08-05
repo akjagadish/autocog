@@ -1,0 +1,54 @@
+{
+  "round_idx": 4,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_6",
+      "killed": true,
+      "theory": {
+        "description": "Noisy Tallying (Equal Weights): Decision-makers ignore feature validities and instead rely on a simple tallying heuristic, counting the total number of positive features (1s) for each option. They tend to choose the option with the higher count. To account for the highly consistent ~0.5 choice probabilities observed across experiments, this process is heavily smoothed by a prominent noise mechanism, modeled via a high uniform lapse rate and a low inverse temperature in the softmax choice rule.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be shape (2, n_features).\")\n        \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Tallying: Sum of active features for each option (ignoring validities)\n    scores = np.sum(stim, axis=1)\n    \n    # Softmax with max-subtraction for numerical stability\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    # Blend with uniform lapse rate\n    n_opts = len(p_core)\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.0, 0.5]",
+          "epsilon": "[0.5, 1.0]"
+        },
+        "rationale": "Following the arbiter's feedback, this theory implements a Noisy Tallying heuristic. Instead of sorting features by validity (TTB) or computing weighted sums (WADD), the model simply counts the total number of positive features for each option. To capture the extreme smoothing seen in the data (where choices hover around 0.5 and differences between conditions are minimal), the model uses a high lapse rate (epsilon in [0.5, 1.0]) and a low inverse temperature (beta in [0.0, 0.5]). This ensures that the predictions are only slightly biased toward the option with more positive features, matching the aggregate empirical patterns."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_5",
+      "killed": false,
+      "theory": {
+        "description": "Noisy Weighted Additive (WADD) Model: Decision-makers compute a global value for each option by summing the validities of its active features. Rather than relying on a single discriminating feature (like Take-The-Best) or ignoring validities (like Tallying), WADD integrates all available validities compensatorily. To account for the highly consistent ~0.5 choice probabilities and near-zero differences observed across the experiments, the decision process incorporates a highly prominent noise mechanism. This is modeled via a very low inverse temperature in the softmax choice rule and a potentially high uniform lapse rate, smoothing out predictions and avoiding deterministic swings.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be shape (2, n_features).\")\n        \n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # WADD: Sum of validities for active features for each option\n    scores = np.sum(stim * validities, axis=1)\n    \n    # Softmax with max-subtraction for numerical stability\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    # Blend with uniform lapse rate\n    n_opts = len(p_core)\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.0, 0.5]",
+          "epsilon": "[0.5, 1.0]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's advice, the parameter ranges for beta and epsilon have been tightened to [0.0, 0.5] and [0.5, 1.0] respectively. This minimal edit further flattens the predictions toward 0.5 to eliminate residual WADD-driven signal, better matching the human data's near-perfect 50/50 guessing behavior across these experiments."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_7",
+    "slot": 1,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Noisy Take-The-Best (TTB) with High Feature-Ordering Noise: Decision-makers process information sequentially, inspecting features in descending order of their perceived validities. They stop at the first feature that discriminates between the options and favor the option it supports. To account for choice probabilities being close to 0.5 across experiments, perceived validities are subject to high Gaussian noise, allowing the search to degrade toward random-order inspection. Choices are further smoothed by a high uniform lapse rate and a soft-maximization process.",
+      "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be shape (2, n_features).\")\n        \n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    sigma = float(parameters[\"sigma\"])\n    \n    n_samples = 200\n    avg_p_core = np.zeros(2)\n    \n    for _ in range(n_samples):\n        # Probabilistic feature-ordering noise\n        noisy_v = validities + np.random.normal(0, sigma, size=validities.shape)\n        order = np.argsort(noisy_v)[::-1]\n        \n        scores = np.zeros(2)\n        # Search for the first discriminating feature\n        for idx in order:\n            if stim[0, idx] > stim[1, idx]:\n                scores[0] = 1.0\n                break\n            elif stim[1, idx] > stim[0, idx]:\n                scores[1] = 1.0\n                break\n                \n        if np.sum(scores) == 0:\n            p_core = np.array([0.5, 0.5])\n        else:\n            # Softmax with max-subtraction for numerical stability\n            z = beta * scores\n            e = np.exp(z - np.max(z))\n            p_core = e / np.sum(e)\n            \n        avg_p_core += p_core\n        \n    avg_p_core /= n_samples\n    \n    # Blend with uniform lapse rate\n    n_opts = len(avg_p_core)\n    return (1.0 - epsilon) * avg_p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+      "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return np.random.choice(len(probs), p=probs)\n",
+      "parameters": {
+        "beta": "[0.0, 5.0]",
+        "epsilon": "[0.5, 1.0]",
+        "sigma": "[0.0, 3.0]",
+        "validities": "validities"
+      },
+      "rationale": "Following the critic's advice, we revert the `epsilon` parameter range to [0.5, 1.0] to enforce the high lapse rate necessary to match the empirical ~0.5 choice probabilities. We keep the `sigma` range restricted to [0.0, 3.0] to avoid washing out validity differences too aggressively, and we increase `n_samples` from 50 to 200 to reduce simulation variance. This smoother expected-value surface should help the optimizer refine the best baseline loss without falling into overly deterministic local minima."
+    }
+  }
+}

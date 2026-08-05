@@ -1,0 +1,2141 @@
+{
+  "rounds": [
+    {
+      "observations": [
+        {
+          "experiment": {
+            "rationale": "To dissociate Take The Best (TTB) from Weighted Additive (WADD), we use a set of four features with a steep drop-off in validity for the best cue, but where the sum of the lower validities exceeds the highest validity. In 'compensatory' trials, one option is endorsed by the single most valid cue, while the other option is endorsed by multiple less valid cues. TTB, being a non-compensatory 'one-reason' heuristic, will invariably choose the option favored by the single best discriminating cue. WADD, which integrates all information, will choose the option favored by the sum of the lesser cues, provided their combined weight is greater. We also include 'non-compensatory' trials where both models agree, serving as a baseline for accuracy and attention.",
+            "validities": [
+              0.95,
+              0.75,
+              0.65,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                0
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    \n    ttb_match = []\n    is_comp = []\n    \n    for a, b, resp in zip(data['option_a_ratings'], data['option_b_ratings'], data['response']):\n        ttb_choice = None\n        for i in range(len(a)):\n            if a[i] > b[i]:\n                ttb_choice = 0\n                break\n            elif b[i] > a[i]:\n                ttb_choice = 1\n                break\n        \n        if ttb_choice is None:\n            match = 0.5\n        else:\n            match = 1.0 if resp == ttb_choice else 0.0\n            \n        ttb_match.append(match)\n        # Trials where the sum of features differ are compensatory in this design\n        is_comp.append(sum(a) != sum(b))\n        \n    ttb_match = np.array(ttb_match)\n    is_comp = np.array(is_comp)\n    \n    if is_comp.sum() == 0 or (~is_comp).sum() == 0:\n        return 0.0\n        \n    comp_mean = ttb_match[is_comp].mean()\n    non_comp_mean = ttb_match[~is_comp].mean()\n    \n    return float(non_comp_mean - comp_mean)",
+            "rationale": "In this experimental design, the trials can be divided into 'compensatory' (where the single best cue points to one option, but the sum of the remaining cues points to the other) and 'non-compensatory' (where the best cue and the sum of cues agree). This metric computes the difference in the rate of Take-The-Best (TTB) consistent choices between non-compensatory and compensatory trials. For the TTB model, this difference will be near zero because it uses the same one-reason strategy on both trial types. For the Weighted Additive (WADD) model, the difference will be significantly greater than zero because it frequently chooses the opposite of TTB on compensatory trials while agreeing with TTB on non-compensatory trials."
+          },
+          "proposer_theory": {
+            "description": "People compare two options by consulting cues one at a time in order of validity, stopping at the first cue that discriminates between the two options. That cue alone determines the choice: the option with the higher value on the discriminating cue wins, and no other cue is consulted. Cues with lower validity are never reached when a higher-validity cue already discriminates, so Take The Best is a \"one-reason\" decision rule \u2014 only a single feature is ever used on any given choice. Because only the sign of the comparison on the top discriminating cue matters, TTB ignores both the magnitude of that difference and all information on lower-validity cues, making it maximally frugal in the use of evidence. Cue validities are subjective and can be learned, inferred from instructions, or fixed by task structure. When no cue discriminates (all feature-wise comparisons tie) the learner has no basis for preference and must guess. Response noise enters through a softmax over the binary TTB score (winner = 1, loser = 0) with inverse temperature beta, plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+            "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Take The Best (Gigerenzer & Goldstein 1996).\n    # Stimulus is the pair of option feature vectors for the current\n    # trial: array-like of shape (2, n_features), row 0 = option A,\n    # row 1 = option B. Cue cascade: features are consulted in order\n    # of descending validity; the first discriminating cue (strict\n    # inequality) determines the winner; if no cue discriminates,\n    # the model guesses uniformly. History is ignored.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"TTB expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n    n_features = stim.shape[1]\n\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    if val.shape[0] != n_features:\n        raise ValueError(\n            f\"validities length {val.shape[0]} != n_features {n_features}.\"\n        )\n    # Descending validity; argsort is stable so validity ties break\n    # toward the earlier feature index.\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n\n    a, b = stim[0], stim[1]\n    winner = None\n    for j in cue_order:\n        if a[j] > b[j]:\n            winner = 0\n            break\n        if b[j] > a[j]:\n            winner = 1\n            break\n\n    if winner is None:\n        # No discriminating cue \u2014 pure guess.\n        return np.ones(2) / 2.0\n\n    scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. For the\n    # binary TTB score this collapses to sigmoid(beta) for the winner,\n    # giving a direct mapping from beta onto the paper's flip-noise\n    # levels (beta=0 \u2194 50/50; beta \u226b 1 \u2194 deterministic).\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]",
+              "validities": "validities"
+            },
+            "rationale": null
+          },
+          "proposer_label": "pi_1",
+          "real_value": 0.35,
+          "real_variance": 0.01239583333333333,
+          "predicted_values": [
+            {
+              "value": 0.010833333333333361,
+              "variance": 0.008007638888888887,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.26083333333333336,
+              "variance": 0.05300763888888889,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.33666666666666667,
+              "variance": 0.01299236111111111,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.3816666666666666,
+              "variance": 0.045337499999999996,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.4266666666666667,
+              "variance": 0.007573611111111109,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.3375,
+              "variance": 0.01583333333333333,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.4133333333333334,
+              "variance": 0.00971111111111111,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_000_obs_00.jsonl"
+        },
+        {
+          "experiment": {
+            "rationale": "To quantitatively dissociate Weighted Additive (WADD) from Take The Best (TTB), we use a five-feature design where the validity of the cues decreases progressively. The trials are constructed such that the single most valid discriminating cue always favors one option (which TTB will choose, ignoring all other cues), while the sum of the validities of the remaining discriminating cues strongly favors the other option (which WADD will choose, as it integrates all available information). By varying which cue is the highest discriminating one (e.g., cue 1, cue 2, or cue 3) and having the remaining cues compensate for it, we ensure that TTB and WADD make diametrically opposed predictions across a variety of comparisons, completely separating the non-compensatory 'one-reason' stopping rule from the compensatory weighted-sum rule.",
+            "validities": [
+              0.95,
+              0.75,
+              0.65,
+              0.55,
+              0.5
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                1
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    \n    def ttb_choice(row):\n        a = row['option_a_ratings']\n        b = row['option_b_ratings']\n        for i in range(len(a)):\n            if a[i] > b[i]:\n                return 0\n            elif b[i] > a[i]:\n                return 1\n        return 0.5\n        \n    ttb_preds = data.apply(ttb_choice, axis=1)\n    match = (data['response'] == ttb_preds).mean()\n    return float(match)",
+            "rationale": "The experimental design is carefully constructed such that for every trial, the single most valid discriminating cue predicts one option (which Take The Best will choose), while the sum of the remaining discriminating cues predicts the other option (which Weighted Additive will choose). By measuring the proportion of trials where the subject's response aligns with the TTB prediction, we obtain a metric that will be very high (~1.0) under TTB and very low (~0.0) under WADD."
+          },
+          "proposer_theory": {
+            "description": "People compare two options by computing, for each option, a weighted sum of its feature values, where each feature is weighted by its subjective validity (or importance). The option with the higher weighted sum is chosen. WADD is the compensatory benchmark against which one-reason heuristics like Take The Best are contrasted: a large deficit on a high-validity cue can be compensated by a sufficiently strong advantage on lower-validity cues, so no single feature is ever decisive on its own. Unlike Tallying, WADD uses cardinal feature magnitudes and weights them by validity, so it exploits both the sign and the size of each feature-wise comparison as well as inter-cue differences in informativeness. Unlike Equal-Weight, weights differ across features. Behavior is invariant to a shared affine rescaling across options but scales linearly with per-feature weight. When the two weighted sums are equal the model has no basis for preference and the learner must guess. Response noise enters through a softmax over the two weighted sums with inverse temperature beta (interpolating between fully deterministic choice at large beta and uniform guessing at beta = 0), plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+            "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Weighted Additive rule (Payne, Bettman & Johnson\n    # 1993). Stimulus is the pair of option feature vectors for the\n    # current trial: array-like of shape (2, n_features), row 0 =\n    # option A, row 1 = option B. Each option's score is the dot\n    # product of its feature vector with the (subjective) validity\n    # weights. History is ignored: the choice depends only on the\n    # current stimulus.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"WADD expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n    n_features = stim.shape[1]\n\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    w = np.asarray(parameters[\"weights\"], dtype=float)\n    if w.shape[0] != n_features:\n        raise ValueError(\n            f\"weights length {w.shape[0]} != n_features {n_features}.\"\n        )\n\n    # Weighted sum per option (dot product with per-feature weights).\n    scores = stim @ (validities * w)\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability.\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    # Uniform lapse blended into the softmax (standard choice-with-lapse\n    # formulation; epsilon=0.5 yields equiprobable options, matching\n    # the paper's maximum-noise condition).\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]",
+              "validities": "validities",
+              "weights": "[(0.0, 1.0)] * n_features"
+            },
+            "rationale": null
+          },
+          "proposer_label": "pi_2",
+          "real_value": 0.10736842105263159,
+          "real_variance": 0.005868144044321331,
+          "predicted_values": [
+            {
+              "value": 0.35957894736842105,
+              "variance": 0.0245777728531856,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.8385263157894737,
+              "variance": 0.012900210526315792,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.13242105263157894,
+              "variance": 0.01111175623268698,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.21157894736842106,
+              "variance": 0.0309196675900277,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.11452631578947368,
+              "variance": 0.00292804432132964,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.1808421052631579,
+              "variance": 0.007670648199445983,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.11368421052631579,
+              "variance": 0.013101385041551245,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_000_obs_01.jsonl"
+        }
+      ],
+      "next_theory": {
+        "description": "People compare two options by tallying the total number of positive features for each option, ignoring cue validities entirely. The option with the higher unweighted sum of positive features is chosen. This Equal Weight (or Tallying) heuristic provides a frugal but fully compensatory strategy, capturing the strong human tendency to prefer options with multiple supporting cues over those with a single high-validity cue. Response noise is modeled via a softmax over the tallied scores with inverse temperature beta, and an independent lapse rate epsilon.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Tallying expects a (2, n_features) stimulus.\")\n        \n    # Tallying: count the number of positive features (unweighted sum) for each option.\n    scores = np.sum(stim, axis=1)\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax with max-subtraction for numerical stability.\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    n_opts = p_core.shape[0]\n    # Blend with uniform lapse distribution.\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()  # Ensure valid probabilities\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]"
+        },
+        "rationale": "Following the arbiter's suggestion, this implements the Equal Weight (Tallying) model. By simply summing the unweighted feature values, the model heavily penalizes options that rely on a single high-validity cue when the alternative is supported by multiple lower-validity cues. This mechanism naturally explains the very low TTB-match in Experiment 2 and the specific compensatory patterns observed in Experiment 1, outperforming both the strict one-reason stopping rule of TTB and the exact validity weighting of WADD."
+      },
+      "next_theory_idx": 1,
+      "next_theory_label": "pi_3"
+    },
+    {
+      "observations": [
+        {
+          "experiment": {
+            "rationale": "To quantitatively dissociate Tallying (Equal Weight) from Weighted Additive (WADD), we utilize a 5-feature design where the sum of the validities of the two most valid cues exceeds the sum of the remaining three less valid cues. In the critical dissociation trials, one option is endorsed by the two highly valid cues, while the competing option is endorsed by the three lower-validity cues. Tallying ignores cue validities and simply counts the positive features, thus strictly preferring the option with three endorsements. WADD, however, computes a weighted sum and will prefer the option with the two highly valid cues. We also include trials where both models agree, and trials where Tallying predicts a tie (equal number of positive features) but WADD predicts a strong preference, allowing for a precise estimation of the models' parameters.",
+            "validities": [
+              0.95,
+              0.85,
+              0.6,
+              0.55,
+              0.5
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                0
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    import pandas as pd\n    \n    # Convert rating lists to tuples for exact matching\n    a_tuples = data['option_a_ratings'].apply(tuple)\n    b_tuples = data['option_b_ratings'].apply(tuple)\n    \n    # Trial 1: A has the 2 most valid cues, B has the 3 less valid cues\n    t1_mask = (a_tuples == (1, 1, 0, 0, 0)) & (b_tuples == (0, 0, 1, 1, 1))\n    # Trial 2: B has the 2 most valid cues, A has the 3 less valid cues\n    t2_mask = (a_tuples == (0, 0, 1, 1, 1)) & (b_tuples == (1, 1, 0, 0, 0))\n    \n    # For these trials, Tallying strictly prefers the option with 3 positive features.\n    # WADD typically prefers the option with the 2 most valid cues.\n    # We calculate the proportion of times the subject chose the 3-feature option.\n    t1_tally_choices = (data.loc[t1_mask, 'response'] == 1).sum()\n    t2_tally_choices = (data.loc[t2_mask, 'response'] == 0).sum()\n    \n    total_tally_choices = t1_tally_choices + t2_tally_choices\n    total_critical_trials = t1_mask.sum() + t2_mask.sum()\n    \n    if total_critical_trials == 0:\n        return 0.5\n        \n    return float(total_tally_choices / total_critical_trials)",
+            "rationale": "This metric calculates the proportion of choices favoring the Tallying model's prediction on the critical dissociation trials (Trials 1 and 2). In these trials, one option is endorsed by the two most valid cues (sum of validities = 1.80) and the other by the three least valid cues (sum of validities = 1.65). Tallying simply counts the features and robustly prefers the option with three positive features. WADD, evaluating the weighted validities, will typically favor the option with the two highly valid features. The metric will return values close to 1.0 for data simulated under Tallying, and substantially lower values (often below 0.5) for data simulated under WADD."
+          },
+          "proposer_theory": {
+            "description": "People compare two options by tallying the total number of positive features for each option, ignoring cue validities entirely. The option with the higher unweighted sum of positive features is chosen. This Equal Weight (or Tallying) heuristic provides a frugal but fully compensatory strategy, capturing the strong human tendency to prefer options with multiple supporting cues over those with a single high-validity cue. Response noise is modeled via a softmax over the tallied scores with inverse temperature beta, and an independent lapse rate epsilon.",
+            "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Tallying expects a (2, n_features) stimulus.\")\n        \n    # Tallying: count the number of positive features (unweighted sum) for each option.\n    scores = np.sum(stim, axis=1)\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax with max-subtraction for numerical stability.\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    n_opts = p_core.shape[0]\n    # Blend with uniform lapse distribution.\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()  # Ensure valid probabilities\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]"
+            },
+            "rationale": "Following the arbiter's suggestion, this implements the Equal Weight (Tallying) model. By simply summing the unweighted feature values, the model heavily penalizes options that rely on a single high-validity cue when the alternative is supported by multiple lower-validity cues. This mechanism naturally explains the very low TTB-match in Experiment 2 and the specific compensatory patterns observed in Experiment 1, outperforming both the strict one-reason stopping rule of TTB and the exact validity weighting of WADD."
+          },
+          "proposer_label": "pi_3",
+          "real_value": 0.82125,
+          "real_variance": 0.01355625,
+          "predicted_values": [
+            {
+              "value": 0.83875,
+              "variance": 0.018725,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.471875,
+              "variance": 0.106923828125,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.153125,
+              "variance": 0.010947265625,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.6025,
+              "variance": 0.12027499999999999,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.823125,
+              "variance": 0.010648828125,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.8225,
+              "variance": 0.009040625,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.919375,
+              "variance": 0.004573828124999999,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_001_obs_00.jsonl"
+        },
+        {
+          "experiment": {
+            "rationale": "This design quantitatively dissociates the Weighted Additive (WADD) model from the Tallying (Equal Weight) model. By using a 5-feature design with a steep drop-off in validities between the top two features and the bottom three, we create critical dissociation trials where one option is supported by the two highly valid features (WADD preference) while the other option is supported by the three lower-validity features (Tallying preference). We also include trials where Tallying predicts a tie (equal number of positive features) but WADD predicts a strict preference due to validity weighting, and baseline trials where both models agree.",
+            "validities": [
+              0.95,
+              0.85,
+              0.6,
+              0.55,
+              0.5
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                1,
+                1
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import pandas as pd\n    import numpy as np\n\n    # Identify critical dissociation trials where WADD and Tallying make opposite predictions\n    a_is_11000 = data['option_a_ratings'].apply(lambda x: tuple(x) == (1, 1, 0, 0, 0))\n    b_is_00111 = data['option_b_ratings'].apply(lambda x: tuple(x) == (0, 0, 1, 1, 1))\n    t1 = a_is_11000 & b_is_00111\n    \n    a_is_00111 = data['option_a_ratings'].apply(lambda x: tuple(x) == (0, 0, 1, 1, 1))\n    b_is_11000 = data['option_b_ratings'].apply(lambda x: tuple(x) == (1, 1, 0, 0, 0))\n    t7 = a_is_00111 & b_is_11000\n    \n    # WADD prefers the option with fewer, but higher-validity features ([1, 1, 0, 0, 0])\n    wadd_t1 = t1 & (data['response'] == 0)\n    wadd_t7 = t7 & (data['response'] == 1)\n    \n    wadd_choices = wadd_t1.sum() + wadd_t7.sum()\n    total_trials = t1.sum() + t7.sum()\n    \n    if total_trials == 0:\n        return 0.5\n    return float(wadd_choices / total_trials)",
+            "rationale": "This metric calculates the proportion of WADD-compliant choices on the critical dissociation trials (Trials 1 and 7). On these trials, one option has two high-validity features ([1, 1, 0, 0, 0]) while the other has three low-validity features ([0, 0, 1, 1, 1]). The Weighted Additive (WADD) model strongly prefers the former, whereas the Tallying (Equal Weight) model strictly prefers the latter because it counts more positive features. The metric will yield a high value for WADD and a low value for Tallying, perfectly discriminating the two models."
+          },
+          "proposer_theory": {
+            "description": "People compare two options by computing, for each option, a weighted sum of its feature values, where each feature is weighted by its subjective validity (or importance). The option with the higher weighted sum is chosen. WADD is the compensatory benchmark against which one-reason heuristics like Take The Best are contrasted: a large deficit on a high-validity cue can be compensated by a sufficiently strong advantage on lower-validity cues, so no single feature is ever decisive on its own. Unlike Tallying, WADD uses cardinal feature magnitudes and weights them by validity, so it exploits both the sign and the size of each feature-wise comparison as well as inter-cue differences in informativeness. Unlike Equal-Weight, weights differ across features. Behavior is invariant to a shared affine rescaling across options but scales linearly with per-feature weight. When the two weighted sums are equal the model has no basis for preference and the learner must guess. Response noise enters through a softmax over the two weighted sums with inverse temperature beta (interpolating between fully deterministic choice at large beta and uniform guessing at beta = 0), plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+            "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Weighted Additive rule (Payne, Bettman & Johnson\n    # 1993). Stimulus is the pair of option feature vectors for the\n    # current trial: array-like of shape (2, n_features), row 0 =\n    # option A, row 1 = option B. Each option's score is the dot\n    # product of its feature vector with the (subjective) validity\n    # weights. History is ignored: the choice depends only on the\n    # current stimulus.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"WADD expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n    n_features = stim.shape[1]\n\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    w = np.asarray(parameters[\"weights\"], dtype=float)\n    if w.shape[0] != n_features:\n        raise ValueError(\n            f\"weights length {w.shape[0]} != n_features {n_features}.\"\n        )\n\n    # Weighted sum per option (dot product with per-feature weights).\n    scores = stim @ (validities * w)\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability.\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    # Uniform lapse blended into the softmax (standard choice-with-lapse\n    # formulation; epsilon=0.5 yields equiprobable options, matching\n    # the paper's maximum-noise condition).\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]",
+              "validities": "validities",
+              "weights": "[(0.0, 1.0)] * n_features"
+            },
+            "rationale": null
+          },
+          "proposer_label": "pi_2",
+          "real_value": 0.13833333333333334,
+          "real_variance": 0.011211111111111114,
+          "predicted_values": [
+            {
+              "value": 0.5416666666666666,
+              "variance": 0.0901388888888889,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.14666666666666667,
+              "variance": 0.012030555555555555,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.835,
+              "variance": 0.01555277777777778,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.33416666666666667,
+              "variance": 0.10211736111111111,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.17333333333333334,
+              "variance": 0.010511111111111112,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.21166666666666667,
+              "variance": 0.00887777777777778,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.11583333333333333,
+              "variance": 0.015853472222222224,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_001_obs_01.jsonl"
+        }
+      ],
+      "next_theory": {
+        "description": "Thresholded Tallying (Soft Subset Tallying): Decision makers use an equal-weight heuristic, but first filter the available information by cue validity. Instead of a hard threshold, they use a soft, probabilistic inclusion criterion where features with validity near or above a subjective threshold are more likely to be considered. These softly filtered features are then tallied to form a preference. This differentiable thresholding allows smooth transitions between pure Tallying (all cues included) and stricter subset tallying, reflecting boundedly rational cue selection that is easier to optimize during learning or fitting.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Thresholded Tallying expects a (2, n_features) stimulus.\")\n        \n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    theta = float(parameters[\"theta\"])\n    k = float(parameters[\"k\"])\n    \n    # Filter features: soft threshold using a logistic sigmoid\n    mask = 1.0 / (1.0 + np.exp(-k * (validities - theta)))\n    \n    # Tallying: count the number of positive features among the softly kept ones\n    scores = np.sum(stim * mask, axis=1)\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax with max-subtraction for numerical stability\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    n_opts = p_core.shape[0]\n    # Blend with uniform lapse distribution\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()  # Ensure valid probabilities\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "theta": "[-1.0, 1.0]",
+          "k": "[1.0, 20.0]",
+          "validities": "validities"
+        },
+        "rationale": "Expanded the lower bound of the `theta` parameter range to -1.0. This allows the parameter fitting routine to push the threshold well below the lowest cue validities, guaranteeing that the term (validities - theta) is large and positive. This fully saturates the soft sigmoid mask to 1.0 for all features, perfectly recovering pure Tallying behavior when subjects' data demands it."
+      },
+      "next_theory_idx": 2,
+      "next_theory_label": "pi_4"
+    },
+    {
+      "observations": [
+        {
+          "experiment": {
+            "rationale": "This design dissociates pure Tallying from Thresholded Tallying by exploiting a sharp difference in cue validities. The 6 features are split into a high-validity group (cues 1-3) and a low-validity group (cues 4-6). Pure Tallying ignores these validities and simply counts the total number of positive features. Thresholded Tallying, however, applies a soft filter that down-weights or eliminates the low-validity cues. By pitting options with many low-validity endorsements against options with fewer high-validity endorsements, pure Tallying will choose the option with the higher total count, whereas Thresholded Tallying will choose the option with the higher count among the high-validity cues. Ties in Tallying are also broken by Thresholded Tallying based on the distribution of high-validity cues.",
+            "validities": [
+              0.95,
+              0.9,
+              0.85,
+              0.55,
+              0.52,
+              0.5
+            ],
+            "trial_a_ratings": [
+              [
+                0,
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                1,
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                1,
+                1,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    \n    a_ratings = np.stack(data['option_a_ratings'].values)\n    b_ratings = np.stack(data['option_b_ratings'].values)\n    \n    sum_a = a_ratings.sum(axis=1)\n    sum_b = b_ratings.sum(axis=1)\n    \n    top3_a = a_ratings[:, :3].sum(axis=1)\n    top3_b = b_ratings[:, :3].sum(axis=1)\n    \n    # Isolate trials where total features are tied but top-3 features differ\n    valid_mask = (sum_a == sum_b) & (top3_a != top3_b)\n    \n    if not np.any(valid_mask):\n        return 0.5\n        \n    responses = data['response'].values\n    \n    # Did the subject choose the option with more top-3 features?\n    chose_high_val = np.zeros(len(data), dtype=bool)\n    chose_high_val[(top3_a > top3_b) & (responses == 0)] = True\n    chose_high_val[(top3_a < top3_b) & (responses == 1)] = True\n    \n    return float(np.mean(chose_high_val[valid_mask]))",
+            "rationale": "Pure Tallying strictly counts the total number of positive features. On trials where both options have the exact same number of positive features (Trials 2 and 4), Tallying is completely indifferent and will choose either option with 50% probability, regardless of the subject's noise parameters. Thresholded Tallying, however, applies a soft filter that down-weights lower-validity features. Even when its threshold is low and it mimics Tallying, the logistic filter strictly preserves the order of validities, meaning it will always assign a higher score to the option with more high-validity features. By measuring the proportion of choices for the option with more high-validity features specifically on trials where the total feature counts are tied, we isolate a condition where Tallying predicts exactly 0.5 (with minimal variance) while Thresholded Tallying predicts a value strictly greater than 0.5."
+          },
+          "proposer_theory": {
+            "description": "People compare two options by tallying the total number of positive features for each option, ignoring cue validities entirely. The option with the higher unweighted sum of positive features is chosen. This Equal Weight (or Tallying) heuristic provides a frugal but fully compensatory strategy, capturing the strong human tendency to prefer options with multiple supporting cues over those with a single high-validity cue. Response noise is modeled via a softmax over the tallied scores with inverse temperature beta, and an independent lapse rate epsilon.",
+            "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Tallying expects a (2, n_features) stimulus.\")\n        \n    # Tallying: count the number of positive features (unweighted sum) for each option.\n    scores = np.sum(stim, axis=1)\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax with max-subtraction for numerical stability.\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    n_opts = p_core.shape[0]\n    # Blend with uniform lapse distribution.\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()  # Ensure valid probabilities\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]"
+            },
+            "rationale": "Following the arbiter's suggestion, this implements the Equal Weight (Tallying) model. By simply summing the unweighted feature values, the model heavily penalizes options that rely on a single high-validity cue when the alternative is supported by multiple lower-validity cues. This mechanism naturally explains the very low TTB-match in Experiment 2 and the specific compensatory patterns observed in Experiment 1, outperforming both the strict one-reason stopping rule of TTB and the exact validity weighting of WADD."
+          },
+          "proposer_label": "pi_3",
+          "real_value": 0.5133333333333333,
+          "real_variance": 0.010377777777777777,
+          "predicted_values": [
+            {
+              "value": 0.5058333333333334,
+              "variance": 0.00979236111111111,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.625,
+              "variance": 0.03229166666666667,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.8658333333333333,
+              "variance": 0.01210347222222222,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.63,
+              "variance": 0.03726666666666666,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.49666666666666665,
+              "variance": 0.011655555555555554,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.5158333333333334,
+              "variance": 0.009922916666666667,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.4841666666666667,
+              "variance": 0.00950625,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_002_obs_00.jsonl"
+        },
+        {
+          "experiment": {
+            "rationale": "To quantitatively dissociate Thresholded Tallying from Pure Tallying (Equal Weight), we use a 6-feature design with a clear bimodal distribution of validities: three high-validity features (0.85-0.95) and three low-validity features (0.50-0.60). Pure Tallying ignores validities and counts all positive features equally. Thresholded Tallying applies a soft threshold that filters out low-validity features, effectively tallying only the high-validity ones. By pitting options with fewer high-validity features against options with a greater total number of features (which are predominantly low-validity), we create stark dissociations. For example, an option with 2 high-validity and 0 low-validity features will be chosen by Thresholded Tallying over an option with 0 high-validity and 3 low-validity features, while Pure Tallying predicts the opposite. We also include tie-breaking trials where Pure Tallying predicts equal preference but Thresholded Tallying strongly favors the option with high-validity cues.",
+            "validities": [
+              0.95,
+              0.9,
+              0.85,
+              0.6,
+              0.55,
+              0.5
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                1,
+                1,
+                0
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    import pandas as pd\n    \n    a_ratings = np.vstack(data['option_a_ratings'].values)\n    b_ratings = np.vstack(data['option_b_ratings'].values)\n    \n    # Pure Tallying relies only on the unweighted sum of features.\n    sum_a = a_ratings.sum(axis=1)\n    sum_b = b_ratings.sum(axis=1)\n    \n    # Identify \"tie\" trials where both options have the exact same number of total positive features.\n    # In the provided design, these are trials 5, 6, 7, and 9.\n    tie_mask = (sum_a == sum_b)\n    \n    if not np.any(tie_mask):\n        return 0.5\n        \n    responses = data['response'].values\n    \n    # In all of these tie trials, Option A was adversarially designed to contain strictly more \n    # high-validity features than Option B. \n    # We calculate the proportion of times the subject chose Option A on these trials.\n    p_a = np.mean(responses[tie_mask] == 0)\n    \n    return float(p_a)",
+            "rationale": "For the Pure Tallying model, options A and B in the tie trials (trials 5, 6, 7, and 9) have the exact same unweighted sum of features. Consequently, Pure Tallying predicts a choice probability of exactly 0.5 for Option A on every single one of these trials, regardless of the subject's noise (beta) or lapse (epsilon) parameters. The variance of this metric for Pure Tallying subjects will be extremely low, driven purely by binomial sampling noise over the 36 tie trials per subject. Conversely, Thresholded Tallying softly filters out the low-validity features. Because Option A is heavily loaded with high-validity features in all these tie trials, Thresholded Tallying will strongly prefer Option A whenever its threshold parameter is sufficiently high to engage the filtering. This creates a large, directional mean shift for Thresholded Tallying (> 0.5) against a mathematically locked baseline (0.5) with minimal variance for Pure Tallying, guaranteeing a highly significant t-statistic."
+          },
+          "proposer_theory": {
+            "description": "Thresholded Tallying (Soft Subset Tallying): Decision makers use an equal-weight heuristic, but first filter the available information by cue validity. Instead of a hard threshold, they use a soft, probabilistic inclusion criterion where features with validity near or above a subjective threshold are more likely to be considered. These softly filtered features are then tallied to form a preference. This differentiable thresholding allows smooth transitions between pure Tallying (all cues included) and stricter subset tallying, reflecting boundedly rational cue selection that is easier to optimize during learning or fitting.",
+            "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Thresholded Tallying expects a (2, n_features) stimulus.\")\n        \n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    theta = float(parameters[\"theta\"])\n    k = float(parameters[\"k\"])\n    \n    # Filter features: soft threshold using a logistic sigmoid\n    mask = 1.0 / (1.0 + np.exp(-k * (validities - theta)))\n    \n    # Tallying: count the number of positive features among the softly kept ones\n    scores = np.sum(stim * mask, axis=1)\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax with max-subtraction for numerical stability\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    n_opts = p_core.shape[0]\n    # Blend with uniform lapse distribution\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()  # Ensure valid probabilities\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]",
+              "theta": "[-1.0, 1.0]",
+              "k": "[1.0, 20.0]",
+              "validities": "validities"
+            },
+            "rationale": "Expanded the lower bound of the `theta` parameter range to -1.0. This allows the parameter fitting routine to push the threshold well below the lowest cue validities, guaranteeing that the term (validities - theta) is large and positive. This fully saturates the soft sigmoid mask to 1.0 for all features, perfectly recovering pure Tallying behavior when subjects' data demands it."
+          },
+          "proposer_label": "pi_4",
+          "real_value": 0.5144444444444445,
+          "real_variance": 0.0066123456790123485,
+          "predicted_values": [
+            {
+              "value": 0.6483333333333333,
+              "variance": 0.028475617283950618,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.49166666666666664,
+              "variance": 0.0053163580246913585,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.6866666666666666,
+              "variance": 0.004785185185185185,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.6172222222222222,
+              "variance": 0.04741635802469135,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.4911111111111111,
+              "variance": 0.005785185185185188,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.5088888888888888,
+              "variance": 0.007976543209876542,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.5,
+              "variance": 0.005987654320987655,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_002_obs_01.jsonl"
+        }
+      ],
+      "next_theory": {
+        "description": "Random Subset Tallying: Decision-makers use an equal-weight heuristic but are bounded by working memory, preventing them from processing all features simultaneously. Instead of calculating a complete tally and applying post-decision softmax noise, they stochastically sample a subset of the available features on each trial (each feature included independently with some probability) and perform pure tallying strictly on that subset. This provides a mechanistic, cognitive origin for choice variability while preserving the validity-agnostic, compensatory nature of the Tallying heuristic.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    import itertools\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be shape (2, n_features).\")\n        \n    n_features = stim.shape[1]\n    p = float(parameters[\"sample_prob\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    prob_A = 0.0\n    \n    # Iterate over all possible subsets of features (2^n_features)\n    for seq in itertools.product([0, 1], repeat=n_features):\n        mask = np.array(seq)\n        # Probability of sampling this specific subset\n        subset_prob = np.prod(np.where(mask == 1, p, 1.0 - p))\n        \n        if subset_prob == 0:\n            continue\n            \n        score_A = np.sum(stim[0] * mask)\n        score_B = np.sum(stim[1] * mask)\n        \n        # Pure tallying on the sampled subset\n        if score_A > score_B:\n            prob_A += subset_prob\n        elif score_A == score_B:\n            prob_A += 0.5 * subset_prob\n            \n    prob_B = 1.0 - prob_A\n    p_core = np.array([prob_A, prob_B])\n    \n    # Blend with uniform lapse distribution\n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()  # Ensure valid probabilities\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+        "parameters": {
+          "sample_prob": "[0.7, 1.0]",
+          "epsilon": "[0.0, 0.1]"
+        },
+        "rationale": "Following the critic's advice, we further tighten the parameter ranges for Random Subset Tallying. By restricting `sample_prob` to [0.7, 1.0] and `epsilon` to [0.0, 0.1], we further reduce the excess noise on non-tie trials. This increases the probability of sampling enough features to reliably detect the tallying winner, driving the Experiment 3 prediction closer to 0.82 and the Experiment 4 prediction closer to 0.14, while preserving the structural 50% tie-breaking behavior seen in Experiments 5 and 6."
+      },
+      "next_theory_idx": 2,
+      "next_theory_label": "pi_5"
+    },
+    {
+      "observations": [
+        {
+          "experiment": {
+            "rationale": "The Advocated Theory (Softmax Tallying) predicts that choice probability depends exclusively on the difference in the number of positive features between the two options. For example, a 2 vs 1 trial yields the exact same choice probability as a 3 vs 2 trial, since the difference is 1 in both cases. The Competing Theory (Random Subset Tallying) predicts that as the total number of distinguishing features increases (e.g., moving from 1 vs 0 to 2 vs 1 to 3 vs 2), the choice probability will regress towards 0.5. This is because a larger pool of distinguishing features increases the probability that the stochastically sampled subset will favor the option with fewer overall features or result in a tie. By including trials with constant tally differences (e.g., diff=1 and diff=2) but varying total distinguishing features, we quantitatively dissociate the two models.",
+            "validities": [
+              0.95,
+              0.85,
+              0.75,
+              0.65,
+              0.55,
+              0.5
+            ],
+            "trial_a_ratings": [
+              [
+                0,
+                0,
+                0,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                1,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    score_A = data['option_a_ratings'].apply(sum)\n    score_B = data['option_b_ratings'].apply(sum)\n    \n    diff = score_A - score_B\n    mask = diff >= 2\n    \n    if not mask.any():\n        return 0.0\n        \n    error_rate = (data.loc[mask, 'response'] == 1).mean()\n    return float(error_rate)",
+            "rationale": "Softmax Tallying models response noise via a softmax over tallied scores and an independent lapse rate (epsilon up to 0.5). For 'easy' trials with a large tally difference (diff >= 2), the softmax probability of choosing the inferior option approaches zero, making the error rate on these trials a direct measure of the lapse rate (expected mean ~0.125). In contrast, Random Subset Tallying models choice variability mechanistically through subset sampling, restricting the motor lapse rate to a much smaller range (epsilon up to 0.1). On trials with diff >= 2, the probability of sampling a subset that favors the inferior option is mathematically minuscule, so the error rate is strictly bounded by the small lapse rate (expected mean ~0.025). By computing the simple error rate on trials with diff >= 2, we obtain a metric that is highly stable within subjects (pooling 40 trials) and strongly discriminates the two theories' distinct parameter regimes for asymptotic errors."
+          },
+          "proposer_theory": {
+            "description": "People compare two options by tallying the total number of positive features for each option, ignoring cue validities entirely. The option with the higher unweighted sum of positive features is chosen. This Equal Weight (or Tallying) heuristic provides a frugal but fully compensatory strategy, capturing the strong human tendency to prefer options with multiple supporting cues over those with a single high-validity cue. Response noise is modeled via a softmax over the tallied scores with inverse temperature beta, and an independent lapse rate epsilon.",
+            "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Tallying expects a (2, n_features) stimulus.\")\n        \n    # Tallying: count the number of positive features (unweighted sum) for each option.\n    scores = np.sum(stim, axis=1)\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax with max-subtraction for numerical stability.\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    n_opts = p_core.shape[0]\n    # Blend with uniform lapse distribution.\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()  # Ensure valid probabilities\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]"
+            },
+            "rationale": "Following the arbiter's suggestion, this implements the Equal Weight (Tallying) model. By simply summing the unweighted feature values, the model heavily penalizes options that rely on a single high-validity cue when the alternative is supported by multiple lower-validity cues. This mechanism naturally explains the very low TTB-match in Experiment 2 and the specific compensatory patterns observed in Experiment 1, outperforming both the strict one-reason stopping rule of TTB and the exact validity weighting of WADD."
+          },
+          "proposer_label": "pi_3",
+          "real_value": 0.119,
+          "real_variance": 0.007964000000000002,
+          "predicted_values": [
+            {
+              "value": 0.092,
+              "variance": 0.004961,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.046,
+              "variance": 0.001359,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.7145,
+              "variance": 0.005177250000000001,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.212,
+              "variance": 0.020280999999999997,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.187,
+              "variance": 0.036655999999999994,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.1055,
+              "variance": 0.007107249999999999,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.072,
+              "variance": 0.004216,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_003_obs_00.jsonl"
+        },
+        {
+          "experiment": {
+            "rationale": "This design quantitatively dissociates Random Subset Tallying from Softmax Tallying by testing the linearity of log-odds. Under Softmax Tallying, the log-odds of choosing an option are strictly proportional to the tally difference (e.g., the log-odds for a difference of 4 must be exactly twice the log-odds for a difference of 2). Random Subset Tallying, however, generates choice probabilities through a combinatorial sampling process, which fundamentally violates this linear log-odds property. By systematically varying the tally difference from 1 to 5 using options with entirely non-overlapping features (e.g., 1v0, 2v0, 3v0, 4v0, 5v0), we can evaluate whether the log-odds scale linearly (supporting Softmax Tallying) or non-linearly (supporting Random Subset Tallying).",
+            "validities": [
+              0.9,
+              0.85,
+              0.75,
+              0.65,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    \n    # Calculate unweighted tallies for each option\n    tally_A = data['option_a_ratings'].apply(sum)\n    tally_B = data['option_b_ratings'].apply(sum)\n    \n    # Group trials into two pools with matched tally differences (diff = 1, 2, 3)\n    # Pool 0: Option B has 0 features (1v0, 2v0, 3v0)\n    mask_v0 = (tally_B == 0) & (tally_A.isin([1, 2, 3]))\n    \n    # Pool 1: Option B has 1 feature (2v1, 3v1, 4v1)\n    mask_v1 = (tally_B == 1) & (tally_A.isin([2, 3, 4]))\n    \n    # Count the number of times Option B (the inferior option) was chosen\n    B0 = (data.loc[mask_v0, 'response'] == 1).sum()\n    B1 = (data.loc[mask_v1, 'response'] == 1).sum()\n    \n    # Return the smoothed log-ratio of B choices\n    # Laplace smoothing (+2) stabilizes the variance for subjects with few errors\n    return float(np.log((B1 + 2.0) / (B0 + 2.0)))",
+            "rationale": "Under Softmax Tallying, choice probabilities depend strictly on the difference in tallies between Option A and Option B. Therefore, the probability of choosing B in (k vs 0) trials is mathematically identical to the probability in (k+1 vs 1) trials. Because the B-choice counts for these two matched sets are drawn from the exact same binomial distribution, their log-ratio has an expected value of exactly 0 for every subject, completely eliminating parameter-driven variance (beta/epsilon).\n\nUnder Random Subset Tallying, subjects sample a subset of features. The presence of an extra feature in Option B increases the combinatorial probability of a tie within the sampled subset (which is broken randomly). This systematically increases the probability of choosing B in (k+1 vs 1) trials compared to (k vs 0) trials, guaranteeing a strictly positive expected value.\n\nBy computing the log-ratio of B choices with a +2 Laplace smoothing, we obtain a metric that is mathematically anchored at 0 for Softmax Tallying, but robustly positive for Random Subset Tallying. The log-ratio normalizes out individual differences in baseline error rates, tightly constraining the between-subject variance and ensuring high discriminability."
+          },
+          "proposer_theory": {
+            "description": "Random Subset Tallying: Decision-makers use an equal-weight heuristic but are bounded by working memory, preventing them from processing all features simultaneously. Instead of calculating a complete tally and applying post-decision softmax noise, they stochastically sample a subset of the available features on each trial (each feature included independently with some probability) and perform pure tallying strictly on that subset. This provides a mechanistic, cognitive origin for choice variability while preserving the validity-agnostic, compensatory nature of the Tallying heuristic.",
+            "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    import itertools\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be shape (2, n_features).\")\n        \n    n_features = stim.shape[1]\n    p = float(parameters[\"sample_prob\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    prob_A = 0.0\n    \n    # Iterate over all possible subsets of features (2^n_features)\n    for seq in itertools.product([0, 1], repeat=n_features):\n        mask = np.array(seq)\n        # Probability of sampling this specific subset\n        subset_prob = np.prod(np.where(mask == 1, p, 1.0 - p))\n        \n        if subset_prob == 0:\n            continue\n            \n        score_A = np.sum(stim[0] * mask)\n        score_B = np.sum(stim[1] * mask)\n        \n        # Pure tallying on the sampled subset\n        if score_A > score_B:\n            prob_A += subset_prob\n        elif score_A == score_B:\n            prob_A += 0.5 * subset_prob\n            \n    prob_B = 1.0 - prob_A\n    p_core = np.array([prob_A, prob_B])\n    \n    # Blend with uniform lapse distribution\n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n",
+            "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()  # Ensure valid probabilities\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+            "parameters": {
+              "sample_prob": "[0.7, 1.0]",
+              "epsilon": "[0.0, 0.1]"
+            },
+            "rationale": "Following the critic's advice, we further tighten the parameter ranges for Random Subset Tallying. By restricting `sample_prob` to [0.7, 1.0] and `epsilon` to [0.0, 0.1], we further reduce the excess noise on non-tie trials. This increases the probability of sampling enough features to reliably detect the tallying winner, driving the Experiment 3 prediction closer to 0.82 and the Experiment 4 prediction closer to 0.14, while preserving the structural 50% tie-breaking behavior seen in Experiments 5 and 6."
+          },
+          "proposer_label": "pi_5",
+          "real_value": 0.1284783247731315,
+          "real_variance": 0.24164999227298847,
+          "predicted_values": [
+            {
+              "value": 0.35563273436028864,
+              "variance": 0.23045980355068948,
+              "label": "pi_5"
+            },
+            {
+              "value": -0.11551288712184435,
+              "variance": 0.14704524568556718,
+              "label": "pi_3"
+            },
+            {
+              "value": -0.01919444725614718,
+              "variance": 0.1399209854435225,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.1256657818185718,
+              "variance": 0.18703726653855401,
+              "label": "pi_2"
+            },
+            {
+              "value": -0.03690455693545098,
+              "variance": 0.16147113750886308,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.08004270767353636,
+              "variance": 0.1275126237467803,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.12323264042394806,
+              "variance": 0.16442940789096938,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_003_obs_01.jsonl"
+        }
+      ],
+      "next_theory": {
+        "description": "Noisy Encoding Tallying: Decision-makers rely on the unweighted Tallying heuristic but suffer from noisy perception or encoding of the environment. Each binary feature has an independent probability of being misperceived (a 1 flipped to a 0, or a 0 flipped to a 1). Subjects then compute the tally of these perceived features and deterministically choose the option with the higher tally, breaking ties randomly. This naturally predicts that decision errors scale with the total number of features (capturing non-linear log-odds in certain experiments) because more features provide more opportunities for bit-flips to alter the tally difference.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    import math\n    \n    stim = np.asarray(state, dtype=float)\n    n_features = stim.shape[1]\n    \n    p = float(parameters[\"flip_prob\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    def binom_pmf(k, n, prob):\n        if n == 0:\n            return 1.0 if k == 0 else 0.0\n        if prob == 0.0:\n            return 1.0 if k == 0 else 0.0\n        if prob == 1.0:\n            return 1.0 if k == n else 0.0\n        return math.comb(n, k) * (prob ** k) * ((1 - prob) ** (n - k))\n        \n    def get_tally_dist(N1, N0, p):\n        dist = np.zeros(N1 + N0 + 1)\n        for x in range(N1 + 1):\n            px = binom_pmf(x, N1, 1 - p)\n            if px == 0.0:\n                continue\n            for y in range(N0 + 1):\n                py = binom_pmf(y, N0, p)\n                if py > 0.0:\n                    dist[x + y] += px * py\n        return dist\n        \n    N1_A = int(np.sum(stim[0]))\n    N0_A = n_features - N1_A\n    dist_A = get_tally_dist(N1_A, N0_A, p)\n    \n    N1_B = int(np.sum(stim[1]))\n    N0_B = n_features - N1_B\n    dist_B = get_tally_dist(N1_B, N0_B, p)\n    \n    prob_A_wins = 0.0\n    prob_tie = 0.0\n    for vA in range(len(dist_A)):\n        if dist_A[vA] == 0.0:\n            continue\n        for vB in range(len(dist_B)):\n            if dist_B[vB] == 0.0:\n                continue\n            if vA > vB:\n                prob_A_wins += dist_A[vA] * dist_B[vB]\n            elif vA == vB:\n                prob_tie += dist_A[vA] * dist_B[vB]\n                \n    p_A_core = prob_A_wins + 0.5 * prob_tie\n    p_B_core = 1.0 - p_A_core\n    \n    p_core = np.array([p_A_core, p_B_core])\n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))",
+        "parameters": {
+          "flip_prob": "[0.0, 0.2]",
+          "epsilon": "[0.0, 0.2]"
+        },
+        "rationale": "Following the critic's feedback, the core mechanism of Noisy Encoding Tallying remains entirely unchanged. However, the parameter ranges for `flip_prob` and `epsilon` have been restricted from [0.0, 0.5] down to [0.0, 0.2]. This prevents the model from injecting excessive noise that washes out the tallying signal, enabling it to better match the relatively low baseline error rates observed in Experiments 2, 4, and 7 while still capturing the feature-dependent scaling of errors."
+      },
+      "next_theory_idx": 2,
+      "next_theory_label": "pi_6"
+    },
+    {
+      "observations": [
+        {
+          "experiment": {
+            "rationale": "This design quantitatively dissociates Softmax Tallying from Noisy Encoding Tallying by manipulating the total number of positive features while keeping the tally difference constant. Softmax Tallying predicts that choice probability depends exclusively on the difference in tallies (e.g., a 1 vs 0 trial yields the exact same choice probability as a 6 vs 5 trial, as the difference is 1 in both). In contrast, Noisy Encoding Tallying assumes each feature has an independent probability of being misperceived. Because features are bounded between 0 and 1, the binomial noise distributions become highly skewed near the boundaries (e.g., an option with 0 positive features can only gain perceived features, while an option with 6 positive features can only lose them). This causes Noisy Encoding Tallying to predict systematically different choice probabilities for 1v0 compared to 6v5, despite the constant difference. By including multiple levels of constant differences (diff=1, diff=2, diff=3) at varying absolute feature counts, we can clearly separate the exact-difference logistic predictions of Softmax Tallying from the boundary-skewed predictions of Noisy Encoding Tallying.",
+            "validities": [
+              0.9,
+              0.85,
+              0.8,
+              0.7,
+              0.6,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                0,
+                0,
+                0
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    \n    # Calculate the unweighted sum of positive features for each option\n    sum_a = data['option_a_ratings'].apply(sum)\n    sum_b = data['option_b_ratings'].apply(sum)\n    \n    # Calculate the difference in tallies (A always has more or equal positive features in this design)\n    diff = sum_a - sum_b\n    \n    # Calculate the proportion of times Option A (the better option) was chosen\n    # response == 0 indicates Option A was chosen\n    p_a_diff_1 = 1.0 - data.loc[diff == 1, 'response'].mean()\n    p_a_diff_3 = 1.0 - data.loc[diff == 3, 'response'].mean()\n    \n    # Handle edge cases where a subject might have missing data\n    if np.isnan(p_a_diff_1) or np.isnan(p_a_diff_3):\n        return 0.0\n        \n    # Return the increase in accuracy when the tally difference grows from 1 to 3\n    return float(p_a_diff_3 - p_a_diff_1)",
+            "rationale": "Softmax Tallying's parameter distribution (beta in [0.1, 20.0]) heavily favors large values where the choice probability hits the ceiling (P~1.0) even for a minimal tally difference of 1. Consequently, it predicts almost no marginal increase in accuracy when the tally difference increases from 1 to 3. In contrast, Noisy Encoding Tallying's noise parameter (flip_prob up to 0.2) keeps the accuracy for a difference of 1 well below the ceiling (around 0.78 on average), allowing for a substantial and measurable increase in accuracy when the difference is 3 (around 0.99). Therefore, the difference in choice probability between diff=3 and diff=1 trials will be near zero for Softmax Tallying but large and positive for Noisy Encoding Tallying, providing a highly discriminative contrast."
+          },
+          "proposer_theory": {
+            "description": "People compare two options by tallying the total number of positive features for each option, ignoring cue validities entirely. The option with the higher unweighted sum of positive features is chosen. This Equal Weight (or Tallying) heuristic provides a frugal but fully compensatory strategy, capturing the strong human tendency to prefer options with multiple supporting cues over those with a single high-validity cue. Response noise is modeled via a softmax over the tallied scores with inverse temperature beta, and an independent lapse rate epsilon.",
+            "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Tallying expects a (2, n_features) stimulus.\")\n        \n    # Tallying: count the number of positive features (unweighted sum) for each option.\n    scores = np.sum(stim, axis=1)\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax with max-subtraction for numerical stability.\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    n_opts = p_core.shape[0]\n    # Blend with uniform lapse distribution.\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()  # Ensure valid probabilities\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]"
+            },
+            "rationale": "Following the arbiter's suggestion, this implements the Equal Weight (Tallying) model. By simply summing the unweighted feature values, the model heavily penalizes options that rely on a single high-validity cue when the alternative is supported by multiple lower-validity cues. This mechanism naturally explains the very low TTB-match in Experiment 2 and the specific compensatory patterns observed in Experiment 1, outperforming both the strict one-reason stopping rule of TTB and the exact validity weighting of WADD."
+          },
+          "proposer_label": "pi_3",
+          "real_value": 0.022500000000000075,
+          "real_variance": 0.013504166666666668,
+          "predicted_values": [
+            {
+              "value": 0.040000000000000036,
+              "variance": 0.014650000000000002,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.17874999999999996,
+              "variance": 0.010713368055555556,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.0008333333333333526,
+              "variance": 0.011040972222222223,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.06624999999999992,
+              "variance": 0.012216840277777778,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.047083333333333366,
+              "variance": 0.009823090277777773,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.0708333333333333,
+              "variance": 0.0071354166666666675,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.022083333333333233,
+              "variance": 0.00712517361111111,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_004_obs_00.jsonl"
+        },
+        {
+          "experiment": {
+            "rationale": "This design quantitatively dissociates Noisy Encoding Tallying from Softmax Tallying by simultaneously testing two properties: the linearity of log-odds and the invariance of constant differences. Softmax Tallying predicts that choice log-odds scale perfectly linearly with the tally difference, and that a constant difference (e.g., 2v1 vs 6v5) yields identical choice probabilities. In contrast, Noisy Encoding Tallying relies on binomial bit-flips, producing non-linear log-odds across increasing differences (e.g., 1v0 to 6v0) and varying choice probabilities for constant differences depending on the absolute number of positive features (due to boundary effects). By systematically varying both the tally difference and the absolute feature count in a 7-feature environment, we can definitively separate the two models.",
+            "validities": [
+              0.85,
+              0.8,
+              0.75,
+              0.7,
+              0.65,
+              0.6,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    sum_a = data['option_a_ratings'].apply(sum)\n    sum_b = data['option_b_ratings'].apply(sum)\n    diff = sum_a - sum_b\n    \n    mask_high = diff >= 4\n    mask_low = diff == 1\n    \n    if mask_high.sum() == 0 or mask_low.sum() == 0:\n        return 0.0\n        \n    pA_high = 1.0 - data.loc[mask_high, 'response'].mean()\n    pA_low = 1.0 - data.loc[mask_low, 'response'].mean()\n    \n    return float(pA_high - pA_low)",
+            "rationale": "Under Softmax Tallying, choice probability is a logistic function of the tally difference scaled by beta. Because beta is drawn uniformly from [0.1, 20.0], the average subject has a high beta, meaning their choice probability is already at ceiling (1 - epsilon/2) even for a tally difference of 1. Thus, there is very little difference in accuracy between trials with a difference of 1 and trials with a difference of 4 or more. Under Noisy Encoding Tallying, perceptual noise scales such that the variance of the perceived tally difference is constant across trials. For a tally difference of 1, the expected difference is small relative to the noise, resulting in accuracy significantly below ceiling. For a difference of 4 or more, the signal overcomes the noise, reaching ceiling accuracy. Therefore, the difference in accuracy between high-difference (>= 4) and low-difference (== 1) trials will be substantially larger under Noisy Encoding Tallying than under Softmax Tallying."
+          },
+          "proposer_theory": {
+            "description": "Noisy Encoding Tallying: Decision-makers rely on the unweighted Tallying heuristic but suffer from noisy perception or encoding of the environment. Each binary feature has an independent probability of being misperceived (a 1 flipped to a 0, or a 0 flipped to a 1). Subjects then compute the tally of these perceived features and deterministically choose the option with the higher tally, breaking ties randomly. This naturally predicts that decision errors scale with the total number of features (capturing non-linear log-odds in certain experiments) because more features provide more opportunities for bit-flips to alter the tally difference.",
+            "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    import math\n    \n    stim = np.asarray(state, dtype=float)\n    n_features = stim.shape[1]\n    \n    p = float(parameters[\"flip_prob\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    def binom_pmf(k, n, prob):\n        if n == 0:\n            return 1.0 if k == 0 else 0.0\n        if prob == 0.0:\n            return 1.0 if k == 0 else 0.0\n        if prob == 1.0:\n            return 1.0 if k == n else 0.0\n        return math.comb(n, k) * (prob ** k) * ((1 - prob) ** (n - k))\n        \n    def get_tally_dist(N1, N0, p):\n        dist = np.zeros(N1 + N0 + 1)\n        for x in range(N1 + 1):\n            px = binom_pmf(x, N1, 1 - p)\n            if px == 0.0:\n                continue\n            for y in range(N0 + 1):\n                py = binom_pmf(y, N0, p)\n                if py > 0.0:\n                    dist[x + y] += px * py\n        return dist\n        \n    N1_A = int(np.sum(stim[0]))\n    N0_A = n_features - N1_A\n    dist_A = get_tally_dist(N1_A, N0_A, p)\n    \n    N1_B = int(np.sum(stim[1]))\n    N0_B = n_features - N1_B\n    dist_B = get_tally_dist(N1_B, N0_B, p)\n    \n    prob_A_wins = 0.0\n    prob_tie = 0.0\n    for vA in range(len(dist_A)):\n        if dist_A[vA] == 0.0:\n            continue\n        for vB in range(len(dist_B)):\n            if dist_B[vB] == 0.0:\n                continue\n            if vA > vB:\n                prob_A_wins += dist_A[vA] * dist_B[vB]\n            elif vA == vB:\n                prob_tie += dist_A[vA] * dist_B[vB]\n                \n    p_A_core = prob_A_wins + 0.5 * prob_tie\n    p_B_core = 1.0 - p_A_core\n    \n    p_core = np.array([p_A_core, p_B_core])\n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])",
+            "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))",
+            "parameters": {
+              "flip_prob": "[0.0, 0.2]",
+              "epsilon": "[0.0, 0.2]"
+            },
+            "rationale": "Following the critic's feedback, the core mechanism of Noisy Encoding Tallying remains entirely unchanged. However, the parameter ranges for `flip_prob` and `epsilon` have been restricted from [0.0, 0.5] down to [0.0, 0.2]. This prevents the model from injecting excessive noise that washes out the tallying signal, enabling it to better match the relatively low baseline error rates observed in Experiments 2, 4, and 7 while still capturing the feature-dependent scaling of errors."
+          },
+          "proposer_label": "pi_6",
+          "real_value": 0.02547619047619043,
+          "real_variance": 0.004380725623582768,
+          "predicted_values": [
+            {
+              "value": 0.2026190476190476,
+              "variance": 0.009343764172335602,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.015833333333333366,
+              "variance": 0.009952678571428572,
+              "label": "pi_3"
+            },
+            {
+              "value": -0.018333333333333313,
+              "variance": 0.0063206349206349184,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.10035714285714281,
+              "variance": 0.017220819160997734,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.022500000000000075,
+              "variance": 0.01434564909297052,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.06940476190476197,
+              "variance": 0.004713166099773241,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.047976190476190506,
+              "variance": 0.0061542091836734696,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_004_obs_01.jsonl"
+        }
+      ],
+      "next_theory": {
+        "description": "Decision makers use an unweighted tallying heuristic, but their probability of making a random error (lapse) depends on the stimulus. When one option has zero positive features, the choice is trivial and the lapse rate is minimal. When both options have at least one positive feature, cognitive conflict or distraction increases, leading to a higher lapse rate. This stimulus-dependent noise explains why accuracy drops when comparing options with multiple features compared to options against a zero-feature baseline, even when the difference in features is held constant.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Tallying expects a (2, n_features) stimulus.\")\n        \n    scores = np.sum(stim, axis=1)\n    \n    beta = float(parameters[\"beta\"])\n    eps_base = float(parameters[\"eps_base\"])\n    eps_conflict = float(parameters[\"eps_conflict\"])\n    \n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    if scores[0] > 0 and scores[1] > 0:\n        lapse = eps_base + eps_conflict\n    else:\n        lapse = eps_base\n        \n    lapse = min(lapse, 0.99)\n    n_opts = p_core.shape[0]\n    \n    return (1.0 - lapse) * p_core + lapse * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "eps_base": "[0.0, 0.2]",
+          "eps_conflict": "[0.0, 0.08]"
+        },
+        "rationale": "Tightened the parameter range for `eps_conflict` from [0.0, 0.15] to [0.0, 0.08] as suggested by the critic. This further reduces the conflict-induced lapse rate to prevent the model from overpredicting the error rate on trials where both options have features, bringing Experiment 8's fit closer to the observed value while maintaining the necessary small lapse rate needed for Experiments 9 and 10."
+      },
+      "next_theory_idx": 2,
+      "next_theory_label": "pi_7"
+    }
+  ]
+}

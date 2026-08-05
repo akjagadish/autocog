@@ -1,0 +1,54 @@
+{
+  "round_idx": 2,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_3",
+      "killed": true,
+      "theory": {
+        "description": "Tallying (Equal Weighting) posits that decision-makers simply count the total number of positive features for each option, ignoring the differential validities of the cues. The option with the higher count of positive features is preferred. This represents a compensatory but highly frugal heuristic, where evidence is accumulated equally across all available cues. If the counts are equal, the decision-maker guesses. Response noise is modeled via a softmax over these counts with an independent lapse rate. To account for empirical choices that often deviate from pure tallying on conflict trials, the decision process incorporates substantial choice noise.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be shape (2, n_features)\")\n        \n    # Tallying: count the number of positive features for each option\n    scores = np.sum(stim, axis=1)\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax with max-subtraction for numerical stability\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.0, 2.0]",
+          "epsilon": "[0.0, 1.0]"
+        },
+        "rationale": "Following the critic's advice, we implement a minimal diff to the Tallying model by further restricting the `beta` parameter to `[0.0, 2.0]`. The previous iteration successfully brought the loss down by allowing more choice noise, but the model still slightly underpredicted the empirical rate of TTB-consistent choices on conflict trials. By lowering the upper bound of beta even further, we force the model to be less deterministic on these trials, pushing the predictions closer to the empirical ~0.42-0.45 range."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_4",
+      "killed": false,
+      "theory": {
+        "description": "Probabilistic Search Take-The-Best (PS-TTB)",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    stim = np.asarray(state, dtype=float)\n    diff = stim[0] - stim[1]\n    \n    validities = np.asarray(parameters['validities'], dtype=float)\n    tau = float(parameters['tau'])\n    epsilon = float(parameters['epsilon'])\n    \n    n_features = len(validities)\n    n_samples = 1000\n    \n    # Gumbel-max trick to sample permutations without replacement\n    # probabilities proportional to softmax(validities / tau)\n    logits = validities / (tau + 1e-6)\n    gumbels = np.random.gumbel(size=(n_samples, n_features))\n    orders = np.argsort(-(logits + gumbels), axis=1)\n    \n    diff_sign = np.sign(diff)\n    ordered_diffs = diff_sign[orders]\n    \n    # Find the first discriminating cue in each sampled search order\n    abs_diffs = np.abs(ordered_diffs)\n    first_non_zero_idx = np.argmax(abs_diffs, axis=1)\n    has_non_zero = np.any(abs_diffs > 0, axis=1)\n    \n    first_non_zero_vals = ordered_diffs[np.arange(n_samples), first_non_zero_idx]\n    \n    wins_a = np.sum((first_non_zero_vals == 1) & has_non_zero)\n    wins_b = np.sum((first_non_zero_vals == -1) & has_non_zero)\n    \n    total = wins_a + wins_b\n    if total > 0:\n        p = np.array([wins_a / total, wins_b / total])\n    else:\n        p = np.array([0.5, 0.5])\n        \n    return (1.0 - epsilon) * p + epsilon * (np.ones(2) / 2.0)",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))",
+        "parameters": {
+          "tau": "[0.01, 100.0]",
+          "epsilon": "[0.0, 1.0]",
+          "validities": "validities"
+        },
+        "rationale": "Follows the critic's advice to implement a non-compensatory Take-The-Best model with a probabilistic cue search order. The model stops at the first discriminating cue, maintaining a strict non-compensatory mechanism at the single-trial level. However, the order in which cues are searched is sampled without replacement using a softmax over cue validities (via the Gumbel-max trick). The temperature parameter `tau` controls the determinism of the search order. When `tau` is large, the search order becomes uniform, which on average mimics the compensatory tallying-like behavior observed in Experiment 4, bridging the gap between non-compensatory heuristics and compensatory empirical patterns."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_5",
+    "slot": 1,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Weighted Additive Model with Power-Scaled Log-Odds (WADD-Gamma). Decision-makers compute a weighted sum of features for each option. The weights are derived from the log-odds of the cue validities, raised to a power gamma. This parameterization allows the model to smoothly interpolate between Tallying/Equal-Weighting (gamma = 0) and standard log-odds WADD (gamma = 1). Choices are then made via a softmax over the weighted sums, incorporating an independent lapse rate for noise.",
+      "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Clip validities to ensure log-odds are strictly positive and well-defined\n    v_clipped = np.clip(validities, 0.5001, 0.9999)\n    log_odds = np.log(v_clipped / (1.0 - v_clipped))\n    \n    gamma = float(parameters[\"gamma\"])\n    weights = log_odds ** gamma\n    \n    # Weighted sum for each option\n    scores = stim @ weights\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax with max-subtraction for numerical stability\n    z = beta * scores\n    z = z - np.max(z)\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = len(p_core)\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+      "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+      "parameters": {
+        "gamma": "[0.0, 0.75]",
+        "beta": "[0.0, 5.0]",
+        "epsilon": "[0.0, 1.0]",
+        "validities": "validities"
+      },
+      "rationale": "Following the critic's advice, we adjust the upper bound of `gamma` to 0.75. This provides a more precise middle ground between the accepted gamma=1.0 and the rejected gamma=0.5. It gently pushes the model to be slightly more compensatory, aiming to close the gap in Experiments 3 and 4 without causing the catastrophic failure in Experiment 6."
+    }
+  }
+}

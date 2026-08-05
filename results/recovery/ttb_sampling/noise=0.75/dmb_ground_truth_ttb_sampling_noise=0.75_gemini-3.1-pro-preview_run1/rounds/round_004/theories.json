@@ -1,0 +1,55 @@
+{
+  "round_idx": 4,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_3",
+      "killed": false,
+      "theory": {
+        "description": "Take The Best (TTB) with Probabilistic Stopping: Decision-makers use a lexicographic heuristic, ranking features by subjective validity and stopping at the first discriminating feature. However, rather than making a strictly deterministic choice based on this feature, the decision is probabilistic. The probability of choosing the winning option scales with the validity of that discriminating feature via a softmax function with a highly regularized inverse temperature (beta). This allows confidence to vary depending on how valid the deciding feature is, capturing empirical noise without relying entirely on a global random lapse rate.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"TTB expects a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    epsilon = float(parameters[\"epsilon\"])\n    beta = float(parameters[\"beta\"])\n    \n    a, b = stim[0], stim[1]\n    \n    # Rank features by validity in descending order\n    order = np.argsort(validities)[::-1]\n    \n    scores = np.array([0.0, 0.0])\n    \n    # Iterate through sorted features to find the first discriminator\n    for f in order:\n        if a[f] > b[f]:\n            scores = np.array([validities[f], 0.0])\n            break\n        elif b[f] > a[f]:\n            scores = np.array([0.0, validities[f]])\n            break\n            \n    # If no feature discriminates, default to uniform guessing\n    if scores[0] == scores[1]:\n        p_core = np.array([0.5, 0.5])\n    else:\n        # Probabilistic choice scaling with the validity of the discriminating feature\n        z = beta * (scores - scores.max())\n        e = np.exp(z)\n        p_core = e / e.sum()\n        \n    # Apply lapse rate\n    n_opts = 2\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities = probabilities / probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+        "parameters": {
+          "beta": "[0.0, 2.5]",
+          "epsilon": "[0.0, 1.0]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's feedback, the upper bound of the `beta` parameter range is further reduced from 5.0 to 2.5. This tighter range forces the model to produce softer choice probabilities on the discriminating features, bringing the overpredicted determinism in Experiment 1 and the overpredicted preference for the single most valid feature in Experiment 2 closer to the empirical levels."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_6",
+      "killed": true,
+      "theory": {
+        "description": "Strict Take-The-Best with Uniform Lapse: Decision-makers rely on a strict lexicographic heuristic, ranking cues by subjective validity and making a deterministic choice based solely on the highest-validity discriminating cue. To account for empirical noise and inattention, decisions are subject to a uniform lapse rate, where the decision-maker simply guesses randomly on a fixed proportion of trials rather than scaling their confidence by the cue's validity.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    a, b = stim[0], stim[1]\n    \n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Rank features by validity in descending order\n    order = np.argsort(validities)[::-1]\n    \n    p_core = np.array([0.5, 0.5])\n    \n    # Iterate through sorted features to find the first discriminator\n    for f in order:\n        if a[f] > b[f]:\n            p_core = np.array([1.0, 0.0])\n            break\n        elif b[f] > a[f]:\n            p_core = np.array([0.0, 1.0])\n            break\n            \n    # Apply uniform lapse rate\n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probabilities = np.asarray(probs, dtype=np.float64)\n    probabilities = probabilities / probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+        "parameters": {
+          "epsilon": "[0.0, 1.0]",
+          "validities": "validities"
+        },
+        "rationale": "Following the arbiter's feedback, this theory implements a strict Take-The-Best mechanism augmented only by a uniform random lapse rate. This tests whether the complexity of scaling choice probability by cue validity (as seen in Theory 1) is truly necessary, or if a parameter-efficient deterministic heuristic with simple inattentional guessing is sufficient to capture the empirical variance."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_7",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Strategy Mixture Model (TTB and WADD): Decision-makers exhibit heterogeneous strategy use, combining non-compensatory and compensatory processes. The population consists of a probabilistic mixture of Take-The-Best (TTB) users and Weighted Additive (WADD) users. On any given trial, a choice is a weighted blend of a lexicographic TTB process (which stops at the first discriminating cue and scales confidence by its validity) and a compensatory WADD process (which computes a global utility for each option by summing all feature values weighted by their subjective validities). To account for the fact that compensatory evaluation often introduces more noise when utility differences are small, the WADD component employs a flatter softmax profile, allowing a subset of subjects to be predominantly WADD without making overly deterministic predictions.",
+      "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    a, b = stim[0], stim[1]\n    \n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    beta_ttb = float(parameters[\"beta_ttb\"])\n    beta_wadd = float(parameters[\"beta_wadd\"])\n    w_wadd = float(parameters[\"w_wadd\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # --- TTB Prediction ---\n    order = np.argsort(validities)[::-1]\n    ttb_scores = np.array([0.0, 0.0])\n    for f in order:\n        if a[f] > b[f]:\n            ttb_scores = np.array([validities[f], 0.0])\n            break\n        elif b[f] > a[f]:\n            ttb_scores = np.array([0.0, validities[f]])\n            break\n            \n    if ttb_scores[0] == ttb_scores[1]:\n        p_ttb = np.array([0.5, 0.5])\n    else:\n        z_ttb = beta_ttb * (ttb_scores - ttb_scores.max())\n        e_ttb = np.exp(z_ttb)\n        p_ttb = e_ttb / e_ttb.sum()\n        \n    # --- WADD Prediction ---\n    u_a = np.sum(validities * a)\n    u_b = np.sum(validities * b)\n    wadd_scores = np.array([u_a, u_b])\n    \n    z_wadd = beta_wadd * (wadd_scores - wadd_scores.max())\n    e_wadd = np.exp(z_wadd)\n    p_wadd = e_wadd / e_wadd.sum()\n        \n    # --- Mixture ---\n    p_core = (1.0 - w_wadd) * p_ttb + w_wadd * p_wadd\n    \n    # Apply uniform lapse rate\n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n",
+      "policy_source": "def policy(probs):\n    import numpy as np\n    probabilities = np.asarray(probs, dtype=np.float64)\n    probabilities = probabilities / probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+      "parameters": {
+        "beta_ttb": "[0.0, 10.0]",
+        "beta_wadd": "[0.0, 3.0]",
+        "w_wadd": "[0.0, 1.0]",
+        "epsilon": "[0.0, 0.5]",
+        "validities": "validities"
+      },
+      "rationale": "Following the latest feedback, restricting the mixture weight `w_wadd` to a low interval artificially eliminated compensatory subjects, leading to regressions in several experiments. Therefore, the full range of `w_wadd` [0.0, 1.0] has been restored to allow for individual heterogeneity where some subjects can be fully compensatory. To prevent the WADD component from dominating too aggressively and making overly deterministic predictions on conflict trials (which caused the initial overprediction of compensatory behavior), the upper bound of `beta_wadd` has been lowered from 10.0 to 3.0. This flattens the softmax profile of the WADD component, capturing softer/probabilistic choices when utility differences are small."
+    }
+  }
+}

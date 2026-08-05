@@ -1,0 +1,2286 @@
+{
+  "rounds": [
+    {
+      "observations": [
+        {
+          "experiment": {
+            "rationale": "This design aims to maximally dissociate Take The Best (TTB) from Tallying using a 5-feature choice task. The validities are strictly descending (0.9, 0.8, 0.7, 0.6, 0.5). TTB predicts that choices will be driven entirely by the single most valid cue that discriminates between the two options, ignoring all other cues. Tallying predicts that choices will be driven by the simple count of how many features each option wins on, completely ignoring validities. The trial pairs are constructed such that the option winning on the highest-validity discriminating cue (the TTB choice) loses on the simple count of discriminating features (the Tallying choice), or one model predicts a strict preference while the other predicts a guess (due to equal counts).",
+            "validities": [
+              0.9,
+              0.8,
+              0.7,
+              0.6,
+              0.5
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                0,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                1,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "import numpy as np\nimport pandas as pd\n\ndef metric(data: pd.DataFrame) -> float:\n    def ttb_predict(row):\n        a = row['option_a_ratings']\n        b = row['option_b_ratings']\n        for i in range(len(a)):\n            if a[i] > b[i]:\n                return 0\n            elif a[i] < b[i]:\n                return 1\n        return 0.5\n        \n    ttb_choices = data.apply(ttb_predict, axis=1)\n    matches = (data['response'] == ttb_choices)\n    return float(matches.mean())",
+            "rationale": "In this experimental design, the Take The Best (TTB) and Tallying models predict exactly opposite choices on 6 out of 8 trial pairs. TTB relies on the single highest-validity discriminating feature, while Tallying counts the total number of winning features. By computing the proportion of choices that align with the TTB prediction, we obtain a metric that will be very high (near 1.0) if subjects use TTB, and very low (near 0.25) if subjects use Tallying."
+          },
+          "proposer_theory": {
+            "description": "People compare two options by consulting cues one at a time in order of validity, stopping at the first cue that discriminates between the two options. That cue alone determines the choice: the option with the higher value on the discriminating cue wins, and no other cue is consulted. Cues with lower validity are never reached when a higher-validity cue already discriminates, so Take The Best is a \"one-reason\" decision rule \u2014 only a single feature is ever used on any given choice. Because only the sign of the comparison on the top discriminating cue matters, TTB ignores both the magnitude of that difference and all information on lower-validity cues, making it maximally frugal in the use of evidence. Cue validities are subjective and can be learned, inferred from instructions, or fixed by task structure. When no cue discriminates (all feature-wise comparisons tie) the learner has no basis for preference and must guess. Response noise enters through a softmax over the binary TTB score (winner = 1, loser = 0) with inverse temperature beta, plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+            "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Take The Best (Gigerenzer & Goldstein 1996).\n    # Stimulus is the pair of option feature vectors for the current\n    # trial: array-like of shape (2, n_features), row 0 = option A,\n    # row 1 = option B. Cue cascade: features are consulted in order\n    # of descending validity; the first discriminating cue (strict\n    # inequality) determines the winner; if no cue discriminates,\n    # the model guesses uniformly. History is ignored.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"TTB expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n    n_features = stim.shape[1]\n\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    if val.shape[0] != n_features:\n        raise ValueError(\n            f\"validities length {val.shape[0]} != n_features {n_features}.\"\n        )\n    # Descending validity; argsort is stable so validity ties break\n    # toward the earlier feature index.\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n\n    a, b = stim[0], stim[1]\n    winner = None\n    for j in cue_order:\n        if a[j] > b[j]:\n            winner = 0\n            break\n        if b[j] > a[j]:\n            winner = 1\n            break\n\n    if winner is None:\n        # No discriminating cue \u2014 pure guess.\n        return np.ones(2) / 2.0\n\n    scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. For the\n    # binary TTB score this collapses to sigmoid(beta) for the winner,\n    # giving a direct mapping from beta onto the paper's flip-noise\n    # levels (beta=0 \u2194 50/50; beta \u226b 1 \u2194 deterministic).\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]",
+              "validities": "validities"
+            },
+            "rationale": null
+          },
+          "proposer_label": "pi_1",
+          "real_value": 0.505,
+          "real_variance": 0.0018934027777777777,
+          "predicted_values": [
+            {
+              "value": 0.8397916666666667,
+              "variance": 0.010971744791666667,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.32145833333333335,
+              "variance": 0.0025868489583333325,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.4608333333333333,
+              "variance": 0.00411267361111111,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.4925,
+              "variance": 0.003194618055555556,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.49083333333333334,
+              "variance": 0.002207638888888889,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.4970833333333333,
+              "variance": 0.0032293402777777776,
+              "label": "pi_4_1"
+            },
+            {
+              "value": 0.5058333333333334,
+              "variance": 0.0021057291666666668,
+              "label": "pi_6"
+            }
+          ],
+          "data_path": "data/round_000_obs_00.jsonl"
+        },
+        {
+          "experiment": {
+            "rationale": "This design quantitatively dissociates Tallying from Take The Best (TTB) using 4 binary features with distinct, descending validities. Tallying simply counts the number of features each option wins on, completely ignoring validities. TTB acts lexicographically, choosing based entirely on the most valid discriminating feature. The trial pairs are constructed such that the option favored by the highest validity discriminating feature (TTB's choice) is often outnumbered by the sheer quantity of lower-validity features favoring the alternative (Tallying's choice). Furthermore, several trials create a tie for Tallying (equal number of winning features) while TTB makes a deterministic prediction, perfectly separating the two theories.",
+            "validities": [
+              0.95,
+              0.85,
+              0.7,
+              0.6
+            ],
+            "trial_a_ratings": [
+              [
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    \n    matches = []\n    for _, row in data.iterrows():\n        a = np.array(row['option_a_ratings'])\n        b = np.array(row['option_b_ratings'])\n        \n        a_wins = np.sum(a > b)\n        b_wins = np.sum(b > a)\n        \n        # Only consider trials where Tallying has a strict preference\n        if a_wins > b_wins:\n            tally_choice = 0\n            matches.append(int(row['response'] == tally_choice))\n        elif b_wins > a_wins:\n            tally_choice = 1\n            matches.append(int(row['response'] == tally_choice))\n            \n    if not matches:\n        return 0.5\n    return float(np.mean(matches))\n",
+            "rationale": "This metric calculates the proportion of choices that align with Tallying's deterministic predictions on trials where Tallying does not result in a tie. The chosen experimental design pits Tallying against Take The Best such that on the 5 trials where Tallying has a strict preference, TTB predicts the exact opposite option. Therefore, under the Tallying theory, this metric will be high (close to 1, modulo noise), while under TTB it will be very low (close to 0), producing a massive and stable gap between the two theories."
+          },
+          "proposer_theory": {
+            "description": "People compare two options by counting, across all features, how often one option has a higher value than the other. The option that wins on more features is chosen. Tallying discards cardinal magnitudes \u2014 only the sign of each feature-wise comparison matters \u2014 so the heuristic is robust to monotone rescaling of individual features and cannot be swayed by a single large feature difference in the way Equal-Weight can. Ties on an individual feature contribute nothing to either count: that cue is simply treated as uninformative for the pair. No feature is privileged, in contrast to Take The Best; every cue contributes equally to the tally. When the two counts are equal the heuristic has no basis for preference and the learner must guess. Response noise enters through a softmax over the two tallies with inverse temperature beta (interpolating between fully deterministic choice at large beta and uniform guessing at beta = 0), plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+            "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Tallying heuristic (Dawes 1979; Gigerenzer &\n    # Goldstein 1999). Stimulus is the pair of option feature vectors\n    # for the current trial: array-like of shape (2, n_features),\n    # with row 0 = option A, row 1 = option B. History is ignored.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"Tallying expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n\n    a, b = stim[0], stim[1]\n    # Count strict feature-wise wins; ties contribute to neither option.\n    a_wins = float(np.sum(a > b))\n    b_wins = float(np.sum(b > a))\n    scores = np.array([a_wins, b_wins])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. When\n    # a_wins == b_wins the softmax is exactly uniform regardless of\n    # beta, which is the correct behavior for an undiscriminating\n    # tally.\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]"
+            },
+            "rationale": null
+          },
+          "proposer_label": "pi_2",
+          "real_value": 0.5106666666666667,
+          "real_variance": 0.004041777777777779,
+          "predicted_values": [
+            {
+              "value": 0.8623333333333333,
+              "variance": 0.009775666666666667,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.12033333333333333,
+              "variance": 0.006803222222222222,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.5366666666666666,
+              "variance": 0.006055555555555555,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.5063333333333333,
+              "variance": 0.004332111111111111,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.49033333333333334,
+              "variance": 0.0035121111111111112,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.5033333333333333,
+              "variance": 0.004188888888888889,
+              "label": "pi_4_1"
+            },
+            {
+              "value": 0.49833333333333335,
+              "variance": 0.002258333333333334,
+              "label": "pi_6"
+            }
+          ],
+          "data_path": "data/round_000_obs_01.jsonl"
+        }
+      ],
+      "next_theory": {
+        "description": "People compare options by computing a compensatory overall value for each option. This is done by summing the features of each option weighted by their respective validities (Weighted Additive rule). Because empirical behavior in these experiments is highly stochastic (near random guessing), choice is subject to significant softmax noise and lapse rates. Narrowing the inverse temperature bounds forces the model to capture this high level of noise.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"WADD expects a (2, n_features) stimulus; got shape {stim.shape}.\")\n\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    if val.shape[0] != stim.shape[1]:\n        raise ValueError(\"Length of validities must match number of features.\")\n\n    a, b = stim[0], stim[1]\n    \n    # Compute weighted sum of features for each option\n    a_score = np.sum(a * val)\n    b_score = np.sum(b * val)\n    scores = np.array([a_score, b_score])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities = probabilities / probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.0, 1.0]",
+          "epsilon": "[0.0, 1.0]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's advice, the upper bound of beta is narrowed further from 2.0 to 1.0. This restricts the optimizer to a maximally noisy regime, allowing the WADD model to more easily capture the highly stochastic (~0.50) empirical targets observed in the experiments without being drawn to deterministic parameter points."
+      },
+      "next_theory_idx": 2,
+      "next_theory_label": "pi_3"
+    },
+    {
+      "observations": [
+        {
+          "experiment": {
+            "rationale": "This design quantitatively dissociates the non-compensatory Take The Best (TTB) heuristic from the compensatory Weighted Additive (WADD) rule. We use 5 features with a wide spread of validities. Crucially, the competing WADD model is restricted to a low inverse temperature (beta <= 1.0), meaning it can only predict highly stochastic choices (probabilities near 0.5) even when the weighted score difference is maximal. TTB's beta can range up to 20.0, allowing it to predict deterministic, highly confident choices. The trial pairs are constructed as 'compensatory vs. non-compensatory' conflicts: one option always wins on the single highest-validity discriminating cue (the TTB choice), while the other option wins on a multitude of lower-validity cues, giving it a higher overall weighted sum (the WADD choice). Thus, TTB predicts strong choices for Option A on most trials, while WADD predicts weak choices for Option B.",
+            "validities": [
+              0.95,
+              0.85,
+              0.75,
+              0.65,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                1,
+                1
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    \n    val = np.array([0.95, 0.85, 0.75, 0.65, 0.55])\n    \n    a_mat = np.stack(data['option_a_ratings'].values)\n    b_mat = np.stack(data['option_b_ratings'].values)\n    \n    diff = a_mat - b_mat\n    \n    # TTB prediction: sign of the first non-zero difference\n    abs_diff = np.abs(diff)\n    first_diff_idx = np.argmax(abs_diff, axis=1)\n    first_diff_val = diff[np.arange(len(diff)), first_diff_idx]\n    ttb_pred = np.where(first_diff_val > 0, 0, 1)\n    \n    # WADD prediction: based on weighted sum\n    a_score = np.dot(a_mat, val)\n    b_score = np.dot(b_mat, val)\n    wadd_pred = np.where(a_score > b_score, 0, 1)\n    \n    # Identify conflict trials where TTB and WADD make opposite predictions\n    conflict = (ttb_pred != wadd_pred) & (first_diff_val != 0)\n    \n    if not np.any(conflict):\n        return 0.5\n        \n    responses = data['response'].values\n    # Calculate the proportion of choices that align with TTB on conflict trials\n    matches = (responses[conflict] == ttb_pred[conflict])\n    \n    return float(np.mean(matches))",
+            "rationale": "This metric isolates 'conflict trials' where the non-compensatory Take The Best (TTB) heuristic and the compensatory Weighted Additive (WADD) rule predict opposite choices. By calculating the proportion of choices that align with the TTB prediction exclusively on these trials, we strongly separate the two theories. TTB will inherently yield a mean significantly above 0.5 (as its predictions align with the TTB choices), while WADD will yield a mean strictly below 0.5 (as its stochastic choices are biased toward the WADD option, which is the exact opposite of the TTB prediction)."
+          },
+          "proposer_theory": {
+            "description": "People compare two options by consulting cues one at a time in order of validity, stopping at the first cue that discriminates between the two options. That cue alone determines the choice: the option with the higher value on the discriminating cue wins, and no other cue is consulted. Cues with lower validity are never reached when a higher-validity cue already discriminates, so Take The Best is a \"one-reason\" decision rule \u2014 only a single feature is ever used on any given choice. Because only the sign of the comparison on the top discriminating cue matters, TTB ignores both the magnitude of that difference and all information on lower-validity cues, making it maximally frugal in the use of evidence. Cue validities are subjective and can be learned, inferred from instructions, or fixed by task structure. When no cue discriminates (all feature-wise comparisons tie) the learner has no basis for preference and must guess. Response noise enters through a softmax over the binary TTB score (winner = 1, loser = 0) with inverse temperature beta, plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+            "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Take The Best (Gigerenzer & Goldstein 1996).\n    # Stimulus is the pair of option feature vectors for the current\n    # trial: array-like of shape (2, n_features), row 0 = option A,\n    # row 1 = option B. Cue cascade: features are consulted in order\n    # of descending validity; the first discriminating cue (strict\n    # inequality) determines the winner; if no cue discriminates,\n    # the model guesses uniformly. History is ignored.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"TTB expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n    n_features = stim.shape[1]\n\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    if val.shape[0] != n_features:\n        raise ValueError(\n            f\"validities length {val.shape[0]} != n_features {n_features}.\"\n        )\n    # Descending validity; argsort is stable so validity ties break\n    # toward the earlier feature index.\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n\n    a, b = stim[0], stim[1]\n    winner = None\n    for j in cue_order:\n        if a[j] > b[j]:\n            winner = 0\n            break\n        if b[j] > a[j]:\n            winner = 1\n            break\n\n    if winner is None:\n        # No discriminating cue \u2014 pure guess.\n        return np.ones(2) / 2.0\n\n    scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. For the\n    # binary TTB score this collapses to sigmoid(beta) for the winner,\n    # giving a direct mapping from beta onto the paper's flip-noise\n    # levels (beta=0 \u2194 50/50; beta \u226b 1 \u2194 deterministic).\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]",
+              "validities": "validities"
+            },
+            "rationale": null
+          },
+          "proposer_label": "pi_1",
+          "real_value": 0.50375,
+          "real_variance": 0.0038726562500000002,
+          "predicted_values": [
+            {
+              "value": 0.850625,
+              "variance": 0.011749609375,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.4553125,
+              "variance": 0.004121191406249999,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.1459375,
+              "variance": 0.00658798828125,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.523125,
+              "variance": 0.020539453125,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.484375,
+              "variance": 0.00341796875,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.5021875,
+              "variance": 0.0046485351562499996,
+              "label": "pi_4_1"
+            },
+            {
+              "value": 0.5140625,
+              "variance": 0.00274658203125,
+              "label": "pi_6"
+            }
+          ],
+          "data_path": "data/round_001_obs_00.jsonl"
+        },
+        {
+          "experiment": {
+            "rationale": "This design quantitatively dissociates the compensatory Weighted Additive (WADD) rule from the non-compensatory Take The Best (TTB) heuristic. The trial pairs systematically pit the single highest-validity discriminating cue against a coalition of lower-validity cues. In every trial, TTB predicts choice for the option that wins on the earliest discriminating cue, completely ignoring the rest of the features. Conversely, WADD integrates all features and consistently predicts choice for the opposite option, which has a higher total weighted sum due to winning on multiple lower-validity cues. By varying which cue is the highest discriminating one (e.g., the first vs. the second vs. the third) and balancing the left/right presentation, we create a robust set of choices where the two models make diametrically opposed predictions across the entire experiment.",
+            "validities": [
+              0.95,
+              0.85,
+              0.75,
+              0.65,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    \n    val = np.array([0.95, 0.85, 0.75, 0.65, 0.55])\n    \n    A = np.vstack(data['option_a_ratings'].values)\n    B = np.vstack(data['option_b_ratings'].values)\n    \n    score_A = A.dot(val)\n    score_B = B.dot(val)\n    \n    wadd_choice = (score_B > score_A).astype(int)\n    \n    return float(np.mean(data['response'].values == wadd_choice))",
+            "rationale": "The experimental design consists of trials that explicitly pit the predictions of WADD against those of TTB. In every single trial, the two models make diametrically opposed predictions. This metric computes the proportion of choices that are consistent with the WADD model. For data generated by WADD, this proportion will be well above 0.5 (modulo response noise), whereas for data generated by TTB, it will be well below 0.5."
+          },
+          "proposer_theory": {
+            "description": "People compare options by computing a compensatory overall value for each option. This is done by summing the features of each option weighted by their respective validities (Weighted Additive rule). Because empirical behavior in these experiments is highly stochastic (near random guessing), choice is subject to significant softmax noise and lapse rates. Narrowing the inverse temperature bounds forces the model to capture this high level of noise.",
+            "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"WADD expects a (2, n_features) stimulus; got shape {stim.shape}.\")\n\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    if val.shape[0] != stim.shape[1]:\n        raise ValueError(\"Length of validities must match number of features.\")\n\n    a, b = stim[0], stim[1]\n    \n    # Compute weighted sum of features for each option\n    a_score = np.sum(a * val)\n    b_score = np.sum(b * val)\n    scores = np.array([a_score, b_score])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities = probabilities / probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+            "parameters": {
+              "beta": "[0.0, 1.0]",
+              "epsilon": "[0.0, 1.0]",
+              "validities": "validities"
+            },
+            "rationale": "Following the critic's advice, the upper bound of beta is narrowed further from 2.0 to 1.0. This restricts the optimizer to a maximally noisy regime, allowing the WADD model to more easily capture the highly stochastic (~0.50) empirical targets observed in the experiments without being drawn to deterministic parameter points."
+          },
+          "proposer_label": "pi_3",
+          "real_value": 0.5017777777777778,
+          "real_variance": 0.0028610370370370365,
+          "predicted_values": [
+            {
+              "value": 0.5746666666666667,
+              "variance": 0.004340938271604939,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.13977777777777778,
+              "variance": 0.00664735802469136,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.8266666666666667,
+              "variance": 0.009096296296296297,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.4891111111111111,
+              "variance": 0.0030246419753086427,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.476,
+              "variance": 0.00273758024691358,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.5095555555555555,
+              "variance": 0.003209925925925927,
+              "label": "pi_4_1"
+            },
+            {
+              "value": 0.5013333333333333,
+              "variance": 0.0021315555555555554,
+              "label": "pi_6"
+            }
+          ],
+          "data_path": "data/round_001_obs_01.jsonl"
+        }
+      ],
+      "next_theory": {
+        "description": "When faced with complex multi-attribute choices without trial-by-trial feedback, subjects experience cognitive overload. Instead of systematically integrating cue validities and feature vectors, they abandon structured decision strategies and resort to random guessing. Choice behavior is driven entirely by this stochasticity, with only a potential slight bias toward one spatial position (e.g., Option A or Option B) over the other.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    # Under cognitive overload, subjects ignore the state (features) and just guess.\n    # The choice probability is determined only by an intrinsic side bias.\n    p_b = float(parameters.get('side_bias', 0.5))\n    p_a = 1.0 - p_b\n    return np.array([p_a, p_b])",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probabilities = np.asarray(probs, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)",
+        "parameters": {
+          "side_bias": "[0.3, 0.7]"
+        },
+        "rationale": "Across all experiments, the empirical metric values hover extremely close to 0.5, and the between-subject variance is very low. Previous deterministic or highly structured models (like Take The Best or Tallying) produce predictions that significantly deviate from 0.5 on specific trial types, leading to poor fits. This theory instantiates the arbiter's suggestion that subjects are cognitively overloaded and simply guess randomly, with a small parameter for side bias to capture any baseline spatial preference without over-committing to stimulus features."
+      },
+      "next_theory_idx": 1,
+      "next_theory_label": "pi_4"
+    },
+    {
+      "observations": [
+        {
+          "experiment": {
+            "rationale": "To dissociate the Cognitive Overload theory (which predicts choice probabilities are completely invariant to stimulus features and driven only by a constant side bias) from the Weighted Additive theory (which predicts that choice probabilities, despite being noisy, will systematically track the weighted feature differences between options). By presenting trials with maximal and intermediate differences in weighted sums favoring either Option A or Option B, we can observe whether the empirical choice rates shift in the direction of the superior option (supporting WADD) or remain flat across all trial types (supporting Cognitive Overload).",
+            "validities": [
+              0.9,
+              0.8,
+              0.7,
+              0.6
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                1
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                0
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    val = np.array([0.9, 0.8, 0.7, 0.6])\n    \n    def score_diff(row):\n        a = np.array(row['option_a_ratings'])\n        b = np.array(row['option_b_ratings'])\n        return np.sum(b * val) - np.sum(a * val)\n        \n    diffs = data.apply(score_diff, axis=1)\n    \n    b_better = data['response'][diffs > 0.5]\n    a_better = data['response'][diffs < -0.5]\n    \n    m_b = b_better.mean() if len(b_better) > 0 else 0.5\n    m_a = a_better.mean() if len(a_better) > 0 else 0.5\n    \n    return float(m_b - m_a)",
+            "rationale": "The Cognitive Overload theory predicts that subjects ignore feature values and guess based on a constant side bias. Therefore, the probability of choosing Option B should be completely independent of whether Option B is objectively better than Option A. The Weighted Additive (WADD) theory predicts that subjects' choices will be positively correlated with the difference in weighted feature sums. This metric computes the difference in the choice rate of Option B between trials where Option B is substantially better than Option A and trials where Option A is substantially better. Under Cognitive Overload, this difference should be zero; under WADD, it should be significantly positive."
+          },
+          "proposer_theory": {
+            "description": "When faced with complex multi-attribute choices without trial-by-trial feedback, subjects experience cognitive overload. Instead of systematically integrating cue validities and feature vectors, they abandon structured decision strategies and resort to random guessing. Choice behavior is driven entirely by this stochasticity, with only a potential slight bias toward one spatial position (e.g., Option A or Option B) over the other.",
+            "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    # Under cognitive overload, subjects ignore the state (features) and just guess.\n    # The choice probability is determined only by an intrinsic side bias.\n    p_b = float(parameters.get('side_bias', 0.5))\n    p_a = 1.0 - p_b\n    return np.array([p_a, p_b])",
+            "policy_source": "def policy(probs):\n    import numpy as np\n    probabilities = np.asarray(probs, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)",
+            "parameters": {
+              "side_bias": "[0.3, 0.7]"
+            },
+            "rationale": "Across all experiments, the empirical metric values hover extremely close to 0.5, and the between-subject variance is very low. Previous deterministic or highly structured models (like Take The Best or Tallying) produce predictions that significantly deviate from 0.5 on specific trial types, leading to poor fits. This theory instantiates the arbiter's suggestion that subjects are cognitively overloaded and simply guess randomly, with a small parameter for side bias to capture any baseline spatial preference without over-committing to stimulus features."
+          },
+          "proposer_label": "pi_4",
+          "real_value": -0.04999999999999993,
+          "real_variance": 0.021790123456790128,
+          "predicted_values": [
+            {
+              "value": 0.0038888888888889417,
+              "variance": 0.03265462962962963,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.22166666666666668,
+              "variance": 0.0710645061728395,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.4816666666666667,
+              "variance": 0.01764228395061728,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.6699999999999999,
+              "variance": 0.038322222222222216,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.01388888888888884,
+              "variance": 0.033433641975308646,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.026111111111111085,
+              "variance": 0.023808950617283955,
+              "label": "pi_4_1"
+            },
+            {
+              "value": 0.026111111111111085,
+              "variance": 0.025629938271604938,
+              "label": "pi_6"
+            }
+          ],
+          "data_path": "data/round_002_obs_00.jsonl"
+        },
+        {
+          "experiment": {
+            "rationale": "To quantitatively dissociate the highly-stochastic Weighted Additive (WADD) theory from the Cognitive Overload (random guessing) theory, we must test whether choice probabilities remain completely flat across trials or whether they track the weighted feature differences, even if dampened by high noise. We use 6 features to create a wide spectrum of weighted score differences between Option A and Option B, ranging from subtle (+0.6) to extreme (+4.5), and their exact mirrors. WADD predicts a monotonic relationship between the score difference and the probability of choosing A, whereas Cognitive Overload predicts a completely flat choice rate driven only by a constant side bias.",
+            "validities": [
+              1.0,
+              0.9,
+              0.8,
+              0.7,
+              0.6,
+              0.5
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                0,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                0,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                1,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    \n    validities = np.array([1.0, 0.9, 0.8, 0.7, 0.6, 0.5])\n    A = np.array(data['option_a_ratings'].tolist())\n    B = np.array(data['option_b_ratings'].tolist())\n    \n    # Calculate the difference in WADD scores between Option A and Option B\n    score_diff = A.dot(validities) - B.dot(validities)\n    \n    # 1 if A was chosen, 0 if B was chosen\n    chose_a = 1.0 - data['response'].values\n    \n    if np.var(score_diff) == 0:\n        return 0.0\n    \n    # Calculate the linear slope of choosing A as a function of the score difference\n    slope, _ = np.polyfit(score_diff, chose_a, 1)\n    return float(slope)",
+            "rationale": "The Weighted Additive (WADD) theory predicts that the probability of choosing Option A increases as the WADD score of A relative to B increases. A linear regression slope between the score difference and the binary choice captures this sensitivity. Under WADD, this slope will be positive (even if attenuated by high noise). Under Cognitive Overload, subjects guess randomly with a fixed side bias, completely ignoring the features, yielding an expected slope of exactly zero."
+          },
+          "proposer_theory": {
+            "description": "People compare options by computing a compensatory overall value for each option. This is done by summing the features of each option weighted by their respective validities (Weighted Additive rule). Because empirical behavior in these experiments is highly stochastic (near random guessing), choice is subject to significant softmax noise and lapse rates. Narrowing the inverse temperature bounds forces the model to capture this high level of noise.",
+            "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"WADD expects a (2, n_features) stimulus; got shape {stim.shape}.\")\n\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    if val.shape[0] != stim.shape[1]:\n        raise ValueError(\"Length of validities must match number of features.\")\n\n    a, b = stim[0], stim[1]\n    \n    # Compute weighted sum of features for each option\n    a_score = np.sum(a * val)\n    b_score = np.sum(b * val)\n    scores = np.array([a_score, b_score])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities = probabilities / probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+            "parameters": {
+              "beta": "[0.0, 1.0]",
+              "epsilon": "[0.0, 1.0]",
+              "validities": "validities"
+            },
+            "rationale": "Following the critic's advice, the upper bound of beta is narrowed further from 2.0 to 1.0. This restricts the optimizer to a maximally noisy regime, allowing the WADD model to more easily capture the highly stochastic (~0.50) empirical targets observed in the experiments without being drawn to deterministic parameter points."
+          },
+          "proposer_label": "pi_3",
+          "real_value": 0.0014032815198618247,
+          "real_variance": 0.0003229305144988564,
+          "predicted_values": [
+            {
+              "value": 0.050359815774323635,
+              "variance": 0.001098148680518062,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.0010182786413356364,
+              "variance": 0.00045765766114277994,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.10414867587795062,
+              "variance": 0.00131224425788297,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.11823186528497426,
+              "variance": 0.000662991752885735,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.0034830166954519315,
+              "variance": 0.00043372710270786957,
+              "label": "pi_5"
+            },
+            {
+              "value": -0.004191853770869322,
+              "variance": 0.00035563689059595267,
+              "label": "pi_4_1"
+            },
+            {
+              "value": 0.0017559009786989085,
+              "variance": 0.0003906362118760999,
+              "label": "pi_6"
+            }
+          ],
+          "data_path": "data/round_002_obs_01.jsonl"
+        }
+      ],
+      "next_theory": {
+        "description": "Tallying under Overload (Equal Weights): Under cognitive overload without trial-by-trial feedback, subjects abandon complex integration of cue validities. Instead, they fall back on a highly simplified Equal Weights heuristic, merely tallying the total number of positive features (1s) for each option. Even with this simplification, the high cognitive demand leads to near-random choice behavior, which is captured by extreme softmax noise and a very high lapse rate.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    stim = np.asarray(state, dtype=float)\n    \n    # Equal Weights / Tallying: count the number of positive features (1s) for each option\n    a, b = stim[0], stim[1]\n    a_score = np.sum(a)\n    b_score = np.sum(b)\n    scores = np.array([a_score, b_score])\n    \n    beta = float(parameters['beta'])\n    epsilon = float(parameters['epsilon'])\n    \n    # Softmax with max-subtraction for numerical stability\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    # Apply high lapse rate\n    n_opts = len(scores)\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probabilities = np.asarray(probs, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)",
+        "parameters": {
+          "beta": "[0.0, 0.2]",
+          "epsilon": "[0.8, 1.0]"
+        },
+        "rationale": "Following the arbiter's feedback, this theory replaces the Weighted Additive (WADD) approach with an Equal Weights (Tallying) heuristic. By ignoring cue validities and merely counting the number of positive features per option, the model avoids overpredicting sensitivity to score differences. To capture the empirically observed near-random behavior, the tallying process is coupled with a very high lapse rate (epsilon in [0.8, 1.0]) and extreme softmax noise (beta in [0.0, 0.2]). This provides a structured but simplified alternative to pure random guessing."
+      },
+      "next_theory_idx": 2,
+      "next_theory_label": "pi_5"
+    },
+    {
+      "observations": [
+        {
+          "experiment": {
+            "rationale": "To quantitatively dissociate the Cognitive Overload theory (which predicts completely flat choice probabilities driven only by a spatial side bias) from the Tallying under Overload theory (which predicts that choice probabilities, despite being extremely noisy, will systematically track the difference in the unweighted sum of features). We present trials with maximal variation in the tally difference between Option A and Option B (ranging from +5 to -5). The Tallying theory predicts a monotonic relationship between the tally difference and the probability of choosing A, whereas the Cognitive Overload theory predicts a completely flat choice rate across all trials.",
+            "validities": [
+              0.9,
+              0.8,
+              0.7,
+              0.6,
+              0.5
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    subject_means = data.groupby('subject_id')['response'].apply(lambda x: np.mean(x == 0))\n    return float(np.mean(np.abs(subject_means - 0.5)))",
+            "rationale": "The Cognitive Overload theory models choice as a random guess with a potential spatial side bias, predicting that subjects will systematically deviate from a 50/50 choice proportion across the experiment. The Tallying under Overload theory, however, predicts symmetric choice probabilities centered exactly at 50% because the trial design is perfectly balanced in terms of tally differences (ranging from +5 to -5). By computing the mean absolute deviation of each subject's overall choice rate from 0.5, this metric captures the presence of the side bias in the Cognitive Overload theory and its absence in the Tallying theory."
+          },
+          "proposer_theory": {
+            "description": "When faced with complex multi-attribute choices without trial-by-trial feedback, subjects experience cognitive overload. Instead of systematically integrating cue validities and feature vectors, they abandon structured decision strategies and resort to random guessing. Choice behavior is driven entirely by this stochasticity, with only a potential slight bias toward one spatial position (e.g., Option A or Option B) over the other.",
+            "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    # Under cognitive overload, subjects ignore the state (features) and just guess.\n    # The choice probability is determined only by an intrinsic side bias.\n    p_b = float(parameters.get('side_bias', 0.5))\n    p_a = 1.0 - p_b\n    return np.array([p_a, p_b])",
+            "policy_source": "def policy(probs):\n    import numpy as np\n    probabilities = np.asarray(probs, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)",
+            "parameters": {
+              "side_bias": "[0.3, 0.7]"
+            },
+            "rationale": "Across all experiments, the empirical metric values hover extremely close to 0.5, and the between-subject variance is very low. Previous deterministic or highly structured models (like Take The Best or Tallying) produce predictions that significantly deviate from 0.5 on specific trial types, leading to poor fits. This theory instantiates the arbiter's suggestion that subjects are cognitively overloaded and simply guess randomly, with a small parameter for side bias to capture any baseline spatial preference without over-committing to stimulus features."
+          },
+          "proposer_label": "pi_4",
+          "real_value": 0.043636363636363626,
+          "real_variance": 0.0006888429752066119,
+          "predicted_values": [
+            {
+              "value": 0.10499999999999998,
+              "variance": 0.003494628099173554,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.04272727272727272,
+              "variance": 0.0009946280991735537,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.037045454545454534,
+              "variance": 0.0007686466942148762,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.028181818181818176,
+              "variance": 0.0005435950413223139,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.0459090909090909,
+              "variance": 0.0013685950413223145,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.04204545454545453,
+              "variance": 0.0010188533057851243,
+              "label": "pi_4_1"
+            },
+            {
+              "value": 0.039772727272727265,
+              "variance": 0.0009723657024793393,
+              "label": "pi_6"
+            }
+          ],
+          "data_path": "data/round_003_obs_00.jsonl"
+        },
+        {
+          "experiment": {
+            "rationale": "To quantitatively dissociate the Tallying under Overload theory from the pure Cognitive Overload (random guessing) theory, we must test whether choice probabilities remain completely flat across trials or whether they track the unweighted feature tally differences, even if heavily dampened by extreme noise and lapse rates. We use 8 features to create a wide spectrum of tally differences between Option A and Option B, ranging from +8 to -8. The Tallying under Overload theory predicts a slight but systematic monotonic relationship between the tally difference and the probability of choosing A, whereas the pure Cognitive Overload theory predicts a completely flat choice rate driven only by a constant spatial side bias.",
+            "validities": [
+              0.95,
+              0.85,
+              0.75,
+              0.65,
+              0.6,
+              0.55,
+              0.52,
+              0.5
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    # Group by subject and calculate each subject's overall choice rate for Option B\n    subject_means = data.groupby('subject_id')['response'].mean()\n    # Calculate the absolute deviation from 0.5 (which represents no side bias)\n    # and return the mean deviation across subjects.\n    return float(subject_means.apply(lambda x: abs(x - 0.5)).mean())",
+            "rationale": "The Competing theory (Cognitive Overload) posits that subjects fall back on a random guessing strategy driven by a constant side bias, which varies uniformly between 0.3 and 0.7 across subjects. This results in an expected absolute deviation from 0.5 of roughly 0.10. The Advocated theory (Tallying under Overload) assumes subjects use equal weights to tally features. Since the experimental design is perfectly symmetric (for every trial favoring A, there is a mirror trial favoring B), the true overall choice rate for any subject under the Advocated theory is exactly 0.5. Any deviation from 0.5 is solely due to binomial noise, yielding a much smaller expected absolute deviation (around 0.04). Therefore, the mean absolute deviation of the subject's overall choice rate from 0.5 strongly discriminates the two theories."
+          },
+          "proposer_theory": {
+            "description": "Tallying under Overload (Equal Weights): Under cognitive overload without trial-by-trial feedback, subjects abandon complex integration of cue validities. Instead, they fall back on a highly simplified Equal Weights heuristic, merely tallying the total number of positive features (1s) for each option. Even with this simplification, the high cognitive demand leads to near-random choice behavior, which is captured by extreme softmax noise and a very high lapse rate.",
+            "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    stim = np.asarray(state, dtype=float)\n    \n    # Equal Weights / Tallying: count the number of positive features (1s) for each option\n    a, b = stim[0], stim[1]\n    a_score = np.sum(a)\n    b_score = np.sum(b)\n    scores = np.array([a_score, b_score])\n    \n    beta = float(parameters['beta'])\n    epsilon = float(parameters['epsilon'])\n    \n    # Softmax with max-subtraction for numerical stability\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    # Apply high lapse rate\n    n_opts = len(scores)\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)",
+            "policy_source": "def policy(probs):\n    import numpy as np\n    probabilities = np.asarray(probs, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)",
+            "parameters": {
+              "beta": "[0.0, 0.2]",
+              "epsilon": "[0.8, 1.0]"
+            },
+            "rationale": "Following the arbiter's feedback, this theory replaces the Weighted Additive (WADD) approach with an Equal Weights (Tallying) heuristic. By ignoring cue validities and merely counting the number of positive features per option, the model avoids overpredicting sensitivity to score differences. To capture the empirically observed near-random behavior, the tallying process is coupled with a very high lapse rate (epsilon in [0.8, 1.0]) and extreme softmax noise (beta in [0.0, 0.2]). This provides a structured but simplified alternative to pure random guessing."
+          },
+          "proposer_label": "pi_5",
+          "real_value": 0.03333333333333335,
+          "real_variance": 0.0007802469135802471,
+          "predicted_values": [
+            {
+              "value": 0.044222222222222225,
+              "variance": 0.0009159999999999998,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.09622222222222222,
+              "variance": 0.004832641975308643,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.04355555555555554,
+              "variance": 0.0008288395061728395,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.03133333333333332,
+              "variance": 0.0006947654320987652,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.04666666666666666,
+              "variance": 0.0008987654320987653,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.04444444444444444,
+              "variance": 0.0011456790123456787,
+              "label": "pi_4_1"
+            },
+            {
+              "value": 0.04866666666666666,
+              "variance": 0.0018216790123456795,
+              "label": "pi_6"
+            }
+          ],
+          "data_path": "data/round_003_obs_01.jsonl"
+        }
+      ],
+      "next_theory": {
+        "description": "When faced with complex multi-attribute choices without trial-by-trial feedback, subjects experience cognitive overload. Instead of systematically integrating cue validities and feature vectors, they abandon structured decision strategies and resort to random guessing. Choice behavior is driven entirely by this stochasticity, with only a potential slight bias toward one spatial position (e.g., Option A or Option B) over the other.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    # Under cognitive overload, subjects ignore the state (features) and just guess.\n    # The choice probability is determined only by an intrinsic side bias.\n    p_b = float(parameters.get('side_bias', 0.5))\n    p_a = 1.0 - p_b\n    return np.array([p_a, p_b])",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probabilities = np.asarray(probs, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)",
+        "parameters": {
+          "side_bias": "[0.48, 0.52]"
+        },
+        "rationale": "Following the arbiter's recommendation, the range for the `side_bias` parameter is heavily restricted to [0.48, 0.52]. The previous range of [0.3, 0.7] allowed for too much systematic side preference, leading to an overestimation of the mean absolute deviation from 0.5 in choice proportions. A tighter range closely mimics pure random guessing (with finite-trial binomial variance accounting for most of the observed ~0.04 deviation), better matching the empirical data in Experiments 7 and 8."
+      },
+      "next_theory_idx": 1,
+      "next_theory_label": "pi_4_1"
+    },
+    {
+      "observations": [
+        {
+          "experiment": {
+            "rationale": "To quantitatively dissociate the pure Cognitive Overload (random guessing) theory from the Tallying under Overload theory, we must test whether choice probabilities remain completely flat across trials or whether they track the unweighted feature tally differences, even if heavily dampened by extreme noise. We use 10 features to create a wide spectrum of tally differences between Option A and Option B, ranging from +10 to -10. The Tallying under Overload theory predicts a slight but systematic monotonic relationship between the tally difference and the probability of choosing A, whereas the pure Cognitive Overload theory predicts a completely flat choice rate driven only by a constant spatial side bias.",
+            "validities": [
+              0.95,
+              0.9,
+              0.85,
+              0.8,
+              0.75,
+              0.7,
+              0.65,
+              0.6,
+              0.55,
+              0.5
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    \n    # Calculate the unweighted sum of positive features (tally) for both options\n    tally_a = data['option_a_ratings'].apply(lambda x: sum(x))\n    tally_b = data['option_b_ratings'].apply(lambda x: sum(x))\n    diff = tally_a - tally_b\n    \n    # Template Tallying Model with expected parameters (beta=0.1, epsilon=0.9)\n    # This provides the optimal non-linear transformation of the tally difference\n    p_core_a = 1.0 / (1.0 + np.exp(-0.1 * diff))\n    p_a = 0.1 * p_core_a + 0.45\n    \n    # Likelihood of the actual choice under the Template Tallying Model\n    p_choice = np.where(data['response'] == 0, p_a, 1.0 - p_a)\n    \n    # Compute the Log-Likelihood Ratio (LLR) against the Cognitive Overload model (p=0.5)\n    llr = np.log(p_choice / 0.5)\n    \n    # Return the total LLR (sum across all trials)\n    # This acts as the optimal test statistic for discriminating the two theories.\n    return float(np.sum(llr))",
+            "rationale": "By the Neyman-Pearson lemma, the most powerful test statistic for distinguishing two distributions is their Log-Likelihood Ratio (LLR). Because the effect size of the Tallying theory is heavily dampened by extreme noise (high epsilon, low beta), simple linear metrics like consistency rate or mean advantage suffer from a low signal-to-noise ratio and fail to reach significance at N=25. Instead, this metric constructs a 'Template Tallying Model' using the expected parameter values (beta=0.1, epsilon=0.9) to compute the theoretical probability of the subject's actual choice on every trial. We then calculate the LLR of this choice against the Cognitive Overload baseline (pure random guessing, p=0.5). Summing these log-likelihoods across all trials optimally accumulates the weak but systematic monotonic signals predicted by the Tallying theory, maximizing the discriminative power between the two models."
+          },
+          "proposer_theory": {
+            "description": "When faced with complex multi-attribute choices without trial-by-trial feedback, subjects experience cognitive overload. Instead of systematically integrating cue validities and feature vectors, they abandon structured decision strategies and resort to random guessing. Choice behavior is driven entirely by this stochasticity, with only a potential slight bias toward one spatial position (e.g., Option A or Option B) over the other.",
+            "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    # Under cognitive overload, subjects ignore the state (features) and just guess.\n    # The choice probability is determined only by an intrinsic side bias.\n    p_b = float(parameters.get('side_bias', 0.5))\n    p_a = 1.0 - p_b\n    return np.array([p_a, p_b])",
+            "policy_source": "def policy(probs):\n    import numpy as np\n    probabilities = np.asarray(probs, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)",
+            "parameters": {
+              "side_bias": "[0.48, 0.52]"
+            },
+            "rationale": "Following the arbiter's recommendation, the range for the `side_bias` parameter is heavily restricted to [0.48, 0.52]. The previous range of [0.3, 0.7] allowed for too much systematic side preference, leading to an overestimation of the mean absolute deviation from 0.5 in choice proportions. A tighter range closely mimics pure random guessing (with finite-trial binomial variance accounting for most of the observed ~0.04 deviation), better matching the empirical data in Experiments 7 and 8."
+          },
+          "proposer_label": "pi_4_1",
+          "real_value": -0.44299002660470754,
+          "real_variance": 0.1097881386845568,
+          "predicted_values": [
+            {
+              "value": -3.966105943562103,
+              "variance": 0.08510790040194748,
+              "label": "pi_4_1"
+            },
+            {
+              "value": 2.2755854433314227,
+              "variance": 0.14115114437058585,
+              "label": "pi_5"
+            },
+            {
+              "value": 81.24084705922048,
+              "variance": 0.21065992502353492,
+              "label": "pi_1"
+            },
+            {
+              "value": 83.34642169145062,
+              "variance": 0.16353040632365268,
+              "label": "pi_2"
+            },
+            {
+              "value": 40.4195207201285,
+              "variance": 0.4598302816761224,
+              "label": "pi_3"
+            },
+            {
+              "value": -5.285001659936694,
+              "variance": 0.09202498125250445,
+              "label": "pi_4"
+            },
+            {
+              "value": -0.72382167572723,
+              "variance": 0.061053389173016524,
+              "label": "pi_6"
+            }
+          ],
+          "data_path": "data/round_004_obs_00.jsonl"
+        },
+        {
+          "experiment": {
+            "rationale": "To quantitatively dissociate the Tallying under Overload theory from the pure Cognitive Overload theory, we vary the unweighted feature tally differences across a 9-feature design. The Cognitive Overload theory predicts that choice probabilities will be completely flat and driven only by a spatial side bias, regardless of the features. In contrast, the Tallying under Overload theory predicts that despite extreme noise and high lapse rates, choice probabilities will still exhibit a slight monotonic relationship with the tally difference (sum of features of A minus sum of features of B). By presenting trials with maximal tally differences (up to +9 and -9), we can detect this subtle slope.",
+            "validities": [
+              0.95,
+              0.9,
+              0.85,
+              0.8,
+              0.75,
+              0.7,
+              0.65,
+              0.6,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    sum_a = data['option_a_ratings'].apply(sum)\n    sum_b = data['option_b_ratings'].apply(sum)\n    tally_diff = sum_a - sum_b\n    chose_higher = ((tally_diff > 0) & (data['response'] == 0)) | ((tally_diff < 0) & (data['response'] == 1))\n    return float(chose_higher.sum())",
+            "rationale": "Calculates the total count of tally-consistent choices across all trials in the provided dataset. Under the pure Cognitive Overload theory, choices are random with respect to the features, so the expected total is exactly half the number of trials. Under the Tallying under Overload theory, subjects retain a slight preference for the option with the higher unweighted tally, leading to a reliably higher total count of tally-consistent choices. By returning the aggregate sum rather than the mean, this metric captures the cumulative signal of tallying across the entire dataset, maximizing the numerical separation between the theories while the subject-level variance remains bounded."
+          },
+          "proposer_theory": {
+            "description": "Tallying under Overload (Equal Weights): Under cognitive overload without trial-by-trial feedback, subjects abandon complex integration of cue validities. Instead, they fall back on a highly simplified Equal Weights heuristic, merely tallying the total number of positive features (1s) for each option. Even with this simplification, the high cognitive demand leads to near-random choice behavior, which is captured by extreme softmax noise and a very high lapse rate.",
+            "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    stim = np.asarray(state, dtype=float)\n    \n    # Equal Weights / Tallying: count the number of positive features (1s) for each option\n    a, b = stim[0], stim[1]\n    a_score = np.sum(a)\n    b_score = np.sum(b)\n    scores = np.array([a_score, b_score])\n    \n    beta = float(parameters['beta'])\n    epsilon = float(parameters['epsilon'])\n    \n    # Softmax with max-subtraction for numerical stability\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    # Apply high lapse rate\n    n_opts = len(scores)\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)",
+            "policy_source": "def policy(probs):\n    import numpy as np\n    probabilities = np.asarray(probs, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)",
+            "parameters": {
+              "beta": "[0.0, 0.2]",
+              "epsilon": "[0.8, 1.0]"
+            },
+            "rationale": "Following the arbiter's feedback, this theory replaces the Weighted Additive (WADD) approach with an Equal Weights (Tallying) heuristic. By ignoring cue validities and merely counting the number of positive features per option, the model avoids overpredicting sensitivity to score differences. To capture the empirically observed near-random behavior, the tallying process is coupled with a very high lapse rate (epsilon in [0.8, 1.0]) and extreme softmax noise (beta in [0.0, 0.2]). This provides a structured but simplified alternative to pure random guessing."
+          },
+          "proposer_label": "pi_5",
+          "real_value": 1136.0,
+          "real_variance": 13.286399999999999,
+          "predicted_values": [
+            {
+              "value": 2310.0,
+              "variance": 25.72,
+              "label": "pi_5"
+            },
+            {
+              "value": 2267.0,
+              "variance": 26.424400000000002,
+              "label": "pi_4_1"
+            },
+            {
+              "value": 3860.0,
+              "variance": 70.71999999999998,
+              "label": "pi_1"
+            },
+            {
+              "value": 3865.0,
+              "variance": 51.05,
+              "label": "pi_2"
+            },
+            {
+              "value": 2900.0,
+              "variance": 124.36,
+              "label": "pi_3"
+            },
+            {
+              "value": 2283.0,
+              "variance": 19.7044,
+              "label": "pi_4"
+            },
+            {
+              "value": 2275.0,
+              "variance": 25.09,
+              "label": "pi_6"
+            }
+          ],
+          "data_path": "data/round_004_obs_01.jsonl"
+        }
+      ],
+      "next_theory": {
+        "description": "Sequential Choice Dependency under Overload: When faced with complex multi-attribute choices without trial-by-trial feedback, subjects experience cognitive overload and abandon structured decision strategies that integrate cue validities. Instead of a static side bias, their random-looking behavior is driven by sequential choice dependencies\u2014specifically, a 'stay/switch' heuristic where their current choice is heavily influenced by their choice on the immediate previous trial.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    # Under cognitive overload, subjects ignore the state (features).\n    # Choice probability is determined by a sequential dependency on the previous choice.\n    p_stay = float(parameters.get('p_stay', 0.5))\n    \n    if len(history['response']) == 0:\n        # No previous choice, guess randomly\n        return np.array([0.5, 0.5])\n    \n    last_response = history['response'][-1]\n    \n    if last_response == 0:\n        p_a = p_stay\n        p_b = 1.0 - p_stay\n    else:\n        p_a = 1.0 - p_stay\n        p_b = p_stay\n        \n    return np.array([p_a, p_b])",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probabilities = np.asarray(probs, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)",
+        "parameters": {
+          "p_stay": "[0.3, 0.7]"
+        },
+        "rationale": "Following the arbiter's feedback, this theory maintains the core assumption of cognitive overload (ignoring the complex stimulus features) but replaces the static side bias with sequential choice dependencies. By introducing a 'p_stay' parameter, the model hypothesizes that subjects rely on a 'stay/switch' heuristic, meaning their current action is heavily influenced by their immediate previous action. This provides a distinct and testable mechanism for the stochastic behavior observed across experiments, without relying on cue integration."
+      },
+      "next_theory_idx": 2,
+      "next_theory_label": "pi_6"
+    }
+  ]
+}

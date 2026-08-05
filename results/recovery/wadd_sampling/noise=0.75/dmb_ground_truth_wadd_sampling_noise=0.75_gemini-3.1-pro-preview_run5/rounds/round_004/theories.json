@@ -1,0 +1,58 @@
+{
+  "round_idx": 4,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_5",
+      "killed": false,
+      "theory": {
+        "description": "Rank-Weighted Additive Theory: Individuals integrate all cues but weight them according to an exponential decay based solely on their rank-order of validity. This creates a 'soft' lexicographic rule that acts primarily like Take-The-Best, but allows multiple secondary cues to exert a small, non-zero compensatory pull on the decision. Response variability is captured via a softmax choice rule and a lapse rate.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be shape (2, n_features).\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Ranks: 0 is highest validity\n    order = np.argsort(-val, kind=\"stable\")\n    ranks = np.empty_like(order)\n    ranks[order] = np.arange(len(val))\n    \n    # Exponential decay based on rank\n    decay = float(parameters[\"decay\"])\n    weights = decay ** ranks\n    \n    score_a = np.sum(a * weights)\n    score_b = np.sum(b * weights)\n    scores = np.array([score_a, score_b])\n    \n    beta = float(parameters[\"beta\"])\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    epsilon = float(parameters[\"epsilon\"])\n    p_final = (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n    \n    return p_final\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+        "parameters": {
+          "decay": "[0.01, 1.0]",
+          "beta": "[0.01, 5.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the latest critic feedback, the previous attempt to restrict noise parameters failed because it amplified deterministic preferences, exacerbating the overshoot in Exps 3 and 4 and dropping Exp 6 too low. To flatten the choice probabilities and compress the exaggerated compensatory differences in Exps 3/4 while pulling Exp 6 closer to 0.5, we expand the lower bound of `beta` to [0.01, 5.0] to allow softer maximization, while maintaining the Rank-Weighted Additive mechanism and the `epsilon` range."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_6",
+      "killed": true,
+      "theory": {
+        "description": "Dynamic Dual Process Strategy Mixture: Individuals probabilistically switch between a non-compensatory 'Take-The-Best' (TTB) heuristic and a compensatory 'Tallying' strategy. Crucially, the probability of deploying TTB is not fixed but depends on the structural clarity of the choice\u2014specifically, the validity of the best discriminating cue. When the best discriminating cue is highly valid, individuals are more likely to rely on TTB; when it is weaker, they shift towards Tallying (which integrates all positive cues with equal weight). To account for trials where choice behavior strongly diverges from both heuristics, the model allows for a wide range of decision noise (lapse rate) and potentially inverted or very soft Tallying temperatures.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Identify the best discriminating cue for Take-The-Best (TTB)\n    cue_order = np.argsort(-val, kind=\"stable\")\n    winner_ttb = None\n    v_disc = 0.5  # default if no cues discriminate\n    \n    for j in cue_order:\n        if a[j] != b[j]:\n            winner_ttb = 0 if a[j] > b[j] else 1\n            v_disc = val[j]\n            break\n            \n    if winner_ttb == 0:\n        p_ttb = np.array([1.0, 0.0])\n    elif winner_ttb == 1:\n        p_ttb = np.array([0.0, 1.0])\n    else:\n        p_ttb = np.array([0.5, 0.5])\n        \n    # Strategy 2: Tallying (unit-weight additive)\n    scores_tally = np.array([np.sum(a), np.sum(b)])\n    beta_tally = float(parameters[\"beta_tally\"])\n    z_tally = beta_tally * scores_tally\n    z_tally = z_tally - np.max(z_tally)\n    e_tally = np.exp(z_tally)\n    p_tally = e_tally / np.sum(e_tally)\n    \n    # Dynamic Mixture Weight\n    # w_ttb depends on a base rate and scales with the validity of the discriminating cue\n    w_base = float(parameters[\"w_base\"])\n    alpha = float(parameters[\"alpha\"])\n    \n    w_ttb = w_base + alpha * (v_disc - 0.5)\n    w_ttb = np.clip(w_ttb, 0.0, 1.0)\n    \n    p_mix = w_ttb * p_ttb + (1.0 - w_ttb) * p_tally\n    \n    # Lapse rate\n    epsilon = float(parameters[\"epsilon\"])\n    p_final = (1.0 - epsilon) * p_mix + epsilon * np.array([0.5, 0.5])\n    \n    return p_final",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))",
+        "parameters": {
+          "w_base": "[0.0, 1.0]",
+          "alpha": "[-2.0, 2.0]",
+          "beta_tally": "[-1.0, 10.0]",
+          "epsilon": "[0.0, 1.0]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's feedback, both the static mixture and logistic mixture iterations were rejected because they failed to capture behavior in experiments like Experiment 6 where individuals frequently choose the option that contradicts BOTH Take-The-Best and Tallying. To accommodate this, we revert to the successful clipped linear dynamic mixture formulation from Iteration 1, but we widen the parameter bounds for noise. Specifically, `epsilon` is expanded to [0.0, 1.0] and `beta_tally` is expanded to [-1.0, 10.0]. This allows the model to leverage higher lapse rates or softer/inverted tallying to accurately reflect the substantial decision noise or idiosyncratic weighting observed in these challenging trials, without altering the foundational TTB + Tallying architecture."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_7",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Cardinal Validity-Weighted Additive Theory: Individuals integrate all available cues but weight them according to a non-linear transformation of their cardinal validities. By scaling the validities (e.g., using a power function on the validity above chance), the theory naturally accounts for 'cliffs' in cue weights when validities drop sharply, mimicking heuristic-like shifts (such as Take-The-Best) without discarding compensatory integration. This allows the model to flexibly capture both linear accumulation and highly non-linear, cue-specific dominance depending on the environment.",
+      "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    gamma = float(parameters[\"gamma\"])\n    \n    # Scale validities: (v - 0.5)^gamma\n    # We use a small epsilon to avoid issues with 0^gamma if gamma is very small\n    v_shifted = np.clip(val - 0.5, 1e-6, 0.5)\n    weights = v_shifted ** gamma\n    \n    score_a = np.sum(a * weights)\n    score_b = np.sum(b * weights)\n    \n    beta = float(parameters[\"beta\"])\n    z = beta * np.array([score_a, score_b])\n    z = z - np.max(z)\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    epsilon = float(parameters[\"epsilon\"])\n    p_final = (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n    \n    return p_final\n",
+      "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+      "parameters": {
+        "gamma": "[0.1, 20.0]",
+        "beta": "[0.1, 50.0]",
+        "epsilon": "[0.0, 0.5]",
+        "validities": "validities"
+      },
+      "rationale": "Following the critic's advice, we retain the exact mathematical structure of the Iter 1 base model, which uses the `(v - 0.5)^gamma` transformation. Every attempt to change this functional form has been rejected by the gate, indicating that this specific scaling is crucial for capturing the total-evidence effects across experiments. Instead of changing the math, we address the overestimations in Experiments 3, 4, and 10 by expanding the parameter bounds. Specifically, we allow `gamma` a wider range of `[0.1, 20.0]` and `beta` a wider range of `[0.1, 50.0]`. This allows the optimizer to find fractional values of `gamma` that act as a root-transformation, naturally compressing the variance between weights and softening the 'cliff' without breaking the underlying mechanism."
+    }
+  }
+}

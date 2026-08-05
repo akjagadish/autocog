@@ -1,0 +1,295 @@
+# experiment_attempt_00
+
+## System Prompt
+
+You are a renowned cognitive scientist designing an experiment in the Decision Making (Binary Features) domain.
+
+Your goal is to be an adversarial collaborator: propose a design whose outcomes would be predicted by your advocated theory but NOT by the competing theory. Both are provided below.
+
+A useful proposal targets a *quantitative* dissociation between the two theories — how they respond differently to specific stimuli in addition to differences in overall performance.
+
+
+## User Prompt
+
+## EXPERIMENTAL DOMAIN
+Subjects repeatedly choose between two fictitious products, A and B. Each option is described by a vector of binary expert ratings (each 0 or 1). Every experiment fixes its own feature count (via `validities` length) and per-expert validities; both are LLM-proposed. The validities are communicated to the subject in the instructions. Subjects pick whichever product they believe is of higher quality. There is no trial-by-trial correctness feedback.
+
+A multi-attribute decision-making experiment. On each trial the subject sees two options (A, B), each described by `n_features` integer expert ratings (`n_features` is set by the length of `validities` you propose). Choose `validities` — one per feature, each in [0.5, 1.0], order free — to fix each expert's advertised accuracy; subjects are told these values up front. Then choose `trial_a_ratings/trial_b_ratings` (each rating value in [0, 1]) so that the intended heuristics (e.g. TTB, EQW, Tallying, WADD) make distinguishable predictions: avoid degenerate pairs where every heuristic agrees, and prefer pairs that dissociate single-feature focus from feature-summing strategies. Validities and the trial ratings together define the design; they are fixed across all trials in this experiment. No trial-by-trial correctness feedback. The total number of trials per subject is held at roughly 96: each unique pair is repeated K = max(1, 96 // n_unique_pairs) times in an independently-randomized order per subject.
+
+Subjects see the following instructions:
+In this experiment you will repeatedly choose between two fictitious products, A and B. On every trial you will see `n_features` expert ratings for each product (the number of experts is fixed across all trials and is set by the length of `validities`).
+
+Each rating is an integer in [0, 1]. The ratings are displayed as a horizontal filled bar with the numeric value (e.g. "0/1") shown next to it. Higher = more positive.
+
+The same experts (in the same order) provide ratings for both products on every trial. Each expert's accuracy (their validity expressed as a percentage, e.g. "Expert 1 (80%)") is shown next to their rating on every trial AND is also listed up front in an "Expert accuracies" panel.
+
+On each trial, decide which product is of higher quality and press A for product A or B for product B. There is no time limit and no feedback. Note that for the first ~`min_rt_ms` of each trial the answer prompt is hidden and the keys are locked, so subjects first see the full ratings and can answer once the A / B prompt appears — design pairs that actually require comparing the ratings.
+
+Total trials per subject is roughly `MAX_TRIALS`: each unique pair you propose is repeated `K = max(1, MAX_TRIALS // n_unique_pairs)` times in an independently-randomized order per subject.
+
+## ADVOCATED THEORY
+**Description:** Noisy Weighted Additive (WADD) with Regularized Non-linear Weighting: Decision-makers compute a global utility for each option by summing the subjective weights of all cues that favor it. Subjective weights are formed by applying a non-linear transformation to the objective validities (via an exponent gamma), allowing decision-makers to either amplify or compress the relative importance of high-validity cues. To prevent extreme lexicographic behavior, the degree of non-linear amplification and the choice determinism are bounded. These utilities are then translated into choice probabilities via a softmax function parameterized by an inverse temperature and a lapse rate.
+
+**Parameters:**
+- beta: [0.0, 5.0]
+- epsilon: [0.0, 0.5]
+- gamma: [0.1, 3.0]
+- validities: validities
+
+**`predict source code`:**
+```python
+def predict(parameters, stimulus, history):
+    import numpy as np
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(f"Expected a (2, n_features) stimulus; got shape {stim.shape}.")
+
+    validities = np.asarray(parameters["validities"], dtype=float)
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+    gamma = float(parameters["gamma"])
+
+    # Compute a global utility for each option by summing the non-linearly weighted validities
+    weights = validities ** gamma
+    utilities = stim @ weights
+
+    # Translate utilities into choice probabilities using a softmax function
+    z = beta * utilities
+    z = z - np.max(z)  # For numerical stability
+    e = np.exp(z)
+    p_core = e / np.sum(e)
+
+    # Apply lapse rate
+    p_final = (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])
+
+    return p_final
+```
+
+**`policy source code`:**
+```python
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities /= probabilities.sum()
+    return int(np.random.choice(len(probabilities), p=probabilities))
+```
+
+
+## COMPETING THEORY
+**Description:** Probabilistic Cue Sampling with Softmax Validities: Decision-makers evaluate options by sampling a single feature on each trial. The probability of sampling a feature is determined by a softmax function over the objective validities scaled by a sensitivity parameter gamma. The option that is superior on the sampled feature is chosen; ties result in guessing. This predicts intermediate choice proportions when validities are mixed, avoiding deterministic winner-takes-all behavior.
+
+**Parameters:**
+- gamma: [0.0, 2.0]
+- epsilon: [0.0, 0.5]
+- validities: validities
+
+**`predict source code`:**
+```python
+def predict(parameters, stimulus, history):
+    import numpy as np
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(f"Expected a (2, n_features) stimulus; got shape {stim.shape}.")
+
+    validities = np.asarray(parameters["validities"], dtype=float)
+    gamma = float(parameters["gamma"])
+    epsilon = float(parameters["epsilon"])
+
+    # Compute subjective validities using softmax for sampling probabilities
+    z = gamma * validities
+    z = z - np.max(z)  # numerical stability
+    e = np.exp(z)
+    p_feat = e / np.sum(e)
+
+    a, b = stim[0], stim[1]
+
+    # Identify wins and ties for each feature
+    a_wins = (a > b).astype(float)
+    b_wins = (b > a).astype(float)
+    ties = (a == b).astype(float)
+
+    # Analytically marginalize over the sampled feature:
+    # P(Choose A) = sum_i P(sample i) * P(Choose A | sample i)
+    # P(Choose A | sample i) = 1 if a_i > b_i, 0 if b_i > a_i, 0.5 if a_i == b_i
+    p_A = np.sum(p_feat * (a_wins + 0.5 * ties))
+    p_B = np.sum(p_feat * (b_wins + 0.5 * ties))
+
+    p_core = np.array([p_A, p_B])
+
+    # Apply uniform lapse rate
+    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])
+```
+
+**`policy source code`:**
+```python
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities /= probabilities.sum()
+    return int(np.random.choice(len(probabilities), p=probabilities))
+```
+
+
+## ALREADY-EXPLORED EXPERIMENTS (do not repeat)
+[0] To dissociate Tallying from WADD, we must present choices where one option has more positive features (favored by Tallying) but the alternative option's fewer positive features have much higher validities (favored by WADD). By using a set of 5 features with a steep drop-off in validities (e.g., two very high, three relatively low), we can create trials where the sheer count of features points to one option while the weighted sum points to the other. The design includes both congruent and incongruent trials to isolate the specific contribution of feature weighting versus simple counting.
+
+[1] To quantitatively dissociate WADD from Tallying, we use a 5-feature design with a steep drop-off in validities (two high validities, three low validities). This allows us to construct 'incongruent' trials where one option wins on the sheer count of features (favored by Tallying) while the other option wins on the sum of validities due to possessing fewer but much more predictive features (favored by WADD). We also include trials where Tallying sees a tie but WADD has a strong preference, as well as congruent trials where both models agree. This variety ensures that the distinct response patterns of simple counting versus weighted integration can be identified.
+
+[2] To quantitatively dissociate Probabilistic Cue Sampling (PCS) from the Weighted Additive rule (WADD), this design exploits the core difference in their integration mechanisms: PCS uses a softmax over validities to sample a single feature, amplifying the influence of the highest-validity cue, whereas WADD linearly integrates all features. We use four cues with linearly spaced validities. We include 'compensatory' trials where one option possesses the single highest-validity cue but the other possesses all remaining cues (PCS prefers the former, WADD strongly prefers the latter). We also include 'tie-breaker' trials where the sum of validities is equal across both options (yielding a tie in WADD), but the convexity of the softmax in PCS leads to a strong preference for the option with the most valid cue.
+
+[3] This design exploits the fundamental difference between linear integration (WADD) and softmax-based probabilistic sampling (PCS). We use five cues with linearly spaced validities: [0.9, 0.8, 0.7, 0.6, 0.5]. We construct pairs where the difference in the sum of validities is identical (e.g., +0.2, -0.2, or exactly 0). Because WADD is a linear model, it predicts identical choice probabilities across trials with the same validity difference. In contrast, PCS uses a softmax function over validities to determine sampling probabilities. Due to the strict convexity of the exponential function, the difference in sampling probabilities for two cues with a fixed validity difference (e.g., 0.9 vs 0.7 compared to 0.7 vs 0.5) is much larger at the high end of the validity scale. Moreover, for trials where the sum of validities is perfectly tied (e.g., 0.9 + 0.5 vs 0.8 + 0.6), WADD predicts exactly 50/50 guessing, whereas the convexity of the PCS softmax assigns a higher sampling probability to the extreme cues, leading PCS to systematically prefer the option with the single highest validity cue. This provides a crisp, parameter-free quantitative dissociation between the two theories.
+
+[4] This design dissociates Probabilistic Cue Sampling (PCS) from Stochastic Take-The-Best (STTB) by exploiting their different responses to tied top-validity cues and multiple lower-validity cues. STTB searches sequentially in order of validity, terminating as soon as a cue discriminates. Thus, if the highest-validity cues tie, STTB simply moves to the next highest cue and bases its decision entirely on that single cue. In contrast, PCS samples a single cue proportionally to the softmax of validities. If the top cues tie, sampling them leads to guessing, allowing the accumulation of multiple lower-validity cues to dominate the overall choice probability. By presenting trials where the most valid discriminating cue favors option A, but a larger number of lower-validity cues favor option B, STTB will systematically choose A, whereas PCS will assign a higher aggregate probability to B.
+
+[5] This design dissociates Stochastic Take-The-Best (STTB) from Probabilistic Cue Sampling (PCS) by exploiting their divergent handling of tied cues and evidence accumulation. STTB evaluates cues strictly in descending order of validity; if the highest validity cue(s) tie, it skips them without accumulating evidence and bases its decision entirely on the first discriminating cue. In contrast, PCS samples cues based on a softmax distribution over validities. When top cues tie, sampling them leads to a 50/50 guess, effectively diluting the choice probability and allowing a larger number of lower-validity cues to dominate the aggregate decision. By presenting trials where the top cue ties and the next highest cue favors Option A, but all remaining lower-validity cues favor Option B, STTB will systematically choose A, whereas PCS will assign a higher overall probability to B.
+
+[6] This design contrasts Probabilistic Cue Sampling (PCS) and Weighted Additive (WADD) models by exploiting the mathematical properties of their validity transformations. PCS uses a softmax function over validities, which is strictly convex (exp(gamma * v)). Consequently, on trials where the sum of validities is perfectly tied, PCS will systematically assign a higher probability to the option supported by the more extreme validities (e.g., 0.9 and 0.5 over 0.8 and 0.6). WADD, however, uses a power transformation (v^gamma), which can be convex, linear, or concave depending on its gamma parameter. If gamma < 1, WADD will actually prefer the option with intermediate validities, creating a qualitative divergence from PCS. We include several such 'tied-sum' pairs at different validity levels to test this convexity versus concavity distinction, alongside compensatory pairs to ensure broad model identifiability.
+
+## RESPONSE FORMAT
+Return a JSON object with the following fields:
+- rationale: Reasoning behind this experimental design; used when interpreting results.
+- validities: Per-expert validities, one per feature. Each must be in [0.5, 1.0]; order is free (no descending requirement — heuristics that rely on validity-ordering re-sort internally). Length determines n_features for the whole experiment and must match the rating-list length in every trial pair. Pick a spread (at least one high validity and at least one low one) — uniform validities (e.g. all 0.7) collapse WADD into a scaled Equal-Weight rule and make them indistinguishable by any decision.
+- trial_a_ratings: List of option-A rating vectors, one per trial. Each inner list has length equal to len(validities); each value is binary (0 or 1). `trial_a_ratings[i]` pairs with `trial_b_ratings[i]` on trial i.
+- trial_b_ratings: List of option-B rating vectors, one per trial. Same length and shape constraints as `trial_a_ratings`. Pick trials that let the intended heuristics (TTB, EQW, Tallying, WADD) be dissociated; avoid trials where every heuristic agrees.
+
+
+## Response
+
+```json
+{
+  "rationale": "This design exploits a structural limitation in Probabilistic Cue Sampling (PCS) given the parameter bounds. PCS determines sampling probabilities via a softmax over validities scaled by gamma. With validities in [0.5, 1.0] and gamma in [0.0, 2.0], the maximum possible sampling probability for the highest-validity cue in a 5-cue setup is mathematically bounded below 0.5. Consequently, if Option A is supported ONLY by the highest-validity cue and Option B is supported by all four remaining cues, PCS must predict that Option B is chosen more often than Option A (P(A) < 0.5). In contrast, the advocated WADD model transforms validities via a power function (gamma up to 3.0) and linearly integrates them. This allows the utility of the single highest-validity cue to easily exceed the combined utility of the four lower-validity cues, predicting a strong preference for Option A. By including trials that pit the top cue against various combinations of the remaining cues, we create a strict qualitative and quantitative dissociation between the mixture-based sampling of PCS and the non-linear integration of WADD.",
+  "validities": [
+    0.95,
+    0.65,
+    0.6,
+    0.55,
+    0.5
+  ],
+  "trial_a_ratings": [
+    [
+      1,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      1,
+      1,
+      0,
+      0,
+      0
+    ],
+    [
+      1,
+      0,
+      1,
+      0,
+      0
+    ],
+    [
+      0,
+      1,
+      1,
+      1,
+      0
+    ],
+    [
+      1,
+      0,
+      0,
+      1,
+      0
+    ],
+    [
+      1,
+      1,
+      1,
+      0,
+      0
+    ],
+    [
+      0,
+      1,
+      1,
+      0,
+      0
+    ],
+    [
+      1,
+      0,
+      0,
+      0,
+      1
+    ]
+  ],
+  "trial_b_ratings": [
+    [
+      0,
+      1,
+      1,
+      1,
+      1
+    ],
+    [
+      0,
+      0,
+      1,
+      1,
+      1
+    ],
+    [
+      0,
+      1,
+      0,
+      1,
+      1
+    ],
+    [
+      1,
+      0,
+      0,
+      0,
+      1
+    ],
+    [
+      0,
+      1,
+      1,
+      0,
+      1
+    ],
+    [
+      0,
+      0,
+      0,
+      1,
+      1
+    ],
+    [
+      1,
+      0,
+      0,
+      1,
+      1
+    ],
+    [
+      0,
+      1,
+      1,
+      1,
+      0
+    ]
+  ]
+}
+```
+
+## Usage
+
+```json
+{
+  "prompt_token_count": 3512,
+  "candidates_token_count": 596,
+  "total_token_count": 6061
+}
+```

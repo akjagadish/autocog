@@ -1,0 +1,57 @@
+{
+  "round_idx": 2,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_4",
+      "killed": false,
+      "theory": {
+        "description": "Probabilistic Strategy Selection (Mixture of TTB and Tallying)",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    p_lex = float(parameters[\"p_lex\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    a, b = stim[0], stim[1]\n    \n    # Strategy 1: Take-The-Best (Lexicographic)\n    order = np.argsort(-validities, kind='stable')\n    scores_ttb = np.zeros(2)\n    for idx in order:\n        if a[idx] > b[idx]:\n            scores_ttb[0] = 1.0\n            break\n        elif b[idx] > a[idx]:\n            scores_ttb[1] = 1.0\n            break\n            \n    # Strategy 2: Tallying (Compensatory)\n    a_wins = float(np.sum(a > b))\n    b_wins = float(np.sum(b > a))\n    scores_tal = np.array([a_wins, b_wins])\n    \n    # Softmax for TTB\n    z_ttb = beta * (scores_ttb - scores_ttb.max())\n    e_ttb = np.exp(z_ttb)\n    p_ttb = e_ttb / e_ttb.sum()\n    \n    # Softmax for Tallying\n    z_tal = beta * (scores_tal - scores_tal.max())\n    e_tal = np.exp(z_tal)\n    p_tal = e_tal / e_tal.sum()\n    \n    # Mixture of strategies\n    p_core = p_lex * p_ttb + (1.0 - p_lex) * p_tal\n    \n    # Uniform lapse blended into the mixture\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+        "parameters": {
+          "p_lex": "[0.0, 1.0]",
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's advice, we implement a 'Mixture of Strategies' theory. The previous rank-decay model struggled because adjusting a single set of continuous weights caused it to overshoot on some experiments while trying to fit others. By instead modeling behavior as a probabilistic mixture between a pure lexicographic strategy (Take-The-Best) and a pure compensatory strategy (Tallying) on each trial, the model can natively capture the intermediate pooled metrics across all four experiments by balancing the `p_lex` parameter."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_2",
+      "killed": true,
+      "theory": {
+        "description": "People compare two options by computing, for each option, a weighted sum of its feature values, where each feature is weighted by its subjective validity (or importance). The option with the higher weighted sum is chosen. WADD is the compensatory benchmark against which one-reason heuristics like Take The Best are contrasted: a large deficit on a high-validity cue can be compensated by a sufficiently strong advantage on lower-validity cues, so no single feature is ever decisive on its own. Unlike Tallying, WADD uses cardinal feature magnitudes and weights them by validity, so it exploits both the sign and the size of each feature-wise comparison as well as inter-cue differences in informativeness. Unlike Equal-Weight, weights differ across features. Behavior is invariant to a shared affine rescaling across options but scales linearly with per-feature weight. When the two weighted sums are equal the model has no basis for preference and the learner must guess. Response noise enters through a softmax over the two weighted sums with inverse temperature beta (interpolating between fully deterministic choice at large beta and uniform guessing at beta = 0), plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+        "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Weighted Additive rule (Payne, Bettman & Johnson\n    # 1993). Stimulus is the pair of option feature vectors for the\n    # current trial: array-like of shape (2, n_features), row 0 =\n    # option A, row 1 = option B. Each option's score is the dot\n    # product of its feature vector with the (subjective) validity\n    # weights. History is ignored: the choice depends only on the\n    # current stimulus.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"WADD expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n    n_features = stim.shape[1]\n\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    w = np.asarray(parameters[\"weights\"], dtype=float)\n    if w.shape[0] != n_features:\n        raise ValueError(\n            f\"weights length {w.shape[0]} != n_features {n_features}.\"\n        )\n\n    # Weighted sum per option (dot product with per-feature weights).\n    scores = stim @ (validities * w)\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability.\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    # Uniform lapse blended into the softmax (standard choice-with-lapse\n    # formulation; epsilon=0.5 yields equiprobable options, matching\n    # the paper's maximum-noise condition).\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities",
+          "weights": "[(0.0, 1.0)] * n_features"
+        },
+        "rationale": null
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_5",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Sequential Evidence Accumulation. Decision-makers inspect features sequentially in decreasing order of validity. At each step, the validity-weighted difference between the options' features is added to an accumulated evidence tally. If the absolute value of this accumulated evidence exceeds a critical threshold, search stops immediately and a decision is made based on the current tally (mimicking Take-The-Best when the threshold is low). If all features are exhausted without crossing the threshold, a choice is made probabilistically based on the final accumulated tally (mimicking compensatory strategies like Weighted Additive when the threshold is high).",
+      "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    threshold = float(parameters[\"threshold\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Sort features by validity in descending order (stable sort for ties)\n    order = np.argsort(-validities, kind='stable')\n    \n    a, b = stim[0], stim[1]\n    evidence = 0.0\n    \n    # Sequential search and evidence accumulation\n    for idx in order:\n        diff = a[idx] - b[idx]\n        evidence += validities[idx] * diff\n        \n        # Stop search if accumulated evidence exceeds the threshold\n        if abs(evidence) >= threshold:\n            break\n            \n    # Convert the final evidence into choice probabilities.\n    # Evidence represents the accumulated advantage of Option A over Option B.\n    scores = np.array([evidence, 0.0])\n    \n    # Softmax over the scores\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    # Uniform lapse blended into the softmax\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+      "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+      "parameters": {
+        "threshold": "[0.01, 1.5]",
+        "beta": "[0.1, 20.0]",
+        "epsilon": "[0.0, 0.5]",
+        "validities": "validities"
+      },
+      "rationale": "Reduced the upper bound of the threshold parameter from 2.0 to 1.5. Previous attempts to raise the threshold slightly worsened fits for Exps 4 and 6 by allowing too much compensatory search. Lowering the upper bound induces slightly more lexicographic early-stopping, which should pull down the overestimation in Exp 4 towards the empirical data without destroying the overall fit."
+    }
+  }
+}

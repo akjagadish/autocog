@@ -1,0 +1,336 @@
+# experiment_attempt_00
+
+## System Prompt
+
+You are a renowned cognitive scientist designing an experiment in the Decision Making (Binary Features) domain.
+
+Your goal is to be an adversarial collaborator: propose a design whose outcomes would be predicted by your advocated theory but NOT by the competing theory. Both are provided below.
+
+A useful proposal targets a *quantitative* dissociation between the two theories — how they respond differently to specific stimuli in addition to differences in overall performance.
+
+
+## User Prompt
+
+## EXPERIMENTAL DOMAIN
+Subjects repeatedly choose between two fictitious products, A and B. Each option is described by a vector of binary expert ratings (each 0 or 1). Every experiment fixes its own feature count (via `validities` length) and per-expert validities; both are LLM-proposed. The validities are communicated to the subject in the instructions. Subjects pick whichever product they believe is of higher quality. There is no trial-by-trial correctness feedback.
+
+A multi-attribute decision-making experiment. On each trial the subject sees two options (A, B), each described by `n_features` integer expert ratings (`n_features` is set by the length of `validities` you propose). Choose `validities` — one per feature, each in [0.5, 1.0], order free — to fix each expert's advertised accuracy; subjects are told these values up front. Then choose `trial_a_ratings/trial_b_ratings` (each rating value in [0, 1]) so that the intended heuristics (e.g. TTB, EQW, Tallying, WADD) make distinguishable predictions: avoid degenerate pairs where every heuristic agrees, and prefer pairs that dissociate single-feature focus from feature-summing strategies. Validities and the trial ratings together define the design; they are fixed across all trials in this experiment. No trial-by-trial correctness feedback. The total number of trials per subject is held at roughly 96: each unique pair is repeated K = max(1, 96 // n_unique_pairs) times in an independently-randomized order per subject.
+
+Subjects see the following instructions:
+In this experiment you will repeatedly choose between two fictitious products, A and B. On every trial you will see `n_features` expert ratings for each product (the number of experts is fixed across all trials and is set by the length of `validities`).
+
+Each rating is an integer in [0, 1]. The ratings are displayed as a horizontal filled bar with the numeric value (e.g. "0/1") shown next to it. Higher = more positive.
+
+The same experts (in the same order) provide ratings for both products on every trial. Each expert's accuracy (their validity expressed as a percentage, e.g. "Expert 1 (80%)") is shown next to their rating on every trial AND is also listed up front in an "Expert accuracies" panel.
+
+On each trial, decide which product is of higher quality and press A for product A or B for product B. There is no time limit and no feedback. Note that for the first ~`min_rt_ms` of each trial the answer prompt is hidden and the keys are locked, so subjects first see the full ratings and can answer once the A / B prompt appears — design pairs that actually require comparing the ratings.
+
+Total trials per subject is roughly `MAX_TRIALS`: each unique pair you propose is repeated `K = max(1, MAX_TRIALS // n_unique_pairs)` times in an independently-randomized order per subject.
+
+## ADVOCATED THEORY
+**Description:** People compare two options by counting, across all features, how often one option has a higher value than the other. The option that wins on more features is chosen. Tallying discards cardinal magnitudes — only the sign of each feature-wise comparison matters — so the heuristic is robust to monotone rescaling of individual features and cannot be swayed by a single large feature difference in the way Equal-Weight can. Ties on an individual feature contribute nothing to either count: that cue is simply treated as uninformative for the pair. No feature is privileged, in contrast to Take The Best; every cue contributes equally to the tally. When the two counts are equal the heuristic has no basis for preference and the learner must guess. Response noise enters through a softmax over the two tallies with inverse temperature beta (interpolating between fully deterministic choice at large beta and uniform guessing at beta = 0), plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.
+
+
+**Parameters:**
+- beta: [0.0, 1.0]
+- epsilon: [0.4, 0.9]
+
+**`predict source code`:**
+```python
+def predict(parameters, stimulus, history):
+    import numpy as np
+    # Paper-faithful Tallying heuristic (Dawes 1979; Gigerenzer &
+    # Goldstein 1999). Stimulus is the pair of option feature vectors
+    # for the current trial: array-like of shape (2, n_features),
+    # with row 0 = option A, row 1 = option B. History is ignored.
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(
+            f"Tallying expects a (2, n_features) stimulus; got shape {stim.shape}."
+        )
+
+    a, b = stim[0], stim[1]
+    # Count strict feature-wise wins; ties contribute to neither option.
+    a_wins = float(np.sum(a > b))
+    b_wins = float(np.sum(b > a))
+    scores = np.array([a_wins, b_wins])
+
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+
+    # Softmax with max-subtraction for numerical stability. When
+    # a_wins == b_wins the softmax is exactly uniform regardless of
+    # beta, which is the correct behavior for an undiscriminating
+    # tally.
+    z = beta * (scores - scores.max())
+    e = np.exp(z)
+    p_core = e / e.sum()
+
+    n_opts = p_core.shape[0]
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+```
+
+**`policy source code`:**
+```python
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.
+    return int(np.random.choice(len(probabilities), p=probabilities))
+```
+
+
+## COMPETING THEORY
+**Description:** People make decisions by computing a weighted sum of feature differences, where the weights are proportional to the log-odds of the cue validities. A parameter gamma interpolates between equal weighting (Tallying, gamma=0) and full log-odds weighting (gamma=1). This Compensatory Weighted Additive (WADD) strategy allows multiple lower-validity cues to outweigh a single high-validity cue, while capturing slight validity-driven effects that pure Tallying misses. Response noise is modeled via a softmax function and an independent lapse rate.
+
+**Parameters:**
+- beta: [0.0, 1.0]
+- epsilon: [0.4, 0.9]
+- gamma: [0.0, 1.0]
+- validities: validities
+
+**`predict source code`:**
+```python
+def predict(parameters, stimulus, history):
+    import numpy as np
+    
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError("WADD expects a (2, n_features) stimulus.")
+        
+    a, b = stim[0], stim[1]
+    val = np.asarray(parameters["validities"], dtype=float)
+    gamma = float(parameters["gamma"])
+    
+    # Calculate log-odds of validities
+    clipped_val = np.clip(val, 0.5001, 0.9999)
+    log_odds = np.log(clipped_val / (1.0 - clipped_val))
+    
+    # Apply gamma to scale the log-odds (gamma=0 -> equal weights/Tallying)
+    weights = np.maximum(log_odds, 1e-9) ** gamma
+    
+    # Compute weighted sum of feature differences (strict wins)
+    a_wins = np.sum((a > b) * weights)
+    b_wins = np.sum((b > a) * weights)
+    scores = np.array([a_wins, b_wins])
+    
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+    
+    # Softmax with max-subtraction for numerical stability
+    z = beta * (scores - np.max(scores))
+    e = np.exp(z)
+    p_core = e / np.sum(e)
+    
+    n_opts = len(p_core)
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+```
+
+**`policy source code`:**
+```python
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities /= probabilities.sum()
+    return int(np.random.choice(len(probabilities), p=probabilities))
+```
+
+
+## ALREADY-EXPLORED EXPERIMENTS (do not repeat)
+[0] The experiment is designed to strongly dissociate Take The Best (TTB) from Tallying. We use 5 features with varying validities. In the critical trials, the option favored by TTB has a positive value on the single most valid discriminating cue but negative values on several lower-validity cues, while the option favored by Tallying has positive values on multiple lower-validity cues but a negative value on the most valid discriminating cue. This directly pits the non-compensatory, one-reason stopping rule of TTB against the compensatory, equal-weight counting rule of Tallying.
+
+[1] These trials are designed to strictly dissociate Tallying (the advocated theory) from Take The Best (TTB, the competing theory). The experiment pits the one-reason stopping rule of TTB against the compensatory, equal-weight counting rule of Tallying. In most trials, the option favored by TTB has a positive value on the single most valid discriminating cue, but the other option is favored by Tallying because it has positive values on a larger number of lower-validity cues. We also include trials where Tallying predicts a tie (yielding uniform guessing) while TTB makes a deterministic prediction based on a single high-validity cue, allowing for a strong quantitative dissociation of the models' noise and choice mechanisms.
+
+[2] This design aims to quantitatively dissociate the Weighted Additive (WADD) strategy from Tallying. Tallying ignores cue validities and simply counts the number of features favoring each option, predicting a perfect tie (50% choice) whenever the count of wins is equal, and predicting a strict preference whenever one option wins on more features. In contrast, WADD weights each feature by a non-linear scaling of its validity. By including trials where Tallying predicts a tie but WADD predicts a strong preference due to validity differences (e.g., A wins on 2 high-validity cues vs B wins on 2 low-validity cues), and trials where Tallying prefers one option but WADD prefers the other (e.g., A wins on 3 low-validity cues vs B wins on 1 or 2 high-validity cues), we can distinctly pull apart the validity-weighted compensatory mechanism of WADD from the unweighted counting mechanism of Tallying.
+
+[3] This design strictly dissociates the unweighted feature-counting mechanism of Tallying from the validity-weighted compensatory mechanism of WADD. We include trials where Tallying predicts a perfect tie (because both options win on an equal number of features) but WADD predicts a strong preference due to differences in the validities of those features. We also include trials where Tallying favors an option that wins on a larger number of lower-validity cues, while WADD (depending on its gamma parameter) favors the option that wins on fewer but higher-validity cues. This creates a qualitative divergence in choice predictions, rather than just a difference in choice probabilities.
+
+[4] This design provides a granular dissociation of the WADD (Weighted Additive) and Tallying models by varying the trade-off between the number of winning features and their validities. Tallying purely counts the number of winning features, ignoring validities, leading to ties when counts are equal and strict preferences when one option wins on more features. In contrast, WADD scales features by a non-linear function of their validities. By distributing five features with linearly spaced validities, we create trials where Tallying prefers an option with a higher count of low-validity features, while WADD prefers the option with fewer, but higher-validity features. We also include trials where Tallying predicts a tie but WADD predicts a strong preference, and trials where both models agree on the direction but differ in the magnitude of preference, allowing for precise parameter estimation of WADD's gamma scaling and choice noise.
+
+[5] To quantitatively dissociate Tallying from WADD, we use a 6-feature design with a pronounced gap between high-validity and low-validity cues. Tallying relies exclusively on the count of winning features, predicting a tie when the counts are equal and a strict preference when one option has more wins, completely ignoring the validities. WADD, however, computes a weighted sum scaled by validities. By including trials where one option wins on few high-validity cues while the other wins on many low-validity cues, Tallying and WADD will predict opposing choices. Additionally, trials where both options win on an equal number of features but differ drastically in their validities will yield a 50-50 guess under Tallying but a strong deterministic preference under WADD.
+
+[6] To quantitatively dissociate Take-The-Best (TTB) from Tallying, we exploit their fundamental differences in cue utilization. TTB relies exclusively on the single highest-validity cue that discriminates between options, ignoring all other cues. Tallying completely ignores cue validities and simply counts the number of features favoring each option. By setting up trials where one option is favored by the most valid discriminating cue (favored by TTB) but the other option is favored by a larger number of lower-validity cues (favored by Tallying), we create strict qualitative divergences. We also include trials where Tallying predicts a tie (equal number of winning cues) but TTB makes a deterministic prediction, allowing us to isolate the specific noise mechanisms and choice rules of the two models.
+
+[7] This design strictly dissociates Tallying (the advocated theory) from Take-The-Best (TTB, the competing theory). Tallying relies on a simple count of feature-wise wins, ignoring cue validities. TTB relies solely on the single most valid cue that discriminates between the options. We include trials where the highest validity cue strongly favors one option (so TTB chooses it), but the other option wins on a greater number of lower-validity cues (so Tallying chooses the opposite). We also include trials where both options win on an equal number of cues (Tallying predicts a 50/50 tie), but one option wins on the highest validity cue (TTB makes a deterministic choice). Finally, we vary the position of the discriminating cue to ensure the dissociation holds across different stopping points in the TTB search process.
+
+[8] This design utilizes 7 features with a wide and non-linear spread of validities to definitively separate the unweighted counting mechanism of Tallying from the log-odds validity weighting of WADD. Tallying ignores validity entirely, counting only the number of features favoring each option. WADD evaluates the weighted sum of feature differences. By including trials where one option wins on a small number of highly valid features while the other wins on a larger number of low-validity features, the models predict choices in opposite directions. Furthermore, 'tie' trials for Tallying (where both options win on an equal number of features) will yield 50/50 guessing under Tallying but deterministic, validity-driven preferences under WADD. This 7-feature structure avoids the already-explored 5- and 6-feature paradigms while providing maximum quantitative divergence.
+
+## RESPONSE FORMAT
+Return a JSON object with the following fields:
+- rationale: Reasoning behind this experimental design; used when interpreting results.
+- validities: Per-expert validities, one per feature. Each must be in [0.5, 1.0]; order is free (no descending requirement — heuristics that rely on validity-ordering re-sort internally). Length determines n_features for the whole experiment and must match the rating-list length in every trial pair. Pick a spread (at least one high validity and at least one low one) — uniform validities (e.g. all 0.7) collapse WADD into a scaled Equal-Weight rule and make them indistinguishable by any decision.
+- trial_a_ratings: List of option-A rating vectors, one per trial. Each inner list has length equal to len(validities); each value is binary (0 or 1). `trial_a_ratings[i]` pairs with `trial_b_ratings[i]` on trial i.
+- trial_b_ratings: List of option-B rating vectors, one per trial. Same length and shape constraints as `trial_a_ratings`. Pick trials that let the intended heuristics (TTB, EQW, Tallying, WADD) be dissociated; avoid trials where every heuristic agrees.
+
+
+## Response
+
+```json
+{
+  "rationale": "This design uses a 4-feature space with a highly skewed validity distribution to sharply dissociate the unweighted counting mechanism of Tallying from the log-odds validity weighting of WADD. The validities are set such that the most valid cue heavily outweighs the combined log-odds of all other cues. We include 'conflict' trials where one option wins on the single most valid cue but loses on all three remaining cues, causing Tallying to strongly prefer one option (3 wins vs 1 win) while WADD predicts the exact opposite choice. Additionally, we include multiple 'tie' trials where both options win on an equal number of cues (e.g., 2 vs 2). For these, Tallying predicts a 50/50 guess, while WADD makes deterministic predictions driven by the validity weights. This minimal 4-feature design provides a robust, quantitative divergence between the models without the complexity of higher-dimensional feature spaces.",
+  "validities": [
+    0.98,
+    0.6,
+    0.55,
+    0.51
+  ],
+  "trial_a_ratings": [
+    [
+      1,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      1,
+      1,
+      1
+    ],
+    [
+      1,
+      0,
+      1,
+      0
+    ],
+    [
+      0,
+      1,
+      0,
+      1
+    ],
+    [
+      1,
+      0,
+      0,
+      1
+    ],
+    [
+      0,
+      1,
+      1,
+      0
+    ],
+    [
+      1,
+      1,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      1,
+      1
+    ],
+    [
+      0,
+      1,
+      1,
+      0
+    ],
+    [
+      1,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      1,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      1,
+      1
+    ]
+  ],
+  "trial_b_ratings": [
+    [
+      0,
+      1,
+      1,
+      1
+    ],
+    [
+      1,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      1,
+      0,
+      1
+    ],
+    [
+      1,
+      0,
+      1,
+      0
+    ],
+    [
+      0,
+      1,
+      1,
+      0
+    ],
+    [
+      1,
+      0,
+      0,
+      1
+    ],
+    [
+      0,
+      0,
+      1,
+      1
+    ],
+    [
+      1,
+      1,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      1
+    ],
+    [
+      0,
+      0,
+      1,
+      0
+    ],
+    [
+      0,
+      0,
+      1,
+      1
+    ],
+    [
+      0,
+      1,
+      0,
+      0
+    ]
+  ]
+}
+```
+
+## Usage
+
+```json
+{
+  "prompt_token_count": 3951,
+  "candidates_token_count": 604,
+  "total_token_count": 5846
+}
+```

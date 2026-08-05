@@ -1,0 +1,352 @@
+# experiment_attempt_00
+
+## System Prompt
+
+You are a renowned cognitive scientist designing an experiment in the Decision Making (Binary Features) domain.
+
+Your goal is to be an adversarial collaborator: propose a design whose outcomes would be predicted by your advocated theory but NOT by the competing theory. Both are provided below.
+
+A useful proposal targets a *quantitative* dissociation between the two theories — how they respond differently to specific stimuli in addition to differences in overall performance.
+
+
+## User Prompt
+
+## EXPERIMENTAL DOMAIN
+Subjects repeatedly choose between two fictitious products, A and B. Each option is described by a vector of binary expert ratings (each 0 or 1). Every experiment fixes its own feature count (via `validities` length) and per-expert validities; both are LLM-proposed. The validities are communicated to the subject in the instructions. Subjects pick whichever product they believe is of higher quality. There is no trial-by-trial correctness feedback.
+
+A multi-attribute decision-making experiment. On each trial the subject sees two options (A, B), each described by `n_features` integer expert ratings (`n_features` is set by the length of `validities` you propose). Choose `validities` — one per feature, each in [0.5, 1.0], order free — to fix each expert's advertised accuracy; subjects are told these values up front. Then choose `trial_a_ratings/trial_b_ratings` (each rating value in [0, 1]) so that the intended heuristics (e.g. TTB, EQW, Tallying, WADD) make distinguishable predictions: avoid degenerate pairs where every heuristic agrees, and prefer pairs that dissociate single-feature focus from feature-summing strategies. Validities and the trial ratings together define the design; they are fixed across all trials in this experiment. No trial-by-trial correctness feedback. The total number of trials per subject is held at roughly 96: each unique pair is repeated K = max(1, 96 // n_unique_pairs) times in an independently-randomized order per subject.
+
+Subjects see the following instructions:
+In this experiment you will repeatedly choose between two fictitious products, A and B. On every trial you will see `n_features` expert ratings for each product (the number of experts is fixed across all trials and is set by the length of `validities`).
+
+Each rating is an integer in [0, 1]. The ratings are displayed as a horizontal filled bar with the numeric value (e.g. "0/1") shown next to it. Higher = more positive.
+
+The same experts (in the same order) provide ratings for both products on every trial. Each expert's accuracy (their validity expressed as a percentage, e.g. "Expert 1 (80%)") is shown next to their rating on every trial AND is also listed up front in an "Expert accuracies" panel.
+
+On each trial, decide which product is of higher quality and press A for product A or B for product B. There is no time limit and no feedback. Note that for the first ~`min_rt_ms` of each trial the answer prompt is hidden and the keys are locked, so subjects first see the full ratings and can answer once the A / B prompt appears — design pairs that actually require comparing the ratings.
+
+Total trials per subject is roughly `MAX_TRIALS`: each unique pair you propose is repeated `K = max(1, MAX_TRIALS // n_unique_pairs)` times in an independently-randomized order per subject.
+
+## ADVOCATED THEORY
+**Description:** Weighted Additive (WADD) Theory with Subjective Validity Scaling: People compare options by computing a comprehensive value for each option, integrating all available cues by weighting each feature. However, instead of using raw objective validities, individuals apply a non-linear subjective scaling to these validities. This scaling allows a single highly valid cue to be disproportionately weighted to balance out multiple less valid cues, gracefully explaining why individuals exhibit near-indifference (choice proportions around 0.5) when faced with adversarial choices where one option excels on the best cue but the other excels on numerous lesser cues. Response noise is captured via a softmax over the options' weighted sums, along with an independent lapse rate.
+
+**Parameters:**
+- beta: [0.1, 20.0]
+- epsilon: [0.0, 0.5]
+- gamma: [0.1, 10.0]
+- validities: validities
+
+**`predict source code`:**
+```python
+def predict(parameters, stimulus, history):
+    import numpy as np
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(f"WADD expects a (2, n_features) stimulus; got shape {stim.shape}.")
+    
+    val = np.asarray(parameters["validities"], dtype=float)
+    if val.shape[0] != stim.shape[1]:
+        raise ValueError("Length of validities must match n_features.")
+    
+    # Apply non-linear subjective scaling to validities
+    gamma = float(parameters["gamma"])
+    val = val ** gamma
+    
+    a, b = stim[0], stim[1]
+    
+    # Compute weighted additive values for each option
+    score_a = np.sum(a * val)
+    score_b = np.sum(b * val)
+    scores = np.array([score_a, score_b])
+    
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+    
+    # Softmax choice rule with max-subtraction for numerical stability
+    z = beta * (scores - np.max(scores))
+    e = np.exp(z)
+    p_core = e / np.sum(e)
+    
+    n_opts = p_core.shape[0]
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+```
+
+**`policy source code`:**
+```python
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities /= probabilities.sum()
+    return int(np.random.choice(len(probabilities), p=probabilities))
+```
+
+
+## COMPETING THEORY
+**Description:** Dual Process Strategy Mixture: Decision-makers employ different strategies probabilistically. A proportion of choices are generated by a strict, non-compensatory 'Take-The-Best' (TTB) heuristic, while the remainder are generated by a compensatory 'Tallying' strategy. The Tallying component operates with softer inverse temperatures, preventing it from producing excessively extreme compensatory shifts when multiple weak cues oppose a strong one, while the TTB component operates with high determinism.
+
+**Parameters:**
+- w_ttb: [0.0, 1.0]
+- beta_ttb: [5.0, 20.0]
+- beta_tally: [0.1, 5.0]
+- epsilon: [0.0, 0.5]
+- validities: validities
+
+**`predict source code`:**
+```python
+def predict(parameters, stimulus, history):
+    import numpy as np
+    
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError("Stimulus must be shape (2, n_features).")
+        
+    a, b = stim[0], stim[1]
+    val = np.asarray(parameters["validities"], dtype=float)
+    
+    # Strategy 1: Take-The-Best (TTB)
+    cue_order = np.argsort(-val, kind="stable").tolist()
+    winner_ttb = None
+    for j in cue_order:
+        if a[j] > b[j]:
+            winner_ttb = 0
+            break
+        if b[j] > a[j]:
+            winner_ttb = 1
+            break
+            
+    if winner_ttb == 0:
+        scores_ttb = np.array([1.0, 0.0])
+    elif winner_ttb == 1:
+        scores_ttb = np.array([0.0, 1.0])
+    else:
+        scores_ttb = np.array([0.0, 0.0])
+        
+    beta_ttb = float(parameters["beta_ttb"])
+    z_ttb = beta_ttb * (scores_ttb - np.max(scores_ttb))
+    e_ttb = np.exp(z_ttb)
+    p_ttb = e_ttb / np.sum(e_ttb)
+    
+    # Strategy 2: Tallying
+    a_wins = float(np.sum(a > b))
+    b_wins = float(np.sum(b > a))
+    scores_tally = np.array([a_wins, b_wins])
+    
+    beta_tally = float(parameters["beta_tally"])
+    z_tally = beta_tally * (scores_tally - np.max(scores_tally))
+    e_tally = np.exp(z_tally)
+    p_tally = e_tally / np.sum(e_tally)
+    
+    # Mixture
+    w_ttb = float(parameters["w_ttb"])
+    p_mix = w_ttb * p_ttb + (1.0 - w_ttb) * p_tally
+    
+    # Lapse noise
+    epsilon = float(parameters["epsilon"])
+    p_final = (1.0 - epsilon) * p_mix + epsilon * np.array([0.5, 0.5])
+    
+    return p_final
+```
+
+**`policy source code`:**
+```python
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities /= probabilities.sum()
+    return int(np.random.choice(len(probabilities), p=probabilities))
+```
+
+
+## ALREADY-EXPLORED EXPERIMENTS (do not repeat)
+[0] This design systematically pits Take The Best (TTB) against Tallying using a 5-feature environment. The validities are strictly descending. In each trial, Option A is designed to win on the highest-validity discriminating cue (leading TTB to choose A), while Option B is designed to win on a greater total number of less valid cues (leading Tallying to choose B). By varying which cue is the highest valid discriminator (e.g., cue 0, cue 1, or cue 2) and the number of cues Option B wins on, we can robustly dissociate the one-reason decision making of TTB from the unweighted cue-counting of Tallying.
+
+[1] This design systematically pits Tallying against Take The Best (TTB) by contrasting the number of winning features with the validity of the single best discriminating feature. Across all trials, one option wins on the single highest-validity discriminating cue (leading TTB to choose it), while the other option wins on a strictly greater number of lower-validity cues (leading Tallying to choose it). By varying which cue is the highest valid discriminator and alternating whether Option A or Option B is favored by each theory, we can firmly dissociate the cue-counting mechanism of Tallying from the one-reason stopping rule of TTB.
+
+[2] To quantitatively dissociate Take The Best (TTB) from Weighted Additive (WADD) with subjective validity scaling, we vary the number of lower-validity cues that contradict the highest-validity discriminating cue. For TTB, choices are determined exclusively by the first discriminating cue, meaning choice probabilities will be identical across trials that share the same top discriminator, regardless of the number of opposing lower-validity cues. In contrast, WADD integrates all cues, so it predicts a parametric decrease in the choice probability for the option favored by the best cue as the number of opposing lower-validity cues increases.
+
+[3] To quantitatively dissociate WADD from TTB, we hold the top discriminating cue constant while systematically varying the *validity* (rather than just the number) of the opposing cues. TTB bases its decision entirely on the first discriminating cue and ignores the magnitude of any lower-validity cues, predicting identical choice probabilities across these trials. Tallying also fails to distinguish between these trials since the number of opposing cues remains constant. WADD, however, integrates the subjective weights of all cues, predicting a parametric shift in choice probability depending on whether the opposing evidence comes from high-validity or low-validity secondary cues.
+
+[4] This design tests the core assumption of the Dual Process Strategy Mixture (TTB + Tallying) against WADD by holding both the TTB-favored cue and the Tallying count differences constant across matched pairs, while varying the validities of the secondary cues. The Mixture theory predicts identical choice probabilities within these matched pairs because TTB only processes the top discriminating cue (which is identical) and Tallying only processes the number of winning cues (which is identical). In contrast, WADD integrates the subjective validities of all cues, predicting significant differences within the matched pairs because the secondary cues have different validities.
+
+## RESPONSE FORMAT
+Return a JSON object with the following fields:
+- rationale: Reasoning behind this experimental design; used when interpreting results.
+- validities: Per-expert validities, one per feature. Each must be in [0.5, 1.0]; order is free (no descending requirement — heuristics that rely on validity-ordering re-sort internally). Length determines n_features for the whole experiment and must match the rating-list length in every trial pair. Pick a spread (at least one high validity and at least one low one) — uniform validities (e.g. all 0.7) collapse WADD into a scaled Equal-Weight rule and make them indistinguishable by any decision.
+- trial_a_ratings: List of option-A rating vectors, one per trial. Each inner list has length equal to len(validities); each value is binary (0 or 1). `trial_a_ratings[i]` pairs with `trial_b_ratings[i]` on trial i.
+- trial_b_ratings: List of option-B rating vectors, one per trial. Same length and shape constraints as `trial_a_ratings`. Pick trials that let the intended heuristics (TTB, EQW, Tallying, WADD) be dissociated; avoid trials where every heuristic agrees.
+
+
+## Response
+
+```json
+{
+  "rationale": "This design isolates a critical qualitative dissociation between the Dual Process Strategy Mixture and WADD with subjective scaling. In key trials, Option A possesses the single highest-validity discriminating cue (causing TTB to favor A) AND a greater total number of winning cues (causing Tallying to favor A). Consequently, the Mixture model is strictly constrained to predict a preference for Option A. However, Option B is supported by multiple highly valid cues that are only marginally inferior to Option A's single top cue. Under WADD with a non-linear subjective validity scaling (e.g., gamma > 1), the combined weight of Option B's multiple strong cues surpasses Option A's single top cue and weak secondary cues, allowing WADD to predict a preference for Option B. This creates a scenario where the two theories predict choices in opposite directions.",
+  "validities": [
+    0.95,
+    0.92,
+    0.9,
+    0.88,
+    0.55,
+    0.55,
+    0.55
+  ],
+  "trial_a_ratings": [
+    [
+      1,
+      0,
+      0,
+      0,
+      1,
+      1,
+      1
+    ],
+    [
+      0,
+      1,
+      0,
+      0,
+      1,
+      1,
+      1
+    ],
+    [
+      1,
+      0,
+      0,
+      0,
+      1,
+      1,
+      0
+    ],
+    [
+      0,
+      1,
+      0,
+      0,
+      1,
+      1,
+      0
+    ],
+    [
+      1,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0
+    ],
+    [
+      1,
+      1,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      1,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      1,
+      0,
+      1,
+      1,
+      1
+    ]
+  ],
+  "trial_b_ratings": [
+    [
+      0,
+      1,
+      1,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      1,
+      1,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      1,
+      1,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      1,
+      1,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      1,
+      1,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      1,
+      1,
+      1,
+      1,
+      1
+    ],
+    [
+      0,
+      1,
+      1,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0
+    ]
+  ]
+}
+```
+
+## Usage
+
+```json
+{
+  "prompt_token_count": 3247,
+  "candidates_token_count": 633,
+  "total_token_count": 7743
+}
+```

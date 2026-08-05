@@ -1,0 +1,724 @@
+# generation_iter_01_attempt_00
+
+## System Prompt
+
+You are a renowned cognitive scientist and an expert Python programmer.
+
+Your job is to propose a new theory and its model instantiation in the Decision Making (Binary Features) domain based on the feedback provided by an arbiter. The feedback contains diagnoses of mechanistic failures of the previous theory along with suggestions for a new theory family that overcomes those failures. The newly proposed theory and model should display human-like behavior when simulated on experiment(s). 
+The goal of the theory generation process is to SURFACE theories that are EXPERIMENT-INVARIANT: that is,theories that explain data across the majority of experiments. 
+You will see a list of theories that have been proposed in the past but you should only use them as inspiration and not to choose from them. Propose a new theory that is different. 
+If they fail to do so, you will receive feedback on their performance on the same experiment(s) and you will have to propose another new theory and model that meet the requirements, iterating until you succeed.
+
+If you think the failure to capture human behavior is due to arbiter feedback that is inaccurate or unhelpful, you can propose a new theory and model that ignore the feedback, but you must provide rationale for why you are ignoring it and how your proposal overcomes the identified mechanistic failures.
+
+## ACCEPT GATE & LOSS TRAJECTORY — HOW THE LOOP HANDLES YOUR EDITS
+This propose-loop has a programmatic accept gate: after every iteration the candidate's `aggregate_loss` is compared against the running-best loss; strict improvement -> ACCEPTED (the candidate becomes the new running-best base); otherwise -> REJECTED (the candidate is discarded and the base is unchanged). You do NOT need to manually "revert" a regressed edit — the gate already does that for you.
+
+The block rendered below as `## PREVIOUS CANDIDATE (this loop)` is ALWAYS the running-best (last ACCEPTED) candidate, NEVER your most recent attempt if it was rejected. So:
+  * Treat `## PREVIOUS CANDIDATE` as a known-good base. Build on it.
+  * The `## LOSS TRAJECTORY` block tags every iteration ACCEPTED or REJECTED. Use this as ground truth on which past critic advice actually moved the loop forward and which didn't.
+  * The `## PRIOR FEEDBACK ITERATIONS` block annotates each prior critique with the same ACCEPTED/REJECTED tag of the candidate it elicited. Down-weight critic advice whose previous candidates were REJECTED, and reinforce / extend advice whose candidates were ACCEPTED.
+  * Treat the best ACCEPTED iteration's loss as a soft floor — the next edit should plausibly land at-or-below it, otherwise the gate will reject your attempt and the base stays put.
+
+Each metric value below is shown as `point_estimate (var=X)`, where `point_estimate` is `metric(data)` evaluated on the full pooled dataset and `var` is the population (between-subject) variance of the same metric re-applied per `subject_id`. The point estimate is the canonical scalar; `var` reports how consistent that estimate is across subjects (lower = more consistent). `var=n/a` means the metric could not be applied to a single-subject slice.
+
+## PARAMETER NOTATION
+`parameters` is a JSON object mapping each parameter name (snake_case string) to a *string* value that specifies its domain. Every value MUST be a string — never a bare list, number, tuple, or expression. Use exactly one of these notations per parameter:
+
+1. Continuous interval — square brackets, two numeric bounds:
+   "[min, max]"
+   Examples: "[0, 1]", "[1.0, 10.0]", "[10, 1000]"
+
+2. Discrete set — curly braces, comma-separated values:
+   "{v1, v2, ...}"
+   Example: "{1, 2}"
+
+3. Vector of intervals whose length is set by the experiment — a bracketed tuple repeated by a symbolic length variable:
+   "[(min, max)] * length_var"
+   Example: "[(0, 1)] * n_features"
+
+4. Symbolic reference — a bare variable name (no brackets, no angle brackets), used when the parameter takes its value from an experiment-defined constant rather than a range:
+   "variable_name"
+   Example: "n_features"
+
+Rules:
+- Do not use parentheses for intervals; square brackets only. Tuples `(a, b)` are reserved for the vector-of-intervals notation in (3).
+- Do not mix notations within a single value (e.g., no "[0, 1] or {2, 3}").
+- Do not quote numbers inside the notation (write "[0, 1]", not "['0', '1']").
+- Every parameter referenced by `predict` or `policy` must appear as a key in `parameters`, and vice versa.
+- Notations 3 and 4 may ONLY reference the experiment-defined symbolic identifiers listed under "ALLOWED SYMBOLIC IDENTIFIERS" below. Do not invent new identifier names. If a parameter's shape doesn't fit any of those variables, fall back to a literal interval (notation 1) or discrete set (notation 2). Use these names so the model adapts to any experiment in this domain instead of hardcoding shapes.
+
+## ALLOWED SYMBOLIC IDENTIFIERS (for notations 3 and 4 above)
+- n_features: Number of expert ratings per option (LLM-proposed via `validities` length).
+- validities: Per-expert validities (LLM-proposed; each in [0.5, 1.0]); fixed across all trials.
+
+## AVAILABLE IMPORTS inside `predict` and `policy`
+- numpy as np
+- pandas as pd
+- scipy and its submodules
+- torch and torch.nn.functional as F
+- sklearn and its submodules
+- math, random, and other standard Python libraries
+
+## RUNTIME CONTRACT (function signatures and argument shapes)
+`predict(parameters, state, history) -> np.ndarray`:
+- `parameters`: dict[str, value]. One sample drawn from your declared `parameters` ranges, applied for the entire subject run.
+- `state`: the per-trial input delivered by the experiment (shape is domain-specific — see the experiment description above and the `history` key list below, which mirrors the per-trial variables carried in `state`). Convert to an array with `np.asarray(state)` if you need array ops.
+- `history`: dict-of-lists for past trials in this subject's run, NOT a list-of-dicts. The per-trial keys are:
+  Each value below is a Python list in trial order; entry `i` is the value for trial `i`. On the first trial all lists are empty.
+  - `"option_a_ratings"`: List of n_features binary expert ratings (each 0 or 1) for option A on this trial.
+  - `"option_b_ratings"`: List of n_features binary expert ratings (each 0 or 1) for option B on this trial.
+  - `"response"`: 0 if subject chose A, 1 if subject chose B.
+Iterating `for x in history:` iterates the dict KEYS (strings); to walk trials index the lists in lock-step, e.g. `for i in range(len(next(iter(history.values())))): ...`.
+- Returns: 1-D `np.ndarray` of choice probabilities over the experiment's discrete action set, summing to 1.
+
+`policy(probs) -> int`:
+- Receives the probability vector produced by `predict`.
+- Returns: integer index in `[0, len(probs))` identifying the chosen action. If you sample with `np.random.choice(..., p=probs)`, normalise first (`probs = np.asarray(probs, dtype=np.float64); probs /= probs.sum()`) to avoid the "probabilities do not sum to 1" ValueError from float drift.
+
+
+## User Prompt
+
+## EXPERIMENTAL DOMAIN
+Subjects repeatedly choose between two fictitious products, A and B. Each option is described by a vector of binary expert ratings (each 0 or 1). Every experiment fixes its own feature count (via `validities` length) and per-expert validities; both are LLM-proposed. The validities are communicated to the subject in the instructions. Subjects pick whichever product they believe is of higher quality. There is no trial-by-trial correctness feedback.
+
+Each subject completes ~96 trials in a single block, with order randomized independently per subject. On every trial the subject sees two options A and B, each described by `n_features` binary expert ratings (each 0 or 1). The per-feature validities and n_features are fixed per experiment (design-time choices). Validities are communicated to the subject in the instructions. Both `n_features` and `validities` are exposed to your `predict` via the `parameters` dict. The subject chooses A or B; no correctness feedback is provided after the choice.
+
+## ARBITER GUIDE
+The arbiter labelled this round's two theories in its recommendation as follows:
+- THEORY 1 = `pi_4`
+- THEORY 2 = `pi_3`
+- The recommendation below acts on THEORY 1 (= `pi_4`).
+
+Propose a 'Rank-Weighted Additive' theory. Instead of using raw validities or a non-linear scaling of validities (as in WADD), or a strict TTB/Tallying mixture, this theory posits that individuals integrate all cues but weight them according to an exponential decay based solely on their rank-order of validity. The top cue gets a massive weight, the second gets much less, and so on. This creates a 'soft' lexicographic rule: it primarily acts like TTB, but multiple secondary cues can still exert a small, non-zero pull on the decision. This will naturally capture the small but significant compensatory effects seen in Exp 1, 5, and 6 without overestimating them like WADD.
+
+## THEORY LEADERBOARD
+A small set of prior picked theories shown for reference. Overall score is in `[0, 1]`, higher = better, computed as `1 - L2_norm(normalized_per_experiment_distances) / max_L2_norm`. 1.0 means closest to the real value on every experiment+metric pair; 0.0 means farthest. Each entry below carries the same depth of detail as the PREVIOUS MODEL INSTANCE above so you can borrow concrete mechanisms when useful.
+
+### `pi_4` (overall score: 0.574)
+
+**Description**
+Dual Process Strategy Mixture: Decision-makers employ different strategies probabilistically. A proportion of choices are generated by a strict, non-compensatory 'Take-The-Best' (TTB) heuristic, while the remainder are generated by a compensatory 'Tallying' strategy. The Tallying component operates with softer inverse temperatures, preventing it from producing excessively extreme compensatory shifts when multiple weak cues oppose a strong one, while the TTB component operates with high determinism.
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, stimulus, history):
+    import numpy as np
+    
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError("Stimulus must be shape (2, n_features).")
+        
+    a, b = stim[0], stim[1]
+    val = np.asarray(parameters["validities"], dtype=float)
+    
+    # Strategy 1: Take-The-Best (TTB)
+    cue_order = np.argsort(-val, kind="stable").tolist()
+    winner_ttb = None
+    for j in cue_order:
+        if a[j] > b[j]:
+            winner_ttb = 0
+            break
+        if b[j] > a[j]:
+            winner_ttb = 1
+            break
+            
+    if winner_ttb == 0:
+        scores_ttb = np.array([1.0, 0.0])
+    elif winner_ttb == 1:
+        scores_ttb = np.array([0.0, 1.0])
+    else:
+        scores_ttb = np.array([0.0, 0.0])
+        
+    beta_ttb = float(parameters["beta_ttb"])
+    z_ttb = beta_ttb * (scores_ttb - np.max(scores_ttb))
+    e_ttb = np.exp(z_ttb)
+    p_ttb = e_ttb / np.sum(e_ttb)
+    
+    # Strategy 2: Tallying
+    a_wins = float(np.sum(a > b))
+    b_wins = float(np.sum(b > a))
+    scores_tally = np.array([a_wins, b_wins])
+    
+    beta_tally = float(parameters["beta_tally"])
+    z_tally = beta_tally * (scores_tally - np.max(scores_tally))
+    e_tally = np.exp(z_tally)
+    p_tally = e_tally / np.sum(e_tally)
+    
+    # Mixture
+    w_ttb = float(parameters["w_ttb"])
+    p_mix = w_ttb * p_ttb + (1.0 - w_ttb) * p_tally
+    
+    # Lapse noise
+    epsilon = float(parameters["epsilon"])
+    p_final = (1.0 - epsilon) * p_mix + epsilon * np.array([0.5, 0.5])
+    
+    return p_final
+
+`policy(probs) -> int`:
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities /= probabilities.sum()
+    return int(np.random.choice(len(probabilities), p=probabilities))
+
+`parameters`:
+- w_ttb: [0.0, 1.0]
+- beta_ttb: [5.0, 20.0]
+- beta_tally: [0.1, 5.0]
+- epsilon: [0.0, 0.5]
+- validities: validities
+
+**Per-experiment fit (real vs this theory's metric value):**
+- Experiment 1: real=0.4554 (var=0.0025) vs this=0.5563 (var=0.0475)
+- Experiment 2: real=0.5387 (var=0.0030) vs this=0.4219 (var=0.0451)
+- Experiment 3: real=0.0456 (var=0.0198) vs this=0.1892 (var=0.0214)
+- Experiment 4: real=0.0600 (var=0.0436) vs this=0.1517 (var=0.0477)
+- Experiment 5: real=0.1200 (var=0.1834) vs this=-0.0083 (var=0.1056)
+- Experiment 6: real=0.4508 (var=0.0118) vs this=0.1742 (var=0.0132)
+
+
+---
+
+### `pi_3` (overall score: 0.372)
+
+**Description**
+Weighted Additive (WADD) Theory with Subjective Validity Scaling: People compare options by computing a comprehensive value for each option, integrating all available cues by weighting each feature. However, instead of using raw objective validities, individuals apply a non-linear subjective scaling to these validities. This scaling allows a single highly valid cue to be disproportionately weighted to balance out multiple less valid cues, gracefully explaining why individuals exhibit near-indifference (choice proportions around 0.5) when faced with adversarial choices where one option excels on the best cue but the other excels on numerous lesser cues. Response noise is captured via a softmax over the options' weighted sums, along with an independent lapse rate.
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, stimulus, history):
+    import numpy as np
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(f"WADD expects a (2, n_features) stimulus; got shape {stim.shape}.")
+    
+    val = np.asarray(parameters["validities"], dtype=float)
+    if val.shape[0] != stim.shape[1]:
+        raise ValueError("Length of validities must match n_features.")
+    
+    # Apply non-linear subjective scaling to validities
+    gamma = float(parameters["gamma"])
+    val = val ** gamma
+    
+    a, b = stim[0], stim[1]
+    
+    # Compute weighted additive values for each option
+    score_a = np.sum(a * val)
+    score_b = np.sum(b * val)
+    scores = np.array([score_a, score_b])
+    
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+    
+    # Softmax choice rule with max-subtraction for numerical stability
+    z = beta * (scores - np.max(scores))
+    e = np.exp(z)
+    p_core = e / np.sum(e)
+    
+    n_opts = p_core.shape[0]
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+
+
+`policy(probs) -> int`:
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities /= probabilities.sum()
+    return int(np.random.choice(len(probabilities), p=probabilities))
+
+
+`parameters`:
+- beta: [0.1, 20.0]
+- epsilon: [0.0, 0.5]
+- gamma: [0.1, 10.0]
+- validities: validities
+
+**Per-experiment fit (real vs this theory's metric value):**
+- Experiment 1: real=0.4554 (var=0.0025) vs this=0.4731 (var=0.0503)
+- Experiment 2: real=0.5387 (var=0.0030) vs this=0.5256 (var=0.0576)
+- Experiment 3: real=0.0456 (var=0.0198) vs this=0.2686 (var=0.0732)
+- Experiment 4: real=0.0600 (var=0.0436) vs this=0.2983 (var=0.0789)
+- Experiment 5: real=0.1200 (var=0.1834) vs this=0.4050 (var=0.2225)
+- Experiment 6: real=0.4508 (var=0.0118) vs this=0.6525 (var=0.0730)
+
+
+---
+
+### `pi_1` (overall score: 0.194)
+
+**Description**
+People compare two options by consulting cues one at a time in order of validity, stopping at the first cue that discriminates between the two options. That cue alone determines the choice: the option with the higher value on the discriminating cue wins, and no other cue is consulted. Cues with lower validity are never reached when a higher-validity cue already discriminates, so Take The Best is a "one-reason" decision rule — only a single feature is ever used on any given choice. Because only the sign of the comparison on the top discriminating cue matters, TTB ignores both the magnitude of that difference and all information on lower-validity cues, making it maximally frugal in the use of evidence. Cue validities are subjective and can be learned, inferred from instructions, or fixed by task structure. When no cue discriminates (all feature-wise comparisons tie) the learner has no basis for preference and must guess. Response noise enters through a softmax over the binary TTB score (winner = 1, loser = 0) with inverse temperature beta, plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.
+
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, stimulus, history):
+    # Paper-faithful Take The Best (Gigerenzer & Goldstein 1996).
+    # Stimulus is the pair of option feature vectors for the current
+    # trial: array-like of shape (2, n_features), row 0 = option A,
+    # row 1 = option B. Cue cascade: features are consulted in order
+    # of descending validity; the first discriminating cue (strict
+    # inequality) determines the winner; if no cue discriminates,
+    # the model guesses uniformly. History is ignored.
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(
+            f"TTB expects a (2, n_features) stimulus; got shape {stim.shape}."
+        )
+    n_features = stim.shape[1]
+
+    val = np.asarray(parameters["validities"], dtype=float)
+    if val.shape[0] != n_features:
+        raise ValueError(
+            f"validities length {val.shape[0]} != n_features {n_features}."
+        )
+    # Descending validity; argsort is stable so validity ties break
+    # toward the earlier feature index.
+    cue_order = np.argsort(-val, kind="stable").tolist()
+
+    a, b = stim[0], stim[1]
+    winner = None
+    for j in cue_order:
+        if a[j] > b[j]:
+            winner = 0
+            break
+        if b[j] > a[j]:
+            winner = 1
+            break
+
+    if winner is None:
+        # No discriminating cue — pure guess.
+        return np.ones(2) / 2.0
+
+    scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])
+
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+
+    # Softmax with max-subtraction for numerical stability. For the
+    # binary TTB score this collapses to sigmoid(beta) for the winner,
+    # giving a direct mapping from beta onto the paper's flip-noise
+    # levels (beta=0 ↔ 50/50; beta ≫ 1 ↔ deterministic).
+    z = beta * (scores - scores.max())
+    e = np.exp(z)
+    p_core = e / e.sum()
+
+    n_opts = p_core.shape[0]
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+
+
+`policy(probs) -> int`:
+def policy(probabilities):
+    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.
+    return np.random.choice(len(probabilities), p=probabilities)
+
+
+`parameters`:
+- beta: [0.1, 20.0]
+- epsilon: [0.0, 0.5]
+- validities: validities
+
+**Per-experiment fit (real vs this theory's metric value):**
+- Experiment 1: real=0.4554 (var=0.0025) vs this=0.8592 (var=0.0090)
+- Experiment 2: real=0.5387 (var=0.0030) vs this=0.1506 (var=0.0094)
+- Experiment 3: real=0.0456 (var=0.0198) vs this=-0.0197 (var=0.0064)
+- Experiment 4: real=0.0600 (var=0.0436) vs this=0.0050 (var=0.0196)
+- Experiment 5: real=0.1200 (var=0.1834) vs this=-0.0117 (var=0.0500)
+- Experiment 6: real=0.4508 (var=0.0118) vs this=0.1600 (var=0.0108)
+
+
+## LOSS TRAJECTORY (this propose-loop)
+Aggregate loss across iterations of THIS propose-loop (lower = better, 0 = perfect, `+inf` = unscorable). The ACCEPTED / REJECTED tag is the loop's programmatic accept-gate decision — only ACCEPTED candidates have ever been used as the base for a subsequent iteration. Use this together with PRIOR FEEDBACK ITERATIONS below to grade which past critic advice actually paid off.
+
+- iter 1: loss=0.3488 -> ACCEPTED
+Running-best (last ACCEPTED) base: iter 1 at loss=0.3488 — this is the source shown verbatim below under `## PREVIOUS CANDIDATE (this loop)`. Push the next edit's loss strictly below that floor or the gate will reject it.
+
+## EXPERIMENTAL RESULTS
+### Experiment 1
+**Design**
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1]
+  A=[0, 1, 0, 0, 0]  B=[0, 0, 1, 1, 1]
+  A=[1, 1, 0, 0, 0]  B=[1, 0, 1, 1, 1]
+  A=[0, 0, 1, 0, 0]  B=[0, 0, 0, 1, 1]
+  A=[1, 0, 1, 0, 0]  B=[0, 1, 0, 1, 1]
+  A=[0, 1, 1, 0, 0]  B=[0, 0, 1, 1, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    return float(np.mean(data['response'] == 0))
+```
+
+**Observed (real) value:** 0.4554 (var=0.0025)
+**Previous candidate values (this loop):**
+  - iter 1 (most recent): 0.5675 (var=0.0519) (Δ vs real +0.1121)
+**Other theories' values on this metric (for reference):**
+- pi_1: 0.8592 (var=0.0090)
+- pi_2: 0.1310 (var=0.0058)
+- pi_3: 0.4731 (var=0.0503)
+- pi_4: 0.5563 (var=0.0475)
+
+### Experiment 2
+**Design**
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 1, 0]
+  A=[0, 1, 0, 0, 0]  B=[0, 0, 1, 1, 1]
+  A=[0, 0, 1, 0, 0]  B=[0, 0, 0, 1, 1]
+  A=[0, 1, 1, 1, 0]  B=[1, 0, 0, 0, 0]
+  A=[0, 0, 1, 1, 1]  B=[0, 1, 0, 0, 0]
+  A=[0, 0, 0, 1, 1]  B=[0, 0, 1, 0, 0]
+  A=[1, 0, 0, 0, 1]  B=[0, 1, 1, 1, 0]
+  A=[0, 1, 1, 1, 0]  B=[1, 0, 0, 0, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    a_ratings = np.stack(data['option_a_ratings'].values)
+    b_ratings = np.stack(data['option_b_ratings'].values)
+    sum_a = a_ratings.sum(axis=1)
+    sum_b = b_ratings.sum(axis=1)
+    tally_pred = (sum_b > sum_a).astype(int)
+    return float((data['response'] == tally_pred).mean())
+```
+
+**Observed (real) value:** 0.5387 (var=0.0030)
+**Previous candidate values (this loop):**
+  - iter 1 (most recent): 0.5254 (var=0.0809) (Δ vs real -0.0133)
+**Other theories' values on this metric (for reference):**
+- pi_2: 0.8683 (var=0.0052)
+- pi_1: 0.1506 (var=0.0094)
+- pi_3: 0.5256 (var=0.0576)
+- pi_4: 0.4219 (var=0.0451)
+
+### Experiment 3
+**Design**
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 0, 0, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 0, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 1, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1]
+  A=[0, 1, 0, 0, 0]  B=[1, 0, 0, 0, 0]
+  A=[0, 1, 1, 0, 0]  B=[1, 0, 0, 0, 0]
+  A=[0, 1, 1, 1, 0]  B=[1, 0, 0, 0, 0]
+  A=[0, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0]  B=[1, 0, 1, 0, 0]
+  A=[1, 1, 0, 0, 0]  B=[1, 0, 1, 1, 0]
+  A=[1, 1, 0, 0, 0]  B=[1, 0, 1, 1, 1]
+  A=[1, 0, 1, 0, 0]  B=[1, 1, 0, 0, 0]
+  A=[1, 0, 1, 1, 0]  B=[1, 1, 0, 0, 0]
+  A=[1, 0, 1, 1, 1]  B=[1, 1, 0, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+    
+    ttb_chose_winner = []
+    opposing_cues = []
+    
+    for _, row in data.iterrows():
+        a = row['option_a_ratings']
+        b = row['option_b_ratings']
+        
+        winner_ttb = None
+        for j in range(len(a)):
+            if a[j] > b[j]:
+                winner_ttb = 0
+                break
+            elif b[j] > a[j]:
+                winner_ttb = 1
+                break
+                
+        if winner_ttb is None:
+            continue
+            
+        opp = 0
+        for j in range(len(a)):
+            if winner_ttb == 0 and b[j] > a[j]:
+                opp += 1
+            elif winner_ttb == 1 and a[j] > b[j]:
+                opp += 1
+                
+        opposing_cues.append(opp)
+        ttb_chose_winner.append(1 if row['response'] == winner_ttb else 0)
+        
+    df = pd.DataFrame({'opp': opposing_cues, 'chose_ttb': ttb_chose_winner})
+    
+    p_1 = df[df['opp'] == 1]['chose_ttb'].mean()
+    p_3 = df[df['opp'] >= 3]['chose_ttb'].mean()
+    
+    if pd.isna(p_1) or pd.isna(p_3):
+        return 0.0
+        
+    return float(p_1 - p_3)
+```
+
+**Observed (real) value:** 0.0456 (var=0.0198)
+**Previous candidate values (this loop):**
+  - iter 1 (most recent): 0.3525 (var=0.1000) (Δ vs real +0.3069)
+**Other theories' values on this metric (for reference):**
+- pi_1: -0.0197 (var=0.0064)
+- pi_3: 0.2686 (var=0.0732)
+- pi_2: 0.4092 (var=0.0163)
+- pi_4: 0.1892 (var=0.0214)
+
+### Experiment 4
+**Design**
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 0, 0, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 0, 1, 0, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 0, 0, 1, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1]
+  A=[0, 1, 0, 0, 0]  B=[1, 0, 0, 0, 0]
+  A=[0, 0, 1, 0, 0]  B=[1, 0, 0, 0, 0]
+  A=[0, 0, 0, 1, 0]  B=[1, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 1]  B=[1, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 0, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 0, 0, 1, 1]
+  A=[0, 1, 1, 0, 0]  B=[1, 0, 0, 0, 0]
+  A=[0, 0, 0, 1, 1]  B=[1, 0, 0, 0, 0]
+  A=[1, 0, 1, 0, 0]  B=[0, 1, 0, 1, 0]
+  A=[1, 0, 0, 1, 0]  B=[0, 1, 0, 0, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    # Identify which option is favored by Take The Best (the one with 1 on the top cue)
+    ttb_favored_is_A = data['option_a_ratings'].apply(lambda x: x[0] == 1)
+    ttb_match = ((data['response'] == 0) == ttb_favored_is_A).astype(float)
+    
+    # Extract the features of the opposing (non-TTB-favored) option
+    def get_opponent(row):
+        if row['option_a_ratings'][0] == 1:
+            return tuple(row['option_b_ratings'])
+        else:
+            return tuple(row['option_a_ratings'])
+            
+    opp = data.apply(get_opponent, axis=1)
+    
+    # Trials where the opposing option is very weak (only has the 5th best cue)
+    weak_opp = opp == (0, 0, 0, 0, 1)
+    # Trials where the opposing option is very strong (has both the 2nd and 3rd best cues)
+    strong_opp = opp == (0, 1, 1, 0, 0)
+    
+    val_weak = ttb_match[weak_opp].mean() if weak_opp.any() else 0.5
+    val_strong = ttb_match[strong_opp].mean() if strong_opp.any() else 0.5
+    
+    # Return the difference in choice probability for the TTB-favored option
+    return float(val_weak - val_strong)
+```
+
+**Observed (real) value:** 0.0600 (var=0.0436)
+**Previous candidate values (this loop):**
+  - iter 1 (most recent): 0.2383 (var=0.1103) (Δ vs real +0.1783)
+**Other theories' values on this metric (for reference):**
+- pi_3: 0.2983 (var=0.0789)
+- pi_1: 0.0050 (var=0.0196)
+- pi_2: 0.3933 (var=0.0356)
+- pi_4: 0.1517 (var=0.0477)
+
+### Experiment 5
+**Design**
+  A=[1, 0, 1, 0, 0, 0]  B=[0, 1, 0, 1, 0, 0]
+  A=[1, 0, 0, 0, 1, 0]  B=[0, 1, 0, 0, 0, 1]
+  A=[1, 0, 0, 0, 0, 0]  B=[0, 1, 1, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0]  B=[0, 0, 0, 1, 1, 0]
+  A=[1, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 0, 0]
+  A=[1, 0, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 0]
+  A=[1, 1, 0, 0, 0, 0]  B=[0, 0, 1, 0, 0, 0]
+  A=[1, 0, 0, 1, 0, 0]  B=[0, 0, 0, 0, 1, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    # Create string representations of the stimuli to identify trial types
+    data['trial_str'] = data['option_a_ratings'].apply(lambda x: ''.join(map(str, x))) + '_' + data['option_b_ratings'].apply(lambda x: ''.join(map(str, x)))
+    
+    # Calculate the proportion of times Option B was chosen for each trial type
+    p_b = data.groupby('trial_str')['response'].mean()
+    
+    # Matched pair 1
+    t1 = '101000_010100'
+    t2 = '100010_010001'
+    
+    # Matched pair 2
+    t3 = '100000_011000'
+    t4 = '100000_000110'
+    
+    # Matched pair 3
+    t5 = '100000_011100'
+    t6 = '100000_001110'
+    
+    diff = 0.0
+    
+    # WADD predicts P(B) is higher in t2 than t1, t3 than t4, and t5 than t6.
+    # The Dual Process Mixture predicts identical probabilities within these pairs.
+    if t1 in p_b and t2 in p_b:
+        diff += (p_b[t2] - p_b[t1])
+    if t3 in p_b and t4 in p_b:
+        diff += (p_b[t3] - p_b[t4])
+    if t5 in p_b and t6 in p_b:
+        diff += (p_b[t5] - p_b[t6])
+        
+    return float(diff)
+```
+
+**Observed (real) value:** 0.1200 (var=0.1834)
+**Previous candidate values (this loop):**
+  - iter 1 (most recent): 0.2133 (var=0.2009) (Δ vs real +0.0933)
+**Other theories' values on this metric (for reference):**
+- pi_4: -0.0083 (var=0.1056)
+- pi_3: 0.4050 (var=0.2225)
+- pi_1: -0.0117 (var=0.0500)
+- pi_2: 0.0117 (var=0.0758)
+
+### Experiment 6
+**Design**
+  A=[1, 0, 0, 0, 1, 1, 1]  B=[0, 1, 1, 0, 0, 0, 0]
+  A=[0, 1, 0, 0, 1, 1, 1]  B=[0, 0, 1, 1, 0, 0, 0]
+  A=[1, 0, 0, 0, 1, 1, 0]  B=[0, 1, 1, 0, 0, 0, 0]
+  A=[0, 1, 0, 0, 1, 1, 0]  B=[0, 0, 1, 1, 0, 0, 0]
+  A=[1, 0, 0, 0, 1, 0, 0]  B=[0, 1, 1, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 1, 1]
+  A=[1, 0, 0, 1, 0, 0, 0]  B=[0, 1, 1, 0, 0, 0, 0]
+  A=[0, 0, 1, 0, 1, 1, 1]  B=[0, 0, 0, 1, 0, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    # Identify trials where Option A has >= 3 positive cues and Option B has exactly 2
+    a_sums = data['option_a_ratings'].apply(lambda x: sum(x))
+    b_sums = data['option_b_ratings'].apply(lambda x: sum(x))
+    
+    mask = (b_sums == 2) & (a_sums >= 3)
+    
+    if mask.sum() == 0:
+        return 0.0
+        
+    # Return the proportion of times Option B was chosen
+    return float(data.loc[mask, 'response'].mean())
+```
+
+**Observed (real) value:** 0.4508 (var=0.0118)
+**Previous candidate values (this loop):**
+  - iter 1 (most recent): 0.1888 (var=0.0115) (Δ vs real -0.2621)
+**Other theories' values on this metric (for reference):**
+- pi_3: 0.6525 (var=0.0730)
+- pi_4: 0.1742 (var=0.0132)
+- pi_1: 0.1600 (var=0.0108)
+- pi_2: 0.1496 (var=0.0077)
+
+## PREVIOUS CANDIDATE (this loop)
+The RUNNING-BEST (last ACCEPTED) candidate in this critique loop — i.e. the source the loop's accept gate kept as the best base so far. If your most recent attempt was REJECTED by the gate, this is NOT that attempt; it is the previously-accepted base the gate rolled back to. Iterate on this source — the next critic feedback should be applied on top of it.
+
+**Description**
+Rank-Weighted Additive Theory: Individuals integrate all cues but weight them according to an exponential decay based solely on their rank-order of validity. This creates a 'soft' lexicographic rule that acts primarily like Take-The-Best, but allows multiple secondary cues to exert a small, non-zero compensatory pull on the decision.
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, stimulus, history):
+    import numpy as np
+    
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError("Stimulus must be shape (2, n_features).")
+        
+    a, b = stim[0], stim[1]
+    val = np.asarray(parameters["validities"], dtype=float)
+    
+    # Ranks: 0 is highest validity
+    order = np.argsort(-val, kind="stable")
+    ranks = np.empty_like(order)
+    ranks[order] = np.arange(len(val))
+    
+    # Exponential decay based on rank
+    decay = float(parameters["decay"])
+    weights = decay ** ranks
+    
+    score_a = np.sum(a * weights)
+    score_b = np.sum(b * weights)
+    scores = np.array([score_a, score_b])
+    
+    beta = float(parameters["beta"])
+    z = beta * (scores - np.max(scores))
+    e = np.exp(z)
+    p_core = e / np.sum(e)
+    
+    epsilon = float(parameters["epsilon"])
+    p_final = (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])
+    
+    return p_final
+
+`policy(probs) -> int`:
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities /= probabilities.sum()
+    return int(np.random.choice(len(probabilities), p=probabilities))
+
+`parameters`:
+- decay: [0.01, 1.0]
+- beta: [0.1, 20.0]
+- epsilon: [0.0, 0.5]
+- validities: validities
+
+`rationale`: Following the arbiter's suggestion, this theory implements a Rank-Weighted Additive model. Rather than using raw validities or a non-linear scaling of them, or relying on a strict TTB/Tallying mixture, it assigns weights to cues based on an exponential decay of their rank-order validity. The top cue receives the largest weight (1.0), and subsequent cues receive exponentially decaying weights based on the 'decay' parameter. This naturally implements a 'soft' lexicographic rule: it behaves primarily like TTB (capturing the non-compensatory baseline) while allowing multiple secondary cues to collectively exert a compensatory effect. This approach aims to accurately capture the small compensatory shifts observed in Experiments 1, 5, and 6 without the overestimation characteristic of WADD.
+
+## PRIOR FEEDBACK ITERATIONS
+The critic's verdicts on each previous in-loop candidate, in order. Each block ends with an **Outcome of this advice** line saying whether the candidate the proposer produced AFTER this advice was ACCEPTED (loss strictly beat the running best) or REJECTED (the gate discarded it). Address the most recent iteration's feedback in your next edit, but down-weight past advice whose candidates were REJECTED.
+
+### Iteration 1 (most recent — address this)
+Verdict: regenerate
+Interpretation: The Rank-Weighted Additive model (with exponential decay) was ACCEPTED by the gate and provides a strong baseline. However, it currently overshoots the compensatory metrics in Experiments 3 and 4 (0.35 vs 0.04, 0.23 vs 0.06), while heavily undershooting the compensatory choice in Experiment 6 (0.18 vs 0.45). The overestimation in Exps 3 and 4 is likely driven by too much general noise (epsilon or low beta) rather than true compensatory integration, which washes out the strict TTB-like behavior expected there. Meanwhile, Exp 6 requires the 2nd and 3rd cues to effectively gang up against the 1st cue, which requires a specific range of the decay parameter.
+Rationale: Maintain the Rank-Weighted Additive (exponential decay) mechanism exactly as prescribed by the arbiter, as it was accepted. To fix the overestimation of compensatory metrics in Exp 3 and 4, reduce the allowed noise by tightening the `epsilon` range to `[0.0, 0.1]` and increasing the lower bound of `beta` to `[1.0, 25.0]`. This will force the model to fit the compensatory behavior in Exp 6 using the `decay` parameter (which should be allowed to be high enough, e.g., >0.6, so that decay + decay^2 > 1) rather than relying on softmax noise.
+
+**Outcome of this advice:** iter 1 candidate loss=0.3488 -> next candidate accept-status=PENDING (this is the advice you are addressing now).
+
+
+## IMPLEMENTATION GUARDRAILS
+- The parameters should be within the specified ranges.
+- The model's predictions should be valid probability distributions (non-negative and sum to 1).
+- When converting logits to probabilities via softmax, always use the numerically stable form: subtract the max before exponentiating (`x = x - np.max(x); p = np.exp(x); p /= p.sum()`). A naive `np.exp(x) / np.sum(np.exp(x))` overflows to Inf/NaN for large logits. Alternatively, use `scipy.special.softmax`.
+
+
+## PROPOSAL — MINIMAL-DIFF EDIT (do NOT rewrite from scratch)
+The RUNNING-BEST (last ACCEPTED) candidate is shown verbatim above under `## PREVIOUS CANDIDATE (this loop)`. This is the base the loop's accept gate is currently keeping; the most recent critic feedback (see `## PRIOR FEEDBACK ITERATIONS`) should be applied on top of it. Apply the SMALLEST edit that addresses the critic's diagnosis while staying inside the arbiter's prescribed mechanism family:
+  - Re-emit the previous source verbatim, then change ONLY the lines needed to address the critic (a parameter range, a normalization, a softmax temperature, an attention scheme, a gating term, a buggy indexing line, etc.).
+  - Keep all unaffected functions, equations, parameter names, and the overall mechanism intact.
+  - Do NOT rewrite `predict` / `policy` end-to-end if a few lines would do, and do NOT switch mechanism families — that is the arbiter's decision, not yours in this loop.
+  - Briefly explain the minimal edit in `rationale`.
+If you genuinely believe a larger rewrite is required, you may do one, but justify in `rationale` why the minimal-diff path was insufficient.
+
+## RESPONSE FORMAT
+Return a JSON object with the following fields:
+- theory: The theoretical claim this theory makes about cognition.
+- predict: Python source defining def predict(parameters, state, history) -> np.ndarray.
+- policy: Python source defining def policy(probs) -> int.
+- parameters: Parameter ranges (e.g. "[1.0, 10.0]") or choices (e.g. "{1, 2}"), sampled per subject.
+- rationale: Reasoning behind this theory design; used to explain why this theory is better then the previous ones.
+
+
+## Response
+
+```json
+```json
+{
+  "theory": "Rank-Weighted Additive Theory: Individuals integrate all cues but weight them according to an exponential decay based solely on their rank-order of validity. This creates a 'soft' lexicographic rule that acts primarily like Take-The-Best, but allows multiple secondary cues to exert a small, non-zero compensatory pull on the decision. By constraining noise, the model relies on the decay parameter to capture true compensatory behavior rather than random variation.",
+  "predict": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be shape (2, n_features).\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Ranks: 0 is highest validity\n    order = np.argsort(-val, kind=\"stable\")\n    ranks = np.empty_like(order)\n    ranks[order] = np.arange(len(val))\n    \n    # Exponential decay based on rank\n    decay = float(parameters[\"decay\"])\n    weights = decay ** ranks\n    \n    score_a = np.sum(a * weights)\n    score_b = np.sum(b * weights)\n    scores = np.array([score_a, score_b])\n    \n    beta = float(parameters[\"beta\"])\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    epsilon = float(parameters[\"epsilon\"])\n    p_final = (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n    \n    return p_final",
+  "policy": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))",
+  "parameters": {
+    "decay": "[0.01, 1.0]",
+    "beta": "[1.0, 25.0]",
+    "epsilon": "[0.0, 0.1]",
+    "validities": "validities"
+  },
+  "rationale": "Following the critic's feedback, the mechanism code is kept exactly the same (Rank-Weighted Additive with exponential decay). To fix the overestimation of compensatory metrics in Experiments 3 and 4, the allowed noise bounds have been tightened: epsilon is constrained to [0.0, 0.1] and the lower bound of beta is increased to 1.0. This ensures that the model relies on the decay parameter to capture the compensatory behavior seen in Experiment 6, rather than washing out strict TTB-like behavior with general noise."
+}
+```
+```
+
+## Usage
+
+```json
+{
+  "prompt_token_count": 12563,
+  "candidates_token_count": 717,
+  "total_token_count": 14149
+}
+```

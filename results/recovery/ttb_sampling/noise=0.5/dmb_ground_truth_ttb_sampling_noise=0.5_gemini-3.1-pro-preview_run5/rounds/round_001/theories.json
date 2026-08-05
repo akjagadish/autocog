@@ -1,0 +1,56 @@
+{
+  "round_idx": 1,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_3",
+      "killed": false,
+      "theory": {
+        "description": "Take The Best (TTB) heuristic posits a lexicographic decision rule where individuals search through features in descending order of validity. They stop at the first feature that discriminates between the two options, choosing the option with the positive value on that feature. If no feature discriminates, they guess randomly. To account for empirical levels of noise, the choice is mixed with a lapse rate (epsilon) that can span up to 1.0 (pure guessing).",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    stim = np.asarray(stimulus, dtype=float)\n    a, b = stim[0], stim[1]\n    \n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    # Sort features in descending order of validity\n    order = np.argsort(validities)[::-1]\n    \n    p_core = np.array([0.5, 0.5])\n    for idx in order:\n        if a[idx] > b[idx]:\n            p_core = np.array([1.0, 0.0])\n            break\n        elif b[idx] > a[idx]:\n            p_core = np.array([0.0, 1.0])\n            break\n            \n    epsilon = float(parameters[\"epsilon\"])\n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+        "parameters": {
+          "epsilon": "[0.0, 1.0]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's feedback, the strict Take The Best (TTB) mechanism produced predictions that were too extreme compared to human data. By widening the `epsilon` parameter range from `[0.0, 0.5]` to `[0.0, 1.0]`, the model can accommodate higher levels of response noise and random guessing, naturally regressing the predictions toward the empirical means without altering the core lexicographic mechanism."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_2",
+      "killed": true,
+      "theory": {
+        "description": "People compare two options by computing, for each option, a weighted sum of its feature values, where each feature is weighted by its subjective validity (or importance). The option with the higher weighted sum is chosen. WADD is the compensatory benchmark against which one-reason heuristics like Take The Best are contrasted: a large deficit on a high-validity cue can be compensated by a sufficiently strong advantage on lower-validity cues, so no single feature is ever decisive on its own. Unlike Tallying, WADD uses cardinal feature magnitudes and weights them by validity, so it exploits both the sign and the size of each feature-wise comparison as well as inter-cue differences in informativeness. Unlike Equal-Weight, weights differ across features. Behavior is invariant to a shared affine rescaling across options but scales linearly with per-feature weight. When the two weighted sums are equal the model has no basis for preference and the learner must guess. Response noise enters through a softmax over the two weighted sums with inverse temperature beta (interpolating between fully deterministic choice at large beta and uniform guessing at beta = 0), plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+        "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Weighted Additive rule (Payne, Bettman & Johnson\n    # 1993). Stimulus is the pair of option feature vectors for the\n    # current trial: array-like of shape (2, n_features), row 0 =\n    # option A, row 1 = option B. Each option's score is the dot\n    # product of its feature vector with the (subjective) validity\n    # weights. History is ignored: the choice depends only on the\n    # current stimulus.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"WADD expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n    n_features = stim.shape[1]\n\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    w = np.asarray(parameters[\"weights\"], dtype=float)\n    if w.shape[0] != n_features:\n        raise ValueError(\n            f\"weights length {w.shape[0]} != n_features {n_features}.\"\n        )\n\n    # Weighted sum per option (dot product with per-feature weights).\n    scores = stim @ (validities * w)\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability.\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    # Uniform lapse blended into the softmax (standard choice-with-lapse\n    # formulation; epsilon=0.5 yields equiprobable options, matching\n    # the paper's maximum-noise condition).\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities",
+          "weights": "[(0.0, 1.0)] * n_features"
+        },
+        "rationale": null
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_4",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Strategy Selection Theory (TTB + WADD): Individuals probabilistically mix between a non-compensatory lexicographic heuristic (Take The Best) and a compensatory heuristic (Weighted Additive, WADD). To account for varying degrees of confidence even when using a lexicographic rule, the TTB component makes probabilistic predictions rather than purely deterministic ones. Depending on individual differences or trial-by-trial strategy selection, a decision-maker relies on the single best discriminating cue a certain fraction of the time, and otherwise considers the validity-weighted sum of all feature differences.",
+      "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    stim = np.asarray(stimulus, dtype=float)\n    a, b = stim[0], stim[1]\n    \n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Take The Best (TTB) prediction with confidence delta\n    order = np.argsort(validities)[::-1]\n    delta = float(parameters[\"delta\"])\n    \n    p_ttb = np.array([0.5, 0.5])\n    for idx in order:\n        if a[idx] > b[idx]:\n            p_ttb = np.array([1.0 - delta, delta])\n            break\n        elif b[idx] > a[idx]:\n            p_ttb = np.array([delta, 1.0 - delta])\n            break\n            \n    # WADD prediction\n    scores = stim @ validities\n    \n    beta = float(parameters[\"beta\"])\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_wadd = e / e.sum()\n    \n    # Mix strategies\n    w_ttb = float(parameters[\"w_ttb\"])\n    p_core = w_ttb * p_ttb + (1.0 - w_ttb) * p_wadd\n    \n    # Add lapse rate\n    epsilon = float(parameters[\"epsilon\"])\n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n",
+      "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+      "parameters": {
+        "beta": "[0.01, 5.0]",
+        "epsilon": "[0.0, 0.2]",
+        "w_ttb": "[0.1, 0.85]",
+        "delta": "[0.0, 0.15]",
+        "validities": "validities"
+      },
+      "rationale": "Following the critic's feedback, we maintained the exact TTB + WADD mixture model from Iteration 4 but decoupled the mixture weight from the TTB confidence. We constrained 'delta' to a strict, tight range [0.0, 0.15] to ensure that whenever the TTB strategy is selected, its predictions remain sharp and confident, preserving the strong TTB match rate observed in Experiment 4. Simultaneously, we widened the strategy selection weight 'w_ttb' to [0.1, 0.85] to allow the model to rely more frequently on the WADD component, capturing the compensatory behavior seen in Experiments 1 and 2 without letting the TTB component degrade into noise."
+    }
+  }
+}

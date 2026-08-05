@@ -1,0 +1,52 @@
+{
+  "round_idx": 4,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_3",
+      "killed": false,
+      "theory": {
+        "description": "People compare two options by tallying the total number of positive features for each option, ignoring cue validities entirely. The option with the higher unweighted sum of positive features is chosen. This Equal Weight (or Tallying) heuristic provides a frugal but fully compensatory strategy, capturing the strong human tendency to prefer options with multiple supporting cues over those with a single high-validity cue. Response noise is modeled via a softmax over the tallied scores with inverse temperature beta, and an independent lapse rate epsilon.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Tallying expects a (2, n_features) stimulus.\")\n        \n    # Tallying: count the number of positive features (unweighted sum) for each option.\n    scores = np.sum(stim, axis=1)\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax with max-subtraction for numerical stability.\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    n_opts = p_core.shape[0]\n    # Blend with uniform lapse distribution.\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()  # Ensure valid probabilities\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]"
+        },
+        "rationale": "Following the arbiter's suggestion, this implements the Equal Weight (Tallying) model. By simply summing the unweighted feature values, the model heavily penalizes options that rely on a single high-validity cue when the alternative is supported by multiple lower-validity cues. This mechanism naturally explains the very low TTB-match in Experiment 2 and the specific compensatory patterns observed in Experiment 1, outperforming both the strict one-reason stopping rule of TTB and the exact validity weighting of WADD."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_6",
+      "killed": true,
+      "theory": {
+        "description": "Noisy Encoding Tallying: Decision-makers rely on the unweighted Tallying heuristic but suffer from noisy perception or encoding of the environment. Each binary feature has an independent probability of being misperceived (a 1 flipped to a 0, or a 0 flipped to a 1). Subjects then compute the tally of these perceived features and deterministically choose the option with the higher tally, breaking ties randomly. This naturally predicts that decision errors scale with the total number of features (capturing non-linear log-odds in certain experiments) because more features provide more opportunities for bit-flips to alter the tally difference.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    import math\n    \n    stim = np.asarray(state, dtype=float)\n    n_features = stim.shape[1]\n    \n    p = float(parameters[\"flip_prob\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    def binom_pmf(k, n, prob):\n        if n == 0:\n            return 1.0 if k == 0 else 0.0\n        if prob == 0.0:\n            return 1.0 if k == 0 else 0.0\n        if prob == 1.0:\n            return 1.0 if k == n else 0.0\n        return math.comb(n, k) * (prob ** k) * ((1 - prob) ** (n - k))\n        \n    def get_tally_dist(N1, N0, p):\n        dist = np.zeros(N1 + N0 + 1)\n        for x in range(N1 + 1):\n            px = binom_pmf(x, N1, 1 - p)\n            if px == 0.0:\n                continue\n            for y in range(N0 + 1):\n                py = binom_pmf(y, N0, p)\n                if py > 0.0:\n                    dist[x + y] += px * py\n        return dist\n        \n    N1_A = int(np.sum(stim[0]))\n    N0_A = n_features - N1_A\n    dist_A = get_tally_dist(N1_A, N0_A, p)\n    \n    N1_B = int(np.sum(stim[1]))\n    N0_B = n_features - N1_B\n    dist_B = get_tally_dist(N1_B, N0_B, p)\n    \n    prob_A_wins = 0.0\n    prob_tie = 0.0\n    for vA in range(len(dist_A)):\n        if dist_A[vA] == 0.0:\n            continue\n        for vB in range(len(dist_B)):\n            if dist_B[vB] == 0.0:\n                continue\n            if vA > vB:\n                prob_A_wins += dist_A[vA] * dist_B[vB]\n            elif vA == vB:\n                prob_tie += dist_A[vA] * dist_B[vB]\n                \n    p_A_core = prob_A_wins + 0.5 * prob_tie\n    p_B_core = 1.0 - p_A_core\n    \n    p_core = np.array([p_A_core, p_B_core])\n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))",
+        "parameters": {
+          "flip_prob": "[0.0, 0.2]",
+          "epsilon": "[0.0, 0.2]"
+        },
+        "rationale": "Following the critic's feedback, the core mechanism of Noisy Encoding Tallying remains entirely unchanged. However, the parameter ranges for `flip_prob` and `epsilon` have been restricted from [0.0, 0.5] down to [0.0, 0.2]. This prevents the model from injecting excessive noise that washes out the tallying signal, enabling it to better match the relatively low baseline error rates observed in Experiments 2, 4, and 7 while still capturing the feature-dependent scaling of errors."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_7",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Decision makers use an unweighted tallying heuristic, but their probability of making a random error (lapse) depends on the stimulus. When one option has zero positive features, the choice is trivial and the lapse rate is minimal. When both options have at least one positive feature, cognitive conflict or distraction increases, leading to a higher lapse rate. This stimulus-dependent noise explains why accuracy drops when comparing options with multiple features compared to options against a zero-feature baseline, even when the difference in features is held constant.",
+      "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Tallying expects a (2, n_features) stimulus.\")\n        \n    scores = np.sum(stim, axis=1)\n    \n    beta = float(parameters[\"beta\"])\n    eps_base = float(parameters[\"eps_base\"])\n    eps_conflict = float(parameters[\"eps_conflict\"])\n    \n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    if scores[0] > 0 and scores[1] > 0:\n        lapse = eps_base + eps_conflict\n    else:\n        lapse = eps_base\n        \n    lapse = min(lapse, 0.99)\n    n_opts = p_core.shape[0]\n    \n    return (1.0 - lapse) * p_core + lapse * (np.ones(n_opts) / n_opts)\n",
+      "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+      "parameters": {
+        "beta": "[0.1, 20.0]",
+        "eps_base": "[0.0, 0.2]",
+        "eps_conflict": "[0.0, 0.08]"
+      },
+      "rationale": "Tightened the parameter range for `eps_conflict` from [0.0, 0.15] to [0.0, 0.08] as suggested by the critic. This further reduces the conflict-induced lapse rate to prevent the model from overpredicting the error rate on trials where both options have features, bringing Experiment 8's fit closer to the observed value while maintaining the necessary small lapse rate needed for Experiments 9 and 10."
+    }
+  }
+}

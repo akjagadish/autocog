@@ -1,0 +1,59 @@
+{
+  "round_idx": 4,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_5",
+      "killed": true,
+      "theory": {
+        "description": "Strategy Mixture of TTB and WADD: Decision-makers draw from a repertoire of strategies, specifically mixing a non-compensatory heuristic (Take The Best) and a fully compensatory one (Weighted Additive). By probabilistically blending TTB (which selects the option with the highest valid cue) and WADD (which computes subjective value via log-odds weighted sums of all cues), the model naturally predicts the intermediate choice proportions observed on conflict trials where the two strategies make opposite predictions.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be a (2, n_features) array.\")\n    \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    beta_ttb = float(parameters[\"beta_ttb\"])\n    beta_wadd = float(parameters[\"beta_wadd\"])\n    epsilon = float(parameters[\"epsilon\"])\n    p_ttb_weight = float(parameters[\"p_ttb\"])\n    \n    # --- Take The Best (TTB) Prediction ---\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n    winner_ttb = None\n    for j in cue_order:\n        if a[j] > b[j]:\n            winner_ttb = 0\n            break\n        if b[j] > a[j]:\n            winner_ttb = 1\n            break\n            \n    if winner_ttb is None:\n        p_ttb = np.array([0.5, 0.5])\n    else:\n        scores_ttb = np.array([1.0, 0.0]) if winner_ttb == 0 else np.array([0.0, 1.0])\n        z_ttb = beta_ttb * (scores_ttb - np.max(scores_ttb))\n        e_ttb = np.exp(z_ttb)\n        p_ttb = e_ttb / np.sum(e_ttb)\n        \n    # --- Weighted Additive (WADD) Prediction ---\n    # Transform validities to log-odds to represent additive evidence\n    val_clipped = np.clip(val, 1e-5, 1.0 - 1e-5)\n    w = np.log(val_clipped / (1.0 - val_clipped))\n    v_a = np.sum(a * w)\n    v_b = np.sum(b * w)\n    scores_wadd = np.array([v_a, v_b])\n    \n    z_wadd = beta_wadd * (scores_wadd - np.max(scores_wadd))\n    e_wadd = np.exp(z_wadd)\n    p_wadd = e_wadd / np.sum(e_wadd)\n    \n    # --- Mixture ---\n    p_mixed = p_ttb_weight * p_ttb + (1.0 - p_ttb_weight) * p_wadd\n    \n    n_opts = p_mixed.shape[0]\n    return (1.0 - epsilon) * p_mixed + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities = probabilities / np.sum(probabilities)\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta_ttb": "[0.01, 100.0]",
+          "beta_wadd": "[0.01, 100.0]",
+          "epsilon": "[0.0, 0.5]",
+          "p_ttb": "[0.0, 1.0]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's most recent feedback, the previous attempt to normalize WADD scores degraded the model's fit by squashing evidence differences and making WADD predictions too noisy. Instead of modifying the evidence scale, we revert to the unnormalized log-odds WADD sums from the running-best candidate and simply widen the upper bounds of `beta_ttb` and `beta_wadd` from 10.0 to 100.0. This gives the optimizer the freedom to scale the unnormalized WADD evidence and TTB evidence appropriately, allowing the model to achieve sharper, more deterministic probabilities for both strategies when necessary."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_6",
+      "killed": false,
+      "theory": {
+        "description": "Rank-Weighted Additive Model: Decision-makers assign subjective weights to cues based on their ordinal rank of validity rather than transforming raw validities via log-odds. The weight of each cue decays as an inverse power function of its rank (e.g., 1 / rank^k). This compensatory approach preserves monotonicity and naturally dampens the extreme predictions of pure log-odds WADD, successfully explaining intermediate choice proportions and avoiding the ordinal violations typical of non-compensatory heuristics like Take The Best.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be a (2, n_features) array.\")\n    \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    beta = float(parameters[\"beta\"])\n    decay_rate = float(parameters[\"decay_rate\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Determine ranks of validities (highest validity gets rank 1)\n    order = np.argsort(-val, kind=\"stable\")\n    ranks = np.zeros_like(val)\n    ranks[order] = np.arange(1, len(val) + 1)\n    \n    # Calculate subjective weights based on rank\n    w = 1.0 / (ranks ** decay_rate)\n    \n    # Compute weighted additive values for both options\n    v_a = np.sum(a * w)\n    v_b = np.sum(b * w)\n    scores = np.array([v_a, v_b])\n    \n    # Softmax with max-subtraction for numerical stability\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities = probabilities / np.sum(probabilities)\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.1, 3.0]",
+          "decay_rate": "[0.0, 2.0]",
+          "epsilon": "[0.0, 0.3]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's feedback, the Rank-Weighted Additive Model with inverse power decay (w = 1 / rank^k) is retained exactly as in iteration 2. To fine-tune the aggregate loss without altering the core functional form, the parameter ranges for stochasticity are gently restricted: `beta` is narrowed to [0.1, 3.0] to prevent overly deterministic predictions, and `epsilon` is restricted to [0.0, 0.3] to prevent excessive noise. This minimal adjustment should help balance the model's predictions across all experiments."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_7",
+    "slot": 1,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Sequential Evidence Accumulation Theory with Attention Scaling: Decision-makers evaluate options by sequentially sampling cues with probabilities proportional to a non-linear scaling of their validities. Each sampled cue provides evidence that accumulates over time until it hits a decision boundary. A power parameter (gamma) sharpens or flattens the attention given to the most valid cues, allowing the model to smoothly interpolate between TTB-like focus on the best cue and compensatory tallying of all cues, while the inherent variance of the sampling process provides natural noise.",
+      "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be a (2, n_features) array.\")\n    \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    drift_scale = float(parameters[\"drift_scale\"])\n    boundary = float(parameters[\"boundary\"])\n    epsilon = float(parameters[\"epsilon\"])\n    gamma = float(parameters[\"gamma\"])\n    \n    # Probability of sampling each cue proportional to its scaled validity\n    prob_cue_raw = val ** gamma\n    prob_cue = prob_cue_raw / np.sum(prob_cue_raw)\n    \n    # p = probability of sampling a cue that favors A\n    # q = probability of sampling a cue that favors B\n    p = np.sum(prob_cue[(a > b)])\n    q = np.sum(prob_cue[(b > a)])\n    \n    if p == 0 and q == 0:\n        p_core = np.array([0.5, 0.5])\n    else:\n        # Expected drift and variance per sample\n        # Step size is scaled by drift_scale\n        v = drift_scale * (p - q)\n        var = (drift_scale ** 2) * (p + q - (p - q)**2)\n        \n        if var <= 1e-6:\n            prob_a = 1.0 if v > 0 else (0.0 if v < 0 else 0.5)\n        else:\n            # DDM probability of hitting upper boundary before lower boundary\n            exponent = -2.0 * boundary * v / var\n            # Clip exponent for numerical stability\n            exponent = np.clip(exponent, -20.0, 20.0)\n            prob_a = 1.0 / (1.0 + np.exp(exponent))\n            \n        p_core = np.array([prob_a, 1.0 - prob_a])\n        \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+      "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities = probabilities / np.sum(probabilities)\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+      "parameters": {
+        "drift_scale": "[0.1, 10.0]",
+        "boundary": "[0.1, 10.0]",
+        "epsilon": "[0.0, 0.5]",
+        "gamma": "[0.1, 5.0]",
+        "validities": "validities"
+      },
+      "rationale": "Following the critic's advice, a power parameter `gamma` is introduced to scale the cue sampling probabilities non-linearly (`prob_cue = (val ** gamma) / np.sum(val ** gamma)`). The previous iteration overpredicted compensatory choices because sampling strictly proportional to raw validities led to over-sampling of minor cues. By allowing `gamma > 1`, the model can sharpen attention towards the highest validity cue, shifting behavior to be more TTB-like on conflict trials and better capturing the empirical balance without breaking the sequential evidence accumulation mechanism."
+    }
+  }
+}

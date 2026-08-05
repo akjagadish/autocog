@@ -1,0 +1,52 @@
+{
+  "round_idx": 4,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_5",
+      "killed": false,
+      "theory": {
+        "description": "Weighted Additive Model (WADD) with Subjective Validities: Decision-makers integrate all available features by computing a weighted sum of cue values for each option. The weights are subjective validities, modeled as a power transformation of the objective validities. Choices are made probabilistically using a softmax function over the options' weighted sums, along with an independent lapse rate. Limiting the softmax inverse temperature ensures higher decision noise, which tempers overconfidence when cue validities conflict.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    gamma = float(parameters[\"gamma\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Transform objective validities into subjective weights\n    subj_weights = validities ** gamma\n    \n    # Compute WADD scores\n    scores = stim @ subj_weights\n    \n    # Softmax over scores\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    # Incorporate lapse rate\n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))",
+        "parameters": {
+          "gamma": "[0.0, 5.0]",
+          "beta": "[0.0, 1.0]",
+          "epsilon": "[0.0, 1.0]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's advice, we keep the identical WADD mechanism with the power-law validity transformation and lapse rate, but further restrict the 'beta' parameter range to [0.0, 1.0]. This minimal edit enforces an even higher baseline of softmax noise, which should help to further suppress the remaining overprediction of accuracy in Experiments 4 and 6, bringing the predictions closer to the near-random human behavior observed on these specific trial types."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_6",
+      "killed": true,
+      "theory": {
+        "description": "Take-The-Best (TTB) Heuristic with High Decision Noise: Decision-makers evaluate cues sequentially in descending order of their validities. They stop at the first cue that discriminates between the options and choose the option favored by that cue. To account for the extremely high degree of randomness observed in the experimental data (where aggregate choices often hover near 0.50), the model forces a significantly high lapse rate (between 0.4 and 1.0), reflecting instances where decision-makers guess randomly instead of strictly applying the lexicographic rule.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Sort cues by validity in descending order\n    cue_order = np.argsort(-validities)\n    \n    # Iterate through cues to find the first that discriminates\n    decision = np.array([0.5, 0.5])\n    for cue_idx in cue_order:\n        val_a = stim[0, cue_idx]\n        val_b = stim[1, cue_idx]\n        if val_a > val_b:\n            decision = np.array([1.0, 0.0])\n            break\n        elif val_b > val_a:\n            decision = np.array([0.0, 1.0])\n            break\n            \n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Return the TTB decision mixed with random guessing (lapse rate)\n    return (1.0 - epsilon) * decision + epsilon * np.array([0.5, 0.5])\n",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+        "parameters": {
+          "epsilon": "[0.4, 1.0]",
+          "validities": "validities"
+        },
+        "rationale": "Reverting to the simple lapse rate TTB model (as the probabilistic stopping rule was rejected) but strictly enforcing a high degree of noise by restricting the epsilon parameter range to [0.4, 1.0]. This forces the optimizer to apply a high lapse rate, thereby bringing the aggregated predictions closer to the ~0.5 mark consistently observed across the experiments while remaining within the prescribed TTB family."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_7",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Tallying (Equal Weights) Heuristic with Decision Noise",
+      "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    \n    # Count the number of positive features (tally) for each option\n    tally_a = np.sum(stim[0])\n    tally_b = np.sum(stim[1])\n    \n    # Choose the option with the higher tally, or guess if tied\n    if tally_a > tally_b:\n        p_core = np.array([1.0, 0.0])\n    elif tally_b > tally_a:\n        p_core = np.array([0.0, 1.0])\n    else:\n        p_core = np.array([0.5, 0.5])\n        \n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Mix the deterministic tallying decision with random guessing (lapse rate)\n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])",
+      "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))",
+      "parameters": {
+        "epsilon": "[0.0, 1.0]"
+      },
+      "rationale": "Following the critic's feedback, the softmax decision rule evaluated in Iteration 2 exacerbated the extreme predictions by amplifying small tally differences, leading to a worse aggregate loss. Therefore, we revert to the exact epsilon-lapse formulation of the Tallying heuristic from Iteration 1. This model counts the positive features for each option, chooses the one with the higher tally, and guesses on ties. By strictly maintaining the epsilon parameter with a full range of [0.0, 1.0], the model is free to fit the high degree of decision noise required to capture the near-0.50 choice proportions in heavily mixed human data, without the distorting effects of a temperature parameter."
+    }
+  }
+}

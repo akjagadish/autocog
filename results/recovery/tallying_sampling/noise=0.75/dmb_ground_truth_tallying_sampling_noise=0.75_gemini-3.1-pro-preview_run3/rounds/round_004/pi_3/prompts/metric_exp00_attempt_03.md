@@ -1,0 +1,313 @@
+# metric_exp00_attempt_03
+
+## System Prompt
+
+You are a psychology researcher proposing a metric in the Decision Making (Binary Features) domain.
+
+Your goal is adversarial: propose a metric that DISCRIMINATES the two theories — i.e., its value, computed on data simulated under your advocated theory, should be as far as possible from its value computed on data simulated under the competing theory. The direction of the gap does not matter; what matters is that the two theories produce visibly different numbers on this metric. The metric is computed on the data collected from the experimental design provided in the prompt. Produce a metric where you're prediction will be much more accurate than the competing theory's prediction on human data.
+
+Your metric is a Python function
+
+    metric(data: pd.DataFrame) -> float
+
+Available imports inside `metric`:
+- numpy as np
+- pandas as pd
+
+The system evaluates your metric in two ways and reports the pair as `point_estimate (var=between_subject_variance)` everywhere downstream:
+- `point_estimate` is `metric(data)` applied to the FULL pooled DataFrame (all subjects together) — the canonical scalar;
+- `between_subject_variance` is the population variance (`ddof=0`) of `metric(subj_df)` re-applied per `subject_id`, summarising how stable the metric is across subjects. If your metric only makes sense on multi-subject data this will fall back to `n/a` and the metric is rejected (the acceptance test below cannot run without it). Prefer metrics that work both on the pooled DataFrame and on a single subject's slice.
+
+Acceptance rule: the system simulates each theory and runs Welch's two-sample t-test on `(point_estimate_self, between_subject_variance_self, N)` vs. `(point_estimate_adv, between_subject_variance_adv, N)`, where N is the number of HUMAN subjects the experiment will actually be run with (a fixed small number, currently 25). Your metric is admitted iff the two-sided p-value is below the significance level (currently alpha=0.01). Implication: a large between-theory gap is NOT enough — if either theory's metric is also highly variable across subjects, N humans won't reliably distinguish them and the metric will be rejected. Aim for contrasts that are both large in mean AND tight per subject.
+
+Do NOT propose metrics that are trivially true for your theory.
+
+
+## User Prompt
+
+## EXPERIMENTAL DOMAIN
+Subjects repeatedly choose between two fictitious products, A and B. Each option is described by a vector of binary expert ratings (each 0 or 1). Every experiment fixes its own feature count (via `validities` length) and per-expert validities; both are LLM-proposed. The validities are communicated to the subject in the instructions. Subjects pick whichever product they believe is of higher quality. There is no trial-by-trial correctness feedback.
+
+Each subject completes ~96 trials in a single block, with order randomized independently per subject. On every trial the subject sees two options A and B, each described by `n_features` binary expert ratings (each 0 or 1). The per-feature validities and n_features are fixed per experiment (design-time choices). Validities are communicated to the subject in the instructions. Both `n_features` and `validities` are exposed to your `predict` via the `parameters` dict. The subject chooses A or B; no correctness feedback is provided after the choice.
+
+## CHOSEN EXPERIMENTAL DESIGN
+**Validities (n_features=5):** [0.95, 0.85, 0.75, 0.65, 0.55]
+
+**Trial pairs (n=6):**
+  trial 1: A=[1, 0, 1, 1, 0]  B=[0, 1, 1, 0, 1]
+  trial 2: A=[0, 1, 1, 1, 0]  B=[1, 0, 0, 1, 1]
+  trial 3: A=[0, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0]
+  trial 4: A=[1, 1, 1, 0, 0]  B=[0, 0, 0, 1, 1]
+  trial 5: A=[0, 1, 1, 0, 0]  B=[1, 0, 0, 1, 1]
+  trial 6: A=[0, 0, 1, 1, 1]  B=[1, 1, 0, 0, 0]
+
+**Rationale:** To robustly dissociate a pure Tallying strategy with global noise from a mixture of Tallying and Take-The-Best (TTB), we exploit trials where Tallying predicts a strict tie (equal number of positive features). The pure Tallying model predicts exactly 50/50 guessing on these trials, regardless of feature validities. In contrast, the mixture model predicts a systematic bias toward the option favored by the highest-validity discriminating feature, because the TTB component breaks the tie. We also include compensatory trials where Tallying and TTB oppose each other (e.g., Tallying prefers A by a count of 4 to 1, but TTB prefers B), and agreement trials where both heuristics prefer the same option. The pure Tallying model predicts choice probabilities based strictly on the difference in total counts, while the mixture model predicts that TTB agreement/disagreement will systematically modulate these probabilities.
+
+**Computed schedule:** 6 unique pairs × 16 reps = 96 trials per subject.
+
+
+
+## ADVOCATED THEORY
+**Description:** Decision-makers use a 'Tallying' (Equal-Weight) heuristic, a compensatory strategy that ignores cue validities. They simply count the number of positive features (or advantages) each option has and choose the option with the highest total count. If the counts are equal, they guess. Because pure Tallying makes choices that strongly oppose Take The Best on compensatory trials, high levels of choice stochasticity (noise) are needed to pull the predicted consistency up toward the observed ~0.40-0.42 range, reflecting uncertainty or lapses in applying the heuristic.
+
+**Parameters:**
+- beta: [0.01, 1.0]
+- epsilon: [0.3, 0.8]
+
+**`predict source code`:**
+```python
+def predict(parameters, stimulus, history):
+    import numpy as np
+    stim = np.asarray(stimulus, dtype=float)
+    
+    # Tallying: sum the unweighted feature values for each option.
+    scores = stim.sum(axis=1)
+    
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+    
+    # Softmax with max-subtraction for numerical stability.
+    z = beta * (scores - scores.max())
+    e = np.exp(z)
+    p_core = e / e.sum()
+    
+    # Uniform lapse blended into the softmax
+    n_opts = p_core.shape[0]
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+```
+
+**`policy source code`:**
+```python
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities /= probabilities.sum()
+    return int(np.random.choice(len(probabilities), p=probabilities))
+```
+
+
+## COMPETING THEORY
+**Description:** Decision-makers probabilistically sample between a compensatory Equal-Weight (Tallying) heuristic and a non-compensatory Lexicographic (Take-The-Best) heuristic on a trial-by-trial basis, but they heavily favor Tallying. Furthermore, when they do use Take-The-Best, the application of the rule is subject to decision noise (modeled via a softmax temperature), reflecting uncertainty or stochasticity in identifying the most valid cue rather than a perfectly deterministic lexicographic choice.
+
+**Parameters:**
+- beta: [0.01, 5.0]
+- beta_ttb: [0.01, 5.0]
+- w_tally: [0.5, 1.0]
+- epsilon: [0.0, 1.0]
+- validities: validities
+
+**`predict source code`:**
+```python
+def predict(parameters, state, history):
+    import numpy as np
+    
+    stim = np.asarray(state, dtype=float)
+    validities = np.asarray(parameters["validities"], dtype=float)
+    
+    # Tallying: sum the unweighted feature values for each option
+    scores_tally = stim.sum(axis=1)
+    beta = float(parameters["beta"])
+    z = beta * (scores_tally - scores_tally.max())
+    e = np.exp(z)
+    p_tally = e / e.sum()
+    
+    # Take-The-Best (TTB): find the first discriminating cue ordered by validity
+    order = np.argsort(validities)[::-1]
+    diff = stim[0, order] - stim[1, order]
+    non_zero = np.where(diff != 0)[0]
+    
+    p_ttb = np.array([0.5, 0.5])
+    if len(non_zero) > 0:
+        first_diff = diff[non_zero[0]]
+        score_ttb = np.array([1.0, 0.0]) if first_diff > 0 else np.array([0.0, 1.0])
+        beta_ttb = float(parameters["beta_ttb"])
+        z_ttb = beta_ttb * score_ttb
+        e_ttb = np.exp(z_ttb - np.max(z_ttb))
+        p_ttb = e_ttb / e_ttb.sum()
+            
+    # Mixture of Tallying and TTB
+    w_tally = float(parameters["w_tally"])
+    p_mix = w_tally * p_tally + (1.0 - w_tally) * p_ttb
+    
+    # Global lapse rate
+    epsilon = float(parameters["epsilon"])
+    n_opts = len(p_mix)
+    p_final = (1.0 - epsilon) * p_mix + epsilon * (np.ones(n_opts) / n_opts)
+    
+    return p_final
+```
+
+**`policy source code`:**
+```python
+def policy(probs):
+    import numpy as np
+    probs = np.asarray(probs, dtype=np.float64)
+    probs /= probs.sum()
+    return int(np.random.choice(len(probs), p=probs))
+```
+
+
+## DATA SCHEMA
+Your metric receives a tidy per-trial pandas DataFrame stacking all subjects (rows grouped by `subject_id`, in trial order). Columns:
+- subject_id: Subject identifier (one row per trial per subject).
+- option_a_ratings: List of n_features binary expert ratings (each 0 or 1) for option A on this trial.
+- option_b_ratings: List of n_features binary expert ratings (each 0 or 1) for option B on this trial.
+- response: 0 if subject chose A, 1 if subject chose B.
+
+## IMPLEMENTATION GUARDRAILS
+Any column in the schema above whose description names a list / tuple / np.ndarray (i.e. a per-trial sequence of values) holds non-scalar cells. Those cells are NOT hashable, so operations that hash row values fail with `TypeError: unhashable type: 'list'`. Treating `<seq_col>` as a placeholder for any such sequence-valued column:
+- Avoid: `data.groupby('<seq_col>')`, `data['<seq_col>'].value_counts()`,     `data['<seq_col>'].nunique()`, `data['<seq_col>'].unique()` (returns     an object array but downstream `set()` / `in dict` will crash),     `set(data['<seq_col>'])`, `data['<seq_col>'].isin([...])` against list     values, or using a list cell as a dict key.
+- If you need a hashable surrogate, project to one first, e.g.:
+    - `data['<seq_col>_key'] = data['<seq_col>'].apply(tuple)` then group by `<seq_col>_key`
+    - `data['<seq_col>_str'] = data['<seq_col>'].apply(lambda x: ''.join(map(str, x)))`
+    Scalar columns (ints, floats, strings like `subject_id`, integer     responses, etc.) hash fine and can be used directly.
+- Generator expressions inside function calls like `map()` or `join()` MUST be     parenthesized. For example:
+    - WRONG: `map(str, int(v) for v in x)` → SyntaxError
+    - RIGHT: `map(str, (int(v) for v in x))` or use a list comp: `[str(int(v)) for v in x]`
+- Always verify your code is syntactically valid Python before returning it.
+
+## METRICS YOU ALREADY TRIED AND FAILED ON
+Each entry below is a metric you previously proposed in this round that did NOT discriminate the two theories at the human sample size — either it errored, its between-subject variance was unavailable, or Welch's t-test on `(self mean, self var, N)` vs. `(adv mean, adv var, N)` returned p ≥ alpha. The `outcome` line is the simulation result (means, between-subject variances, t-statistic and p-value at the human N) on the same `data_self` / `data_adv` your next metric will be evaluated on. Use the numbers to see where your hypothesised contrast collapsed — small mean gap, large per-subject variance, or both — and propose something qualitatively different. Don't repeat the same idea with cosmetic tweaks.
+[0] rationale: By isolating trials where the Tallying heuristic predicts a strict tie (i.e., both options have an equal number of positive features), we can clearly separate the two theories. The pure Tallying model will predict a 50/50 guess on these trials, leading to a TTB-alignment proportion of ~0.5. In contrast, the Mixture model (which incorporates Take-The-Best) will systematically break these ties using the highest-validity discriminating feature, resulting in a TTB-alignment proportion significantly greater than 0.5. This metric computes the exact proportion of TTB-aligned choices exclusively on these tie trials.
+metric_source:
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+    
+    # Extract ratings as 2D arrays
+    A = np.stack(data['option_a_ratings'].values)
+    B = np.stack(data['option_b_ratings'].values)
+    
+    # Identify tie trials (where Tallying predicts a strict tie)
+    sum_a = A.sum(axis=1)
+    sum_b = B.sum(axis=1)
+    tie_mask = (sum_a == sum_b)
+    
+    if not np.any(tie_mask):
+        return 0.5
+        
+    A_tie = A[tie_mask]
+    B_tie = B[tie_mask]
+    resp_tie = data['response'].values[tie_mask]
+    
+    # Find TTB choice for tie trials
+    diff = A_tie - B_tie
+    
+    ttb_choices = []
+    for d in diff:
+        non_zero = np.where(d != 0)[0]
+        if len(non_zero) > 0:
+            first_diff = d[non_zero[0]]
+            ttb_choices.append(0 if first_diff > 0 else 1)
+        else:
+            ttb_choices.append(-1)
+            
+    ttb_choices = np.array(ttb_choices)
+    
+    # Calculate proportion of TTB-aligned choices on tie trials
+    valid_mask = (ttb_choices != -1)
+    if not np.any(valid_mask):
+        return 0.5
+        
+    aligned = (resp_tie[valid_mask] == ttb_choices[valid_mask])
+    return float(np.mean(aligned))
+outcome: self_sim=0.5125 (var=0.0073) adversary_sim=0.5206 (var=0.0119) welch_t=-0.293 p=0.7705 (N=25, alpha=0.01) -> reject
+
+[1] rationale: By restricting the analysis to trials where the Tallying heuristic predicts an identical choice probability (score difference of exactly 1), we can elegantly dissociate the Pure Tallying model from the Mixture model. For Pure Tallying, the probability of choosing the Tally-favored option depends solely on the score difference; thus, the difference in choice rates between Agreement trials (where TTB also favors the Tally choice) and Disagreement trials (where TTB opposes it) should be exactly zero. Conversely, the Mixture model will exhibit a significantly positive difference, as the intermittent use of TTB will boost the Tally-aligned choice rate on Agreement trials and suppress it on Disagreement trials.
+metric_source:
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    
+    A = np.stack(data['option_a_ratings'].values)
+    B = np.stack(data['option_b_ratings'].values)
+    resp = data['response'].values
+    
+    A_sum = A.sum(axis=1)
+    B_sum = B.sum(axis=1)
+    
+    # Tally choice is 0 if A_sum > B_sum else 1
+    tally_choice = np.where(A_sum > B_sum, 0, 1)
+    
+    diff = A - B
+    ttb_choice = np.zeros(len(A), dtype=int)
+    for i in range(len(A)):
+        non_zero = np.where(diff[i] != 0)[0]
+        if len(non_zero) > 0:
+            ttb_choice[i] = 0 if diff[i][non_zero[0]] > 0 else 1
+        else:
+            ttb_choice[i] = -1
+            
+    # Filter to trials where the Tallying score difference is exactly 1
+    diff_1_mask = np.abs(A_sum - B_sum) == 1
+    
+    agree_mask = diff_1_mask & (tally_choice == ttb_choice)
+    disagree_mask = diff_1_mask & (tally_choice != ttb_choice)
+    
+    if np.sum(agree_mask) == 0 or np.sum(disagree_mask) == 0:
+        return 0.0
+        
+    p_agree = np.mean(resp[agree_mask] == tally_choice[agree_mask])
+    p_disagree = np.mean(resp[disagree_mask] == tally_choice[disagree_mask])
+    
+    return float(p_agree - p_disagree)
+outcome: self_sim=-0.0331 (var=0.0253) adversary_sim=0.0537 (var=0.0265) welch_t=-1.909 p=0.06226 (N=25, alpha=0.01) -> reject
+
+[2] rationale: This metric leverages the opposing predictions of the two models across different levels of Tallying evidence. Pure Tallying predicts that the probability of choosing the Tally-favored option should be strictly higher when the score difference is 3 compared to when it is 1. Thus, P(Tally | diff=3) - P(Tally | diff=1, Agree) should be significantly positive. In contrast, the Mixture model will have a depressed P(Tally | diff=3) because TTB strictly opposes Tallying on these trials, while P(Tally | diff=1, Agree) is boosted by TTB agreement. Therefore, the Mixture model predicts this difference to be near zero or negative, creating a strong and stable contrast between the theories.
+metric_source:
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    
+    A = np.stack(data['option_a_ratings'].values)
+    B = np.stack(data['option_b_ratings'].values)
+    resp = data['response'].values
+    
+    A_sum = A.sum(axis=1)
+    B_sum = B.sum(axis=1)
+    
+    tally_choice = np.where(A_sum > B_sum, 0, 1)
+    
+    diff = A - B
+    ttb_choice = np.zeros(len(A), dtype=int)
+    for i in range(len(A)):
+        non_zero = np.where(diff[i] != 0)[0]
+        if len(non_zero) > 0:
+            ttb_choice[i] = 0 if diff[i][non_zero[0]] > 0 else 1
+        else:
+            ttb_choice[i] = -1
+            
+    diff_3_mask = np.abs(A_sum - B_sum) == 3
+    diff_1_agree_mask = (np.abs(A_sum - B_sum) == 1) & (tally_choice == ttb_choice)
+    
+    if np.sum(diff_3_mask) == 0 or np.sum(diff_1_agree_mask) == 0:
+        return 0.0
+        
+    p_diff_3 = np.mean(resp[diff_3_mask] == tally_choice[diff_3_mask])
+    p_diff_1_agree = np.mean(resp[diff_1_agree_mask] == tally_choice[diff_1_agree_mask])
+    
+    return float(p_diff_3 - p_diff_1_agree)
+outcome: self_sim=0.0906 (var=0.0273) adversary_sim=-0.0150 (var=0.0300) welch_t=+2.207 p=0.03212 (N=25, alpha=0.01) -> reject
+
+## RESPONSE FORMAT
+Return a JSON object with the following fields:
+- metric: Python source defining def metric(data: pd.DataFrame) -> float.
+- rationale: Reasoning behind this metric; used when interpreting results.
+
+
+## Response
+
+```json
+{
+  "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    \n    A = np.stack(data['option_a_ratings'].values)\n    B = np.stack(data['option_b_ratings'].values)\n    resp = data['response'].values\n    \n    A_sum = A.sum(axis=1)\n    B_sum = B.sum(axis=1)\n    \n    # Tally choice is 0 if A has more positive features, else 1\n    tally_choice = np.where(A_sum > B_sum, 0, 1)\n    \n    # TTB choice based on the first discriminating feature\n    diff = A - B\n    ttb_choice = np.zeros(len(A), dtype=int)\n    for i in range(len(A)):\n        non_zero = np.where(diff[i] != 0)[0]\n        if len(non_zero) > 0:\n            ttb_choice[i] = 0 if diff[i][non_zero[0]] > 0 else 1\n        else:\n            ttb_choice[i] = -1\n            \n    # Identify trial types based on score differences and TTB agreement\n    diff_1_mask = np.abs(A_sum - B_sum) == 1\n    diff_3_mask = np.abs(A_sum - B_sum) == 3\n    \n    agree_1_mask = diff_1_mask & (tally_choice == ttb_choice)\n    disagree_1_mask = diff_1_mask & (tally_choice != ttb_choice)\n    disagree_3_mask = diff_3_mask & (tally_choice != ttb_choice)\n    \n    # Ensure we have data for all required trial types\n    if np.sum(agree_1_mask) == 0 or np.sum(disagree_1_mask) == 0 or np.sum(disagree_3_mask) == 0:\n        return 0.0\n        \n    # Calculate proportion of Tally-aligned choices for each trial type\n    p_agree_1 = np.mean(resp[agree_1_mask] == tally_choice[agree_1_mask])\n    p_dis_1 = np.mean(resp[disagree_1_mask] == tally_choice[disagree_1_mask])\n    p_dis_3 = np.mean(resp[disagree_3_mask] == tally_choice[disagree_3_mask])\n    \n    # The metric combines two contrasts: (p_agree_1 - p_dis_1) + (p_agree_1 - p_dis_3)\n    return float(2 * p_agree_1 - p_dis_1 - p_dis_3)\n",
+  "rationale": "This metric combines two distinct choice contrasts to strongly separate the theories. First, it measures the difference in Tally-aligned choice rates between Agreement and Disagreement trials when the Tally score difference is 1 (p_agree_1 - p_dis_1). Second, it measures the difference between Agreement trials at diff=1 and Disagreement trials at diff=3 (p_agree_1 - p_dis_3). For the Advocated theory (Pure Tallying), the first contrast is exactly zero, and the second contrast is distinctly negative (since a score difference of 3 provides stronger evidence than a difference of 1). Thus, the overall metric will be negative. For the Competing theory (Mixture), intermittent use of Take-The-Best strongly boosts p_agree_1 and depresses both p_dis_1 and p_dis_3, driving both contrasts to be positive. This additive combination maximizes the mean separation between the two theories while maintaining stable variance."
+}
+```
+
+## Usage
+
+```json
+{
+  "prompt_token_count": 5252,
+  "candidates_token_count": 903,
+  "total_token_count": 11851
+}
+```

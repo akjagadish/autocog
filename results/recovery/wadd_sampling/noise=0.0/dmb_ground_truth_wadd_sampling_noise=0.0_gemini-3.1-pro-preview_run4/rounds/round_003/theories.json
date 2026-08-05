@@ -1,0 +1,59 @@
+{
+  "round_idx": 3,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_5",
+      "killed": true,
+      "theory": {
+        "description": "Strategy Selection (WADD and TTB Mixture) with Compensatory Bias",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Strategy Selection expects a (2, n_features) stimulus.\")\n        \n    a, b = stim[0], stim[1]\n    \n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    gamma = float(parameters[\"gamma\"])\n    alpha = float(parameters[\"alpha\"])\n    \n    # Strategy 1: Compensatory WADD\n    w_wadd = val ** gamma\n    score_a = np.sum(w_wadd * a)\n    score_b = np.sum(w_wadd * b)\n    scores = np.array([score_a, score_b])\n    \n    beta = float(parameters[\"beta\"])\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_wadd = e / np.sum(e)\n    \n    # Strategy 2: Non-compensatory Take-The-Best (TTB)\n    order = np.argsort(-val, kind=\"stable\")\n    p_ttb = np.array([0.5, 0.5])\n    for idx in order:\n        if a[idx] > b[idx]:\n            p_ttb = np.array([1.0, 0.0])\n            break\n        elif b[idx] > a[idx]:\n            p_ttb = np.array([0.0, 1.0])\n            break\n            \n    # Mixture of strategies\n    p_core = alpha * p_wadd + (1.0 - alpha) * p_ttb\n    \n    epsilon = float(parameters[\"epsilon\"])\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "gamma": "[0.0, 2.0]",
+          "alpha": "[0.5, 1.0]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's feedback, the model's parameters are adjusted to shift the balance away from TTB and towards compensatory evaluation. The mixture parameter `alpha` is now constrained to [0.5, 1.0] so the model defaults to the compensatory WADD strategy more often. In addition, the upper bound for the exponent `gamma` is reduced to 2.0 to ensure the WADD strategy remains genuinely compensatory (closer to tallying) rather than mimicking TTB behavior through extreme exponentiation."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_4",
+      "killed": false,
+      "theory": {
+        "description": "Decision-makers assign importance to features based on their ordinal rank in validity rather than their exact cardinal values. This Rank-Based Weighting heuristic avoids the extreme sensitivity to numerical validity differences seen in purely compensatory models, while still acknowledging that some cues are more diagnostic than others. Feature weights are computed as a power transformation of their inverse rank (e.g., 1 / rank^gamma). By restricting gamma to lower values, the model maintains a strong compensatory nature, ensuring that multiple lower-ranked cues can outweigh a single higher-ranked cue. Combined with a lower softmax temperature upper bound, it prevents overly deterministic choices and captures the noisier human behavior in conflicting trade-offs.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Rank-Based Weighting expects a (2, n_features) stimulus.\")\n        \n    a, b = stim[0], stim[1]\n    \n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    gamma = float(parameters[\"gamma\"])\n    \n    # Determine the ordinal rank of each feature's validity (1 = highest validity)\n    order = np.argsort(-val, kind=\"stable\")\n    ranks = np.empty_like(order, dtype=float)\n    ranks[order] = np.arange(1, len(val) + 1)\n    \n    # Weights are a power transformation of the inverse rank\n    w = 1.0 / (ranks ** gamma)\n    \n    # Compute weighted sums for both options\n    score_a = np.sum(w * a)\n    score_b = np.sum(w * b)\n    scores = np.array([score_a, score_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax over the scores to compute choice probabilities\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+        "parameters": {
+          "beta": "[0.1, 5.0]",
+          "epsilon": "[0.0, 0.6]",
+          "gamma": "[0.0, 1.0]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's feedback, the upper bound of the `beta` parameter has been restricted to 5.0. This minimal edit prevents the softmax from becoming overly deterministic when the weighted score differences are small, which naturally pulls the match rate in Experiment 3 down closer to the human 60% without requiring further changes to the core weighting logic."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_6",
+    "slot": 1,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Validity Threshold Tallying with Sub-Threshold Influence: Decision-makers simplify the choice environment by setting a subjective threshold on cue validity. Cues with a validity above the threshold are considered 'important' and are tallied with unit weight. To account for weak compensatory behavior and tie-breaking, cues below the threshold are not completely ignored but receive a small, uniform sub-threshold weight.",
+      "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Validity Threshold Tallying expects a (2, n_features) stimulus.\")\n        \n    a, b = stim[0], stim[1]\n    \n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    threshold = float(parameters[\"threshold\"])\n    alpha = float(parameters[\"alpha\"])\n    \n    # Cues with validity >= threshold are given unit weight, others receive alpha weight\n    w = np.where(val >= threshold, 1.0, alpha)\n    \n    # Compute tallied scores for both options\n    score_a = np.sum(w * a)\n    score_b = np.sum(w * b)\n    scores = np.array([score_a, score_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax over the scores to compute choice probabilities\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+      "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+      "parameters": {
+        "beta": "[0.1, 10.0]",
+        "epsilon": "[0.0, 0.5]",
+        "threshold": "[0.0, 1.0]",
+        "alpha": "[0.0, 0.5]",
+        "validities": "validities"
+      },
+      "rationale": "Following the critic's feedback, the strict binary thresholding was softened by introducing a sub-threshold weight parameter (`alpha`). Cues below the validity threshold now receive a small, non-zero weight instead of being completely discarded, allowing them to break ties and exert a weak compensatory influence. The threshold range was also widened to [0.0, 1.0] to better adapt to varying validity scales across experiments."
+    }
+  }
+}

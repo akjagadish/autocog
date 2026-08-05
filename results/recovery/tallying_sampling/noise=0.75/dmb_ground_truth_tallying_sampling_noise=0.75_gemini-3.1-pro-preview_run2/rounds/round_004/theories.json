@@ -1,0 +1,57 @@
+{
+  "round_idx": 4,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_6",
+      "killed": true,
+      "theory": {
+        "description": "Environment-Adaptive Strategy Selection Model (TTB vs. Tallying). Decision-makers probabilistically choose between a non-compensatory strategy (Take-The-Best) and a compensatory strategy (Tallying) on a trial-by-trial basis. Crucially, the probability of deploying TTB is not fixed but adapts to the structure of the environment: it is a logistic function of the dispersion (standard deviation) of the cue validities. In environments with steep validity gradients (high dispersion), TTB is strongly preferred; in environments with flat gradients (low dispersion), decision-makers naturally fall back to Tallying.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    dispersion = np.std(validities)\n    slope = float(parameters[\"disp_slope\"])\n    threshold = float(parameters[\"disp_threshold\"])\n    \n    # Calculate w_ttb dynamically based on the dispersion of cue validities\n    w_ttb = 1.0 / (1.0 + np.exp(-slope * (dispersion - threshold)))\n    \n    beta_tally = float(parameters[\"beta_tally\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # --- TTB Strategy ---\n    # Sort cues by validity (descending)\n    # We add a tiny amount of noise to validities to break ties consistently if they exist\n    order = np.argsort(-(validities + np.random.uniform(0, 1e-6, size=len(validities))))\n    \n    p_ttb = np.array([0.5, 0.5])\n    for idx in order:\n        if stim[0, idx] > stim[1, idx]:\n            p_ttb = np.array([1.0, 0.0])\n            break\n        elif stim[1, idx] > stim[0, idx]:\n            p_ttb = np.array([0.0, 1.0])\n            break\n            \n    # --- Tallying Strategy ---\n    scores = np.sum(stim, axis=1)\n    z = beta_tally * scores\n    z = z - np.max(z)\n    e = np.exp(z)\n    p_tally = e / np.sum(e)\n    \n    # --- Mixture ---\n    p_core = w_ttb * p_ttb + (1.0 - w_ttb) * p_tally\n    \n    # --- Lapse ---\n    n_opts = len(p_core)\n    p_final = (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n    \n    return p_final",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))",
+        "parameters": {
+          "disp_slope": "[0.0, 100.0]",
+          "disp_threshold": "[0.0, 0.5]",
+          "beta_tally": "[0.0, 5.0]",
+          "epsilon": "[0.0, 1.0]",
+          "validities": "validities"
+        },
+        "rationale": "To address the severe misprediction in Experiment 7, the purely latent `w_ttb` parameter has been replaced with an environment-adaptive mechanism. The probability of selecting TTB (`w_ttb`) is now dynamically computed from the dispersion (standard deviation) of the cue validities in the current experiment using a logistic function parameterized by a `disp_slope` and `disp_threshold`. This allows the model to naturally suppress TTB in environments with flat validity gradients (like Experiment 7), while retaining the successful mixture behavior in environments that warrant non-compensatory heuristics."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_4",
+      "killed": false,
+      "theory": {
+        "description": "Probabilistic Search Take-The-Best (PS-TTB)",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    stim = np.asarray(state, dtype=float)\n    diff = stim[0] - stim[1]\n    \n    validities = np.asarray(parameters['validities'], dtype=float)\n    tau = float(parameters['tau'])\n    epsilon = float(parameters['epsilon'])\n    \n    n_features = len(validities)\n    n_samples = 1000\n    \n    # Gumbel-max trick to sample permutations without replacement\n    # probabilities proportional to softmax(validities / tau)\n    logits = validities / (tau + 1e-6)\n    gumbels = np.random.gumbel(size=(n_samples, n_features))\n    orders = np.argsort(-(logits + gumbels), axis=1)\n    \n    diff_sign = np.sign(diff)\n    ordered_diffs = diff_sign[orders]\n    \n    # Find the first discriminating cue in each sampled search order\n    abs_diffs = np.abs(ordered_diffs)\n    first_non_zero_idx = np.argmax(abs_diffs, axis=1)\n    has_non_zero = np.any(abs_diffs > 0, axis=1)\n    \n    first_non_zero_vals = ordered_diffs[np.arange(n_samples), first_non_zero_idx]\n    \n    wins_a = np.sum((first_non_zero_vals == 1) & has_non_zero)\n    wins_b = np.sum((first_non_zero_vals == -1) & has_non_zero)\n    \n    total = wins_a + wins_b\n    if total > 0:\n        p = np.array([wins_a / total, wins_b / total])\n    else:\n        p = np.array([0.5, 0.5])\n        \n    return (1.0 - epsilon) * p + epsilon * (np.ones(2) / 2.0)",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))",
+        "parameters": {
+          "tau": "[0.01, 100.0]",
+          "epsilon": "[0.0, 1.0]",
+          "validities": "validities"
+        },
+        "rationale": "Follows the critic's advice to implement a non-compensatory Take-The-Best model with a probabilistic cue search order. The model stops at the first discriminating cue, maintaining a strict non-compensatory mechanism at the single-trial level. However, the order in which cues are searched is sampled without replacement using a softmax over cue validities (via the Gumbel-max trick). The temperature parameter `tau` controls the determinism of the search order. When `tau` is large, the search order becomes uniform, which on average mimics the compensatory tallying-like behavior observed in Experiment 4, bridging the gap between non-compensatory heuristics and compensatory empirical patterns."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_7",
+    "slot": 1,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Stochastic Weighted Additive Model (SWADD) with bounded exponential cue weighting. Decision-makers integrate all available cues in a compensatory manner, weighting them according to their subjective importance. The subjective weight of each cue is modeled as an exponential function of its validity: w_i = exp(gamma * v_i). The parameter gamma controls the degree of compensatoriness. When gamma = 0, all weights are equal (pure Tallying). As gamma increases, the weights diverge exponentially, allowing higher-validity cues to dominate. Constraining gamma ensures that the exponential divergence does not become so extreme that it washes out moderate compensatory strategies, better matching human behavior on conflict trials.",
+      "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    gamma = float(parameters[\"gamma\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Calculate weights using an exponential function of validities\n    w = np.exp(gamma * validities)\n    \n    # Normalize weights so the maximum weight is 1.0\n    # This keeps the weighted sums on a consistent scale across different gamma values\n    w = w / np.max(w)\n    \n    # Weighted sum for each option\n    scores = np.sum(stim * w, axis=1)\n    \n    # Softmax choice rule\n    z = beta * scores\n    z = z - np.max(z) # numerical stability\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    # Lapse rate\n    n_opts = len(p_core)\n    p_final = (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n    \n    return p_final",
+      "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))",
+      "parameters": {
+        "gamma": "[0.0, 2.5]",
+        "beta": "[0.0, 10.0]",
+        "epsilon": "[0.0, 1.0]",
+        "validities": "validities"
+      },
+      "rationale": "Following the critic's feedback, the upper bound of the `gamma` parameter is reduced from 5.0 to 2.5. The exponential weight mapping (w = exp(gamma * validities)) scales up differences between validities very aggressively. A maximum gamma of 5.0 created too much disparity (e.g., exp(5) > 148), heavily oversampling extreme non-compensatory regimes and washing out the compensatory behavior necessary to explain choices in Exp 4 and Exp 10. By restricting gamma to [0.0, 2.5], the uniform prior samples moderate compensatory regimes more frequently, allowing the model to better capture human behavior on conflict trials while still being able to approximate TTB when gamma approaches its upper bound. The SWADD architecture, softmax choice rule, and lapse rate remain unchanged."
+    }
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "round_idx": 3,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_3",
+      "killed": false,
+      "theory": {
+        "description": "Take-The-Best (TTB) heuristic: People make decisions by ranking features according to their validities and choosing the option that is favored by the single most valid discriminating feature. If no feature discriminates, they guess. This is a lexicographic, non-compensatory strategy. However, human execution of this strategy is highly noisy, so choice probabilities are heavily tempered by response noise (low beta) and random guessing lapses (high epsilon).",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"TTB expects a (2, n_features) stimulus; got shape {stim.shape}.\")\n\n    a, b = stim[0], stim[1]\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Rank features by validity in descending order.\n    # We use a stable sort to preserve the original feature order in case of ties.\n    ranked_features = np.argsort(validities, kind='stable')[::-1]\n    \n    scores = np.array([0.0, 0.0])\n    # Find the first feature that discriminates between the two options\n    for idx in ranked_features:\n        if a[idx] > b[idx]:\n            scores[0] = 1.0\n            break\n        elif b[idx] > a[idx]:\n            scores[1] = 1.0\n            break\n            \n    # If no feature discriminates, the core preference is uniform\n    if scores[0] == 0.0 and scores[1] == 0.0:\n        p_core = np.array([0.5, 0.5])\n    else:\n        beta = float(parameters[\"beta\"])\n        # Softmax over the scores to introduce response noise\n        z = beta * scores\n        z = z - np.max(z)\n        e = np.exp(z)\n        p_core = e / np.sum(e)\n        \n    epsilon = float(parameters[\"epsilon\"])\n    n_opts = p_core.shape[0]\n    \n    # Blend with uniform lapse rate\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.0, 2.0]",
+          "epsilon": "[0.0, 1.0]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's feedback, the upper bound of the `beta` parameter has been further reduced from 5.0 to 2.0. This ensures the softmax generates even softer probabilities, capturing the highly noisy, near-guessing behavior observed in the human data while maintaining the core Take-The-Best mechanism."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_5",
+      "killed": true,
+      "theory": {
+        "description": "Probabilistic Cue Selection (Stochastic TTB): Human decision-makers use a non-compensatory, one-reason heuristic but are stochastic in their cue retrieval. Instead of strictly ranking features by validity, subjects sample a feature to evaluate with a probability proportional to its validity (via a softmax). If the sampled feature discriminates between the options, they base their choice entirely on that feature. If it does not discriminate, they sample again. This maintains the non-compensatory nature of the decision while naturally introducing variability in which cue is selected, offering a mechanistic explanation for choice noise without relying on compensatory tallying.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n\n    a, b = stim[0], stim[1]\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    gamma = float(parameters[\"gamma\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Identify which features discriminate between A and B\n    discrim = (a != b)\n    \n    if not np.any(discrim):\n        # If no features discriminate, the decision is a random guess\n        p_core = np.array([0.5, 0.5])\n    else:\n        # The subject repeatedly samples features proportional to exp(gamma * validity)\n        # until a discriminating feature is found. The probability that the first\n        # discriminating feature found is feature i is equivalent to a softmax over\n        # the validities restricted to the set of discriminating features.\n        z = gamma * validities[discrim]\n        z = z - np.max(z)  # For numerical stability\n        w = np.exp(z)\n        w = w / np.sum(w)\n        \n        # The chosen discriminating feature dictates the choice entirely.\n        # Sum the probabilities of sampling a feature that favors A vs B.\n        favor_a = (a[discrim] > b[discrim])\n        favor_b = (b[discrim] > a[discrim])\n        \n        p_a = np.sum(w[favor_a])\n        p_b = np.sum(w[favor_b])\n        \n        p_core = np.array([p_a, p_b])\n        \n    # Blend with a uniform lapse rate for general response noise/inattention\n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities = probabilities / probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "gamma": "[0.0, 50.0]",
+          "epsilon": "[0.0, 1.0]",
+          "validities": "validities"
+        },
+        "rationale": "Following the arbiter's guidance, this model completely replaces the compensatory Tallying fallback of the previous hybrid model with a Stochastic Take-The-Best mechanism. Instead of deterministic cue ranking, subjects sample cues with probability proportional to their validities (controlled by an inverse temperature, gamma). By conditioning the choice on the first sampled cue that discriminates, the model produces exact choice probabilities analytically equivalent to a softmax over the validities of only the discriminating features. This approach preserves the non-compensatory nature of the heuristic while explaining behavioral variability through stochastic cue selection rather than tallying."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_6",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Dual-Process Hybrid Model (Take-The-Best + Weighted Additive) with soft compensatory noise: Human decision-making is predominantly non-compensatory (Take-The-Best), but subjects sometimes fall back on a compensatory strategy (Weighted Additive). Because WADD operates on sums of validities, its response noise is decoupled and constrained to extremely low values to reflect the highly soft, almost guessing-like nature of human compensatory choice. A high potential lapse rate captures general response noise and further scales down overconfident predictions.",
+      "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Hybrid expects a (2, n_features) stimulus; got shape {stim.shape}.\")\n\n    a, b = stim[0], stim[1]\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Take-The-Best (TTB) evaluation\n    ranked_features = np.argsort(validities, kind='stable')[::-1]\n    ttb_scores = np.array([0.0, 0.0])\n    for idx in ranked_features:\n        if a[idx] > b[idx]:\n            ttb_scores[0] = 1.0\n            break\n        elif b[idx] > a[idx]:\n            ttb_scores[1] = 1.0\n            break\n            \n    # Weighted Additive (WADD) evaluation\n    wadd_a = np.sum(a * validities)\n    wadd_b = np.sum(b * validities)\n    wadd_scores = np.array([wadd_a, wadd_b])\n    \n    beta_ttb = float(parameters[\"beta_ttb\"])\n    beta_wadd = float(parameters[\"beta_wadd\"])\n    \n    # Softmax probabilities for TTB\n    if ttb_scores[0] == 0.0 and ttb_scores[1] == 0.0:\n        p_ttb_vec = np.array([0.5, 0.5])\n    else:\n        z_ttb = beta_ttb * ttb_scores\n        z_ttb = z_ttb - np.max(z_ttb)\n        e_ttb = np.exp(z_ttb)\n        p_ttb_vec = e_ttb / np.sum(e_ttb)\n        \n    # Softmax probabilities for WADD\n    if wadd_a == wadd_b:\n        p_wadd_vec = np.array([0.5, 0.5])\n    else:\n        z_wadd = beta_wadd * wadd_scores\n        z_wadd = z_wadd - np.max(z_wadd)\n        e_wadd = np.exp(z_wadd)\n        p_wadd_vec = e_wadd / np.sum(e_wadd)\n        \n    # Mix the two processes\n    p_ttb_weight = float(parameters[\"p_ttb\"])\n    p_core = p_ttb_weight * p_ttb_vec + (1.0 - p_ttb_weight) * p_wadd_vec\n    \n    # Apply uniform lapse\n    epsilon = float(parameters[\"epsilon\"])\n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n",
+      "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities = probabilities / probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+      "parameters": {
+        "beta_ttb": "[0.0, 10.0]",
+        "beta_wadd": "[0.0, 0.15]",
+        "p_ttb": "[0.0, 1.0]",
+        "epsilon": "[0.0, 1.0]",
+        "validities": "validities"
+      },
+      "rationale": "Following the critic's advice, we increase the upper bound of the uniform lapse rate `epsilon` from 0.6 to 1.0 to address the consistent overprediction (+0.07 to +0.08) in choice probabilities across several experiments. We also further reduce the upper bound of `beta_wadd` to 0.15, continuing the successful trajectory of softening the compensatory fallback component to better match the highly noisy human behavior in these tasks."
+    }
+  }
+}

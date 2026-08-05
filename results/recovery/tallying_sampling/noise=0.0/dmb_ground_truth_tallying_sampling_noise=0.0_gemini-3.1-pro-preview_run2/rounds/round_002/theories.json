@@ -1,0 +1,54 @@
+{
+  "round_idx": 2,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_3",
+      "killed": false,
+      "theory": {
+        "description": "People compare two options by tallying the total number of positive features for each option, ignoring cue validities entirely. The option with the higher unweighted sum of positive features is chosen. This Equal Weight (or Tallying) heuristic provides a frugal but fully compensatory strategy, capturing the strong human tendency to prefer options with multiple supporting cues over those with a single high-validity cue. Response noise is modeled via a softmax over the tallied scores with inverse temperature beta, and an independent lapse rate epsilon.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Tallying expects a (2, n_features) stimulus.\")\n        \n    # Tallying: count the number of positive features (unweighted sum) for each option.\n    scores = np.sum(stim, axis=1)\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax with max-subtraction for numerical stability.\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    n_opts = p_core.shape[0]\n    # Blend with uniform lapse distribution.\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()  # Ensure valid probabilities\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]"
+        },
+        "rationale": "Following the arbiter's suggestion, this implements the Equal Weight (Tallying) model. By simply summing the unweighted feature values, the model heavily penalizes options that rely on a single high-validity cue when the alternative is supported by multiple lower-validity cues. This mechanism naturally explains the very low TTB-match in Experiment 2 and the specific compensatory patterns observed in Experiment 1, outperforming both the strict one-reason stopping rule of TTB and the exact validity weighting of WADD."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_4",
+      "killed": true,
+      "theory": {
+        "description": "Thresholded Tallying (Soft Subset Tallying): Decision makers use an equal-weight heuristic, but first filter the available information by cue validity. Instead of a hard threshold, they use a soft, probabilistic inclusion criterion where features with validity near or above a subjective threshold are more likely to be considered. These softly filtered features are then tallied to form a preference. This differentiable thresholding allows smooth transitions between pure Tallying (all cues included) and stricter subset tallying, reflecting boundedly rational cue selection that is easier to optimize during learning or fitting.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Thresholded Tallying expects a (2, n_features) stimulus.\")\n        \n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    theta = float(parameters[\"theta\"])\n    k = float(parameters[\"k\"])\n    \n    # Filter features: soft threshold using a logistic sigmoid\n    mask = 1.0 / (1.0 + np.exp(-k * (validities - theta)))\n    \n    # Tallying: count the number of positive features among the softly kept ones\n    scores = np.sum(stim * mask, axis=1)\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax with max-subtraction for numerical stability\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    n_opts = p_core.shape[0]\n    # Blend with uniform lapse distribution\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()  # Ensure valid probabilities\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "theta": "[-1.0, 1.0]",
+          "k": "[1.0, 20.0]",
+          "validities": "validities"
+        },
+        "rationale": "Expanded the lower bound of the `theta` parameter range to -1.0. This allows the parameter fitting routine to push the threshold well below the lowest cue validities, guaranteeing that the term (validities - theta) is large and positive. This fully saturates the soft sigmoid mask to 1.0 for all features, perfectly recovering pure Tallying behavior when subjects' data demands it."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_5",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Random Subset Tallying: Decision-makers use an equal-weight heuristic but are bounded by working memory, preventing them from processing all features simultaneously. Instead of calculating a complete tally and applying post-decision softmax noise, they stochastically sample a subset of the available features on each trial (each feature included independently with some probability) and perform pure tallying strictly on that subset. This provides a mechanistic, cognitive origin for choice variability while preserving the validity-agnostic, compensatory nature of the Tallying heuristic.",
+      "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    import itertools\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be shape (2, n_features).\")\n        \n    n_features = stim.shape[1]\n    p = float(parameters[\"sample_prob\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    prob_A = 0.0\n    \n    # Iterate over all possible subsets of features (2^n_features)\n    for seq in itertools.product([0, 1], repeat=n_features):\n        mask = np.array(seq)\n        # Probability of sampling this specific subset\n        subset_prob = np.prod(np.where(mask == 1, p, 1.0 - p))\n        \n        if subset_prob == 0:\n            continue\n            \n        score_A = np.sum(stim[0] * mask)\n        score_B = np.sum(stim[1] * mask)\n        \n        # Pure tallying on the sampled subset\n        if score_A > score_B:\n            prob_A += subset_prob\n        elif score_A == score_B:\n            prob_A += 0.5 * subset_prob\n            \n    prob_B = 1.0 - prob_A\n    p_core = np.array([prob_A, prob_B])\n    \n    # Blend with uniform lapse distribution\n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n",
+      "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()  # Ensure valid probabilities\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+      "parameters": {
+        "sample_prob": "[0.7, 1.0]",
+        "epsilon": "[0.0, 0.1]"
+      },
+      "rationale": "Following the critic's advice, we further tighten the parameter ranges for Random Subset Tallying. By restricting `sample_prob` to [0.7, 1.0] and `epsilon` to [0.0, 0.1], we further reduce the excess noise on non-tie trials. This increases the probability of sampling enough features to reliably detect the tallying winner, driving the Experiment 3 prediction closer to 0.82 and the Experiment 4 prediction closer to 0.14, while preserving the structural 50% tie-breaking behavior seen in Experiments 5 and 6."
+    }
+  }
+}

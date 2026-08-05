@@ -1,0 +1,53 @@
+{
+  "round_idx": 1,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_3",
+      "killed": false,
+      "theory": {
+        "description": "Weighted Additive (WADD) Theory: Decision-makers evaluate options using a fully compensatory strategy. They multiply each feature's value by its corresponding cue validity and sum these products to form an overall subjective value for each option. The option with the higher weighted sum is chosen. This allows multiple lower-validity cues to collectively outweigh a single high-validity cue, capturing behavior that falls between pure Take The Best and pure Tallying. To account for empirical response noise, the decision process incorporates a moderate degree of stochasticity.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"WADD expects a (2, n_features) stimulus.\")\n        \n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    a, b = stim[0], stim[1]\n    \n    # Calculate weighted sums for each option\n    score_a = np.sum(a * val)\n    score_b = np.sum(b * val)\n    \n    scores = np.array([score_a, score_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax choice rule with max-subtraction for numerical stability\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = len(scores)\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+        "parameters": {
+          "beta": "[0.1, 5.0]",
+          "epsilon": "[0.1, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's feedback, the WADD mechanism is preserved entirely, but the parameter ranges for decision noise have been adjusted. The empirical metrics lie closer to 0.5 than the previous model's predictions. By restricting `beta` to [0.1, 5.0] and raising the lower bound of `epsilon` to 0.1, the model naturally injects more stochasticity, pulling its predictions closer to the observed human data without altering the core compensatory decision rule."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_2",
+      "killed": true,
+      "theory": {
+        "description": "People compare two options by counting, across all features, how often one option has a higher value than the other. The option that wins on more features is chosen. Tallying discards cardinal magnitudes \u2014 only the sign of each feature-wise comparison matters \u2014 so the heuristic is robust to monotone rescaling of individual features and cannot be swayed by a single large feature difference in the way Equal-Weight can. Ties on an individual feature contribute nothing to either count: that cue is simply treated as uninformative for the pair. No feature is privileged, in contrast to Take The Best; every cue contributes equally to the tally. When the two counts are equal the heuristic has no basis for preference and the learner must guess. Response noise enters through a softmax over the two tallies with inverse temperature beta (interpolating between fully deterministic choice at large beta and uniform guessing at beta = 0), plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+        "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Tallying heuristic (Dawes 1979; Gigerenzer &\n    # Goldstein 1999). Stimulus is the pair of option feature vectors\n    # for the current trial: array-like of shape (2, n_features),\n    # with row 0 = option A, row 1 = option B. History is ignored.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"Tallying expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n\n    a, b = stim[0], stim[1]\n    # Count strict feature-wise wins; ties contribute to neither option.\n    a_wins = float(np.sum(a > b))\n    b_wins = float(np.sum(b > a))\n    scores = np.array([a_wins, b_wins])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. When\n    # a_wins == b_wins the softmax is exactly uniform regardless of\n    # beta, which is the correct behavior for an undiscriminating\n    # tally.\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]"
+        },
+        "rationale": null
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_4",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Take The Best (TTB) Theory: Decision-makers evaluate options using a fast-and-frugal, non-compensatory lexicographic heuristic. Instead of integrating all available information (like WADD) or treating all cues equally (like Tallying), they search through features in descending order of cue validity. The search stops at the first feature that discriminates between the two options, and the option favored by that cue is chosen. Any lower-validity cues are completely ignored, and the magnitude of the difference on the discriminating cue does not matter. If no features discriminate, the decision-maker guesses uniformly. Choice stochasticity is modeled via a softmax over the binary TTB preference and an independent lapse rate.",
+      "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    a, b = stim[0], stim[1]\n    \n    # Order cues by descending validity\n    cue_order = np.argsort(-val, kind='stable')\n    \n    winner = -1\n    for cue in cue_order:\n        if a[cue] > b[cue]:\n            winner = 0\n            break\n        elif b[cue] > a[cue]:\n            winner = 1\n            break\n            \n    if winner == -1:\n        # No cues discriminate; pure guess\n        return np.array([0.5, 0.5])\n        \n    scores = np.zeros(2)\n    scores[winner] = 1.0\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax choice rule with max-subtraction for numerical stability\n    z = beta * scores\n    z_shifted = z - np.max(z)\n    probs = np.exp(z_shifted) / np.sum(np.exp(z_shifted))\n    \n    # Incorporate lapse rate\n    return (1.0 - epsilon) * probs + epsilon * np.array([0.5, 0.5])\n",
+      "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+      "parameters": {
+        "beta": "[0.1, 20.0]",
+        "epsilon": "[0.0, 0.5]",
+        "validities": "validities"
+      },
+      "rationale": "Following the arbiter's instructions, this proposes the Take The Best (TTB) theory. TTB represents a lexicographic, non-compensatory decision process that directly contrasts with both WADD (which integrates all features) and Tallying (which ignores validities). By evaluating features strictly in order of their validity and stopping at the first discriminating cue, TTB captures the fast-and-frugal nature of human heuristic decision-making, where individuals often rely on a single good reason rather than exhaustive computation."
+    }
+  }
+}

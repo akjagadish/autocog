@@ -1,0 +1,740 @@
+# metric_exp02_attempt_03
+
+## System Prompt
+
+You are a psychology researcher proposing a metric in the Decision Making (Binary Features) domain.
+
+Your goal is adversarial: propose a metric that DISCRIMINATES the two theories — i.e., its value, computed on data simulated under your advocated theory, should be as far as possible from its value computed on data simulated under the competing theory. The direction of the gap does not matter; what matters is that the two theories produce visibly different numbers on this metric. The metric is computed on the data collected from the experimental design provided in the prompt. Produce a metric where you're prediction will be much more accurate than the competing theory's prediction on human data.
+
+Your metric is a Python function
+
+    metric(data: pd.DataFrame) -> float
+
+Available imports inside `metric`:
+- numpy as np
+- pandas as pd
+
+The system evaluates your metric in two ways and reports the pair as `point_estimate (var=between_subject_variance)` everywhere downstream:
+- `point_estimate` is `metric(data)` applied to the FULL pooled DataFrame (all subjects together) — the canonical scalar;
+- `between_subject_variance` is the population variance (`ddof=0`) of `metric(subj_df)` re-applied per `subject_id`, summarising how stable the metric is across subjects. If your metric only makes sense on multi-subject data this will fall back to `n/a` and the metric is rejected (the acceptance test below cannot run without it). Prefer metrics that work both on the pooled DataFrame and on a single subject's slice.
+
+Acceptance rule: the system simulates each theory and runs Welch's two-sample t-test on `(point_estimate_self, between_subject_variance_self, N)` vs. `(point_estimate_adv, between_subject_variance_adv, N)`, where N is the number of HUMAN subjects the experiment will actually be run with (a fixed small number, currently 25). Your metric is admitted iff the two-sided p-value is below the significance level (currently alpha=0.01). Implication: a large between-theory gap is NOT enough — if either theory's metric is also highly variable across subjects, N humans won't reliably distinguish them and the metric will be rejected. Aim for contrasts that are both large in mean AND tight per subject.
+
+Do NOT propose metrics that are trivially true for your theory.
+
+
+## User Prompt
+
+## EXPERIMENTAL DOMAIN
+Subjects repeatedly choose between two fictitious products, A and B. Each option is described by a vector of binary expert ratings (each 0 or 1). Every experiment fixes its own feature count (via `validities` length) and per-expert validities; both are LLM-proposed. The validities are communicated to the subject in the instructions. Subjects pick whichever product they believe is of higher quality. There is no trial-by-trial correctness feedback.
+
+Each subject completes ~96 trials in a single block, with order randomized independently per subject. On every trial the subject sees two options A and B, each described by `n_features` binary expert ratings (each 0 or 1). The per-feature validities and n_features are fixed per experiment (design-time choices). Validities are communicated to the subject in the instructions. Both `n_features` and `validities` are exposed to your `predict` via the `parameters` dict. The subject chooses A or B; no correctness feedback is provided after the choice.
+
+## CHOSEN EXPERIMENTAL DESIGN
+**Validities (n_features=8):** [0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6]
+
+**Trial pairs (n=8):**
+  trial 1: A=[0, 0, 0, 0, 1, 0, 0, 0]  B=[0, 0, 0, 0, 0, 1, 0, 0]
+  trial 2: A=[1, 0, 0, 0, 1, 0, 0, 0]  B=[0, 1, 0, 0, 0, 1, 0, 0]
+  trial 3: A=[1, 0, 1, 0, 1, 0, 0, 0]  B=[0, 1, 0, 1, 0, 1, 0, 0]
+  trial 4: A=[1, 0, 1, 0, 1, 0, 1, 0]  B=[0, 1, 0, 1, 0, 1, 0, 1]
+  trial 5: A=[0, 0, 1, 0, 0, 0, 0, 0]  B=[0, 0, 0, 1, 0, 0, 0, 0]
+  trial 6: A=[0, 0, 1, 0, 0, 0, 1, 0]  B=[0, 0, 0, 1, 0, 0, 0, 1]
+  trial 7: A=[1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 1]
+  trial 8: A=[1, 1, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1]
+
+**Rationale:** This design quantitatively dissociates pure Weighted Additive (WADD) from Evidence-Dependent Noise (EDN) by exploiting a 'magnitude effect' reversal. We construct a sequence of trial pairs where the net evidence favoring Option A strictly increases (by adding pairs of features where A wins on the slightly higher validity), but the total feature conflict increases at a much faster rate. Because pure WADD's choice probabilities depend monotonically on the net weighted evidence, it MUST predict that preference for Option A becomes stronger as more net evidence is added, regardless of the gamma or beta parameters. In contrast, EDN posits that decision noise scales with total feature conflict. Because the conflict grows massively relative to the small gains in net evidence, EDN predicts a preference reversal: the choice probability for Option A will regress toward 0.5 on the high-conflict trials, despite the larger net evidence in its favor. This structural divergence provides a definitive test between the two theories.
+
+**Computed schedule:** 8 unique pairs × 12 reps = 96 trials per subject.
+
+
+
+## ADVOCATED THEORY
+**Description:** Decision-makers integrate all available information by taking a weighted sum of each option's features, where the weights are subjective transformations of the cue validities. By exponentiating the raw validities by a free parameter gamma, the weighting scheme can smoothly interpolate between equal weighting (Tallying), proportional weighting (raw Weighted Additive), and lexicographic-like steep weighting (Take The Best). Choice probabilities are generated via a softmax over these subjectively weighted sums, combined with a lapse rate. Human behavior is best described by relatively flat (Tally-like) weights combined with substantial choice noise (lower beta).
+
+**Parameters:**
+- beta: [0.1, 5.0]
+- epsilon: [0.0, 0.5]
+- gamma: [0.1, 2.0]
+- validities: validities
+
+**`predict source code`:**
+```python
+def predict(parameters, stimulus, history):
+    import numpy as np
+    
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(f"WADD expects a (2, n_features) stimulus; got shape {stim.shape}.")
+        
+    val = np.asarray(parameters["validities"], dtype=float)
+    if val.shape[0] != stim.shape[1]:
+        raise ValueError(f"validities length {val.shape[0]} != n_features {stim.shape[1]}.")
+        
+    gamma = float(parameters["gamma"])
+    weights = val ** gamma
+    
+    # Calculate the weighted sum of features for each option
+    scores = np.dot(stim, weights)
+    
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+    
+    # Softmax over scores with max-subtraction for numerical stability
+    z = beta * (scores - np.max(scores))
+    e = np.exp(z)
+    p_core = e / np.sum(e)
+    
+    n_opts = len(p_core)
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+```
+
+**`policy source code`:**
+```python
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities /= probabilities.sum()
+    return int(np.random.choice(len(probabilities), p=probabilities))
+```
+
+
+## COMPETING THEORY
+**Description:** Evidence-Dependent Noise: Decision-makers evaluate options using a single compensatory mechanism (Weighted Additive) where features are weighted by a subjective transformation of their validities. However, the decision process is subject to evidence-dependent noise: the temperature of the softmax choice rule scales with the total conflict between the options (defined as the total weighted evidence of features that differ between the two options). This ensures that trials with higher evidence magnitudes or greater feature conflict naturally generate higher decision noise. This single-mechanism approach preserves log-odds linearity while explaining why extremeness flattens across trials with varying evidence magnitudes.
+
+**Parameters:**
+- gamma: [0.0, 5.0]
+- beta: [0.1, 20.0]
+- theta: [0.0, 10.0]
+- epsilon: [0.0, 0.1]
+- validities: validities
+
+**`predict source code`:**
+```python
+def predict(parameters, stimulus, history):
+    import numpy as np
+    
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(f"Stimulus expects shape (2, n_features); got {stim.shape}.")
+        
+    val = np.asarray(parameters["validities"], dtype=float)
+    
+    gamma = float(parameters["gamma"])
+    beta = float(parameters["beta"])
+    theta = float(parameters["theta"])
+    epsilon = float(parameters["epsilon"])
+    
+    # Subjective feature weighting
+    weights = val ** gamma
+    
+    # Calculate weighted sums of evidence for each option
+    scores = np.dot(stim, weights)
+    
+    # Calculate conflict: total weight of features where the options differ
+    diff = np.abs(stim[0] - stim[1])
+    conflict = np.dot(diff, weights)
+    
+    # Effective beta scales inversely with conflict (higher conflict = more noise)
+    beta_eff = beta / (1.0 + theta * conflict)
+    
+    # Softmax over scores with max-subtraction for numerical stability
+    z = beta_eff * (scores - np.max(scores))
+    e = np.exp(z)
+    p_core = e / np.sum(e)
+    
+    n_opts = len(p_core)
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+```
+
+**`policy source code`:**
+```python
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities /= probabilities.sum()
+    return int(np.random.choice(len(probabilities), p=probabilities))
+```
+
+
+## DATA SCHEMA
+Your metric receives a tidy per-trial pandas DataFrame stacking all subjects (rows grouped by `subject_id`, in trial order). Columns:
+- subject_id: Subject identifier (one row per trial per subject).
+- option_a_ratings: List of n_features binary expert ratings (each 0 or 1) for option A on this trial.
+- option_b_ratings: List of n_features binary expert ratings (each 0 or 1) for option B on this trial.
+- response: 0 if subject chose A, 1 if subject chose B.
+
+## IMPLEMENTATION GUARDRAILS
+Any column in the schema above whose description names a list / tuple / np.ndarray (i.e. a per-trial sequence of values) holds non-scalar cells. Those cells are NOT hashable, so operations that hash row values fail with `TypeError: unhashable type: 'list'`. Treating `<seq_col>` as a placeholder for any such sequence-valued column:
+- Avoid: `data.groupby('<seq_col>')`, `data['<seq_col>'].value_counts()`,     `data['<seq_col>'].nunique()`, `data['<seq_col>'].unique()` (returns     an object array but downstream `set()` / `in dict` will crash),     `set(data['<seq_col>'])`, `data['<seq_col>'].isin([...])` against list     values, or using a list cell as a dict key.
+- If you need a hashable surrogate, project to one first, e.g.:
+    - `data['<seq_col>_key'] = data['<seq_col>'].apply(tuple)` then group by `<seq_col>_key`
+    - `data['<seq_col>_str'] = data['<seq_col>'].apply(lambda x: ''.join(map(str, x)))`
+    Scalar columns (ints, floats, strings like `subject_id`, integer     responses, etc.) hash fine and can be used directly.
+- Generator expressions inside function calls like `map()` or `join()` MUST be     parenthesized. For example:
+    - WRONG: `map(str, int(v) for v in x)` → SyntaxError
+    - RIGHT: `map(str, (int(v) for v in x))` or use a list comp: `[str(int(v)) for v in x]`
+- Always verify your code is syntactically valid Python before returning it.
+
+## METRICS YOU ALREADY TRIED AND FAILED ON
+Each entry below is a metric you previously proposed in this round that did NOT discriminate the two theories at the human sample size — either it errored, its between-subject variance was unavailable, or Welch's t-test on `(self mean, self var, N)` vs. `(adv mean, adv var, N)` returned p ≥ alpha. The `outcome` line is the simulation result (means, between-subject variances, t-statistic and p-value at the human N) on the same `data_self` / `data_adv` your next metric will be evaluated on. Use the numbers to see where your hypothesised contrast collapsed — small mean gap, large per-subject variance, or both — and propose something qualitatively different. Don't repeat the same idea with cosmetic tweaks.
+[0] rationale: The experimental design consists of pairs of trials where the net evidence is perfectly matched, but the total conflict differs because 'cancelling' features (with identical validities) are added to both options. Under the pure Weighted Additive (WADD) theory, the subjective weighting transformation maintains this exact cancellation, meaning choice probabilities should be identical across the low and high conflict pairs. Thus, the difference in accuracy should be zero. In contrast, the Evidence-Dependent Noise theory posits that choice temperature scales with total conflict. Therefore, the high conflict trials will exhibit more noise (probabilities regressing toward 0.5), resulting in a positive difference in accuracy (low conflict accuracy > high conflict accuracy).
+metric_source:
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+    
+    data = data.copy()
+    data['A'] = data['option_a_ratings'].apply(tuple)
+    data['B'] = data['option_b_ratings'].apply(tuple)
+    
+    # Map of (A, B) tuples to the 'correct' (higher net evidence) response
+    low_conflict = {
+        ((1,0,0,0,0,0), (0,0,0,0,0,0)): 0,
+        ((1,0,0,1,0,0), (0,0,0,0,1,0)): 0,
+        ((0,0,0,0,0,0), (1,0,0,0,0,0)): 1,
+        ((0,0,0,1,0,0), (1,0,0,0,1,0)): 1,
+        ((0,0,0,0,0,1), (0,0,0,0,0,0)): 0,
+        ((0,0,0,1,0,1), (0,0,0,0,1,0)): 0
+    }
+    
+    # High conflict versions of the above trials (added cancelling features)
+    high_conflict = {
+        ((1,1,0,0,0,0), (0,0,1,0,0,0)): 0,
+        ((1,1,0,1,0,0), (0,0,1,0,1,0)): 0,
+        ((0,1,0,0,0,0), (1,0,1,0,0,0)): 1,
+        ((0,1,0,1,0,0), (1,0,1,0,1,0)): 1,
+        ((0,1,0,0,0,1), (0,0,1,0,0,0)): 0,
+        ((0,1,0,1,0,1), (0,0,1,0,1,0)): 0
+    }
+    
+    low_acc = []
+    high_acc = []
+    
+    for _, row in data.iterrows():
+        pair = (row['A'], row['B'])
+        resp = row['response']
+        
+        if pair in low_conflict:
+            low_acc.append(1 if resp == low_conflict[pair] else 0)
+        elif pair in high_conflict:
+            high_acc.append(1 if resp == high_conflict[pair] else 0)
+            
+    if len(low_acc) == 0 or len(high_acc) == 0:
+        return 0.0
+        
+    return float(np.mean(low_acc) - np.mean(high_acc))
+outcome: self_sim=0.0278 (var=0.0088) adversary_sim=0.0850 (var=0.0133) welch_t=-1.924 p=0.06054 (N=25, alpha=0.01) -> reject
+
+[1] rationale: Instead of looking at raw accuracy differences, which can be noisy across subjects, this metric directly measures the variance of choices for each trial type. The variance of a binary choice is p*(1-p). Pure WADD predicts identical choice probabilities across matched low/high conflict pairs, meaning the difference in choice variance should be exactly zero. The Evidence-Dependent Noise theory predicts that high conflict increases noise, pushing choice probabilities closer to 0.5. Since p*(1-p) is maximized at p=0.5, this regression to the mean strictly increases the choice variance. By calculating the difference in choice variance between matched high and low conflict trials, we obtain a robust, bounded measure of how much conflict increases decision noise.
+metric_source:
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+    
+    data = data.copy()
+    data['A'] = data['option_a_ratings'].apply(tuple)
+    data['B'] = data['option_b_ratings'].apply(tuple)
+    data['pair'] = list(zip(data['A'], data['B']))
+    
+    low_conflict = {
+        ((1,0,0,0,0,0), (0,0,0,0,0,0)),
+        ((1,0,0,1,0,0), (0,0,0,0,1,0)),
+        ((0,0,0,0,0,0), (1,0,0,0,0,0)),
+        ((0,0,0,1,0,0), (1,0,0,0,1,0)),
+        ((0,0,0,0,0,1), (0,0,0,0,0,0)),
+        ((0,0,0,1,0,1), (0,0,0,0,1,0))
+    }
+    
+    high_conflict = {
+        ((1,1,0,0,0,0), (0,0,1,0,0,0)),
+        ((1,1,0,1,0,0), (0,0,1,0,1,0)),
+        ((0,1,0,0,0,0), (1,0,1,0,0,0)),
+        ((0,1,0,1,0,0), (1,0,1,0,1,0)),
+        ((0,1,0,0,0,1), (0,0,1,0,0,0)),
+        ((0,1,0,1,0,1), (0,0,1,0,1,0))
+    }
+    
+    # Calculate the variance of choices (p * (1 - p)) for each trial pair
+    # We group by pair and subject to get per-subject, per-pair choice probability
+    grouped = data.groupby(['subject_id', 'pair'])['response'].mean().reset_index()
+    grouped['variance'] = grouped['response'] * (1.0 - grouped['response'])
+    
+    # Separate into low and high conflict
+    low_mask = grouped['pair'].isin(low_conflict)
+    high_mask = grouped['pair'].isin(high_conflict)
+    
+    # Average variance across subjects and relevant pairs
+    var_low = grouped[low_mask].groupby('subject_id')['variance'].mean()
+    var_high = grouped[high_mask].groupby('subject_id')['variance'].mean()
+    
+    # Return the mean difference in choice variance (High conflict - Low conflict)
+    # If the competing theory is correct, High conflict trials regress to p=0.5,
+    # which strictly increases the variance (p*(1-p)) of the responses.
+    diffs = var_high - var_low
+    if len(diffs) == 0:
+        return 0.0
+    
+    return float(diffs.mean())
+
+outcome: self_sim=0.0104 (var=0.0022) adversary_sim=0.0344 (var=0.0020) welch_t=-1.859 p=0.06915 (N=25, alpha=0.01) -> reject
+
+[2] rationale: By transforming the raw accuracy into log-odds space, we normalize for the subject's baseline decision noise (beta). Pure WADD predicts that the net evidence is perfectly matched between the low and high conflict pairs, so the log-odds of choosing the target should be identical (difference = 0). The Evidence-Dependent Noise theory predicts that the effective beta scales inversely with conflict, meaning the log-odds of choosing the target will be strictly lower for high conflict trials. Computing the difference in log-odds amplifies the signal for subjects with high baseline accuracy (where EDN predicts a large raw accuracy drop but WADD predicts none) and provides a more robust, lower-variance contrast than raw accuracy differences.
+metric_source:
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+    
+    data = data.copy()
+    data['A'] = data['option_a_ratings'].apply(tuple)
+    data['B'] = data['option_b_ratings'].apply(tuple)
+    data['pair'] = list(zip(data['A'], data['B']))
+    
+    low_conflict = {
+        ((1,0,0,0,0,0), (0,0,0,0,0,0)): 0,
+        ((1,0,0,1,0,0), (0,0,0,0,1,0)): 0,
+        ((0,0,0,0,0,0), (1,0,0,0,0,0)): 1,
+        ((0,0,0,1,0,0), (1,0,0,0,1,0)): 1,
+        ((0,0,0,0,0,1), (0,0,0,0,0,0)): 0,
+        ((0,0,0,1,0,1), (0,0,0,0,1,0)): 0
+    }
+    
+    high_conflict = {
+        ((1,1,0,0,0,0), (0,0,1,0,0,0)): 0,
+        ((1,1,0,1,0,0), (0,0,1,0,1,0)): 0,
+        ((0,1,0,0,0,0), (1,0,1,0,0,0)): 1,
+        ((0,1,0,1,0,0), (1,0,1,0,1,0)): 1,
+        ((0,1,0,0,0,1), (0,0,1,0,0,0)): 0,
+        ((0,1,0,1,0,1), (0,0,1,0,1,0)): 0
+    }
+    
+    targets = {**low_conflict, **high_conflict}
+    df = data[data['pair'].isin(targets.keys())].copy()
+    df['target'] = df['pair'].map(targets)
+    df['is_correct'] = (df['response'] == df['target']).astype(float)
+    df['is_high'] = df['pair'].isin(high_conflict)
+    
+    agg = df.groupby(['subject_id', 'is_high'])['is_correct'].mean().unstack('is_high')
+    
+    if False not in agg.columns or True not in agg.columns:
+        return 0.0
+        
+    low_acc = agg[False].values
+    high_acc = agg[True].values
+    
+    low_acc = np.clip(low_acc, 0.05, 0.95)
+    high_acc = np.clip(high_acc, 0.05, 0.95)
+    
+    lo_low = np.log(low_acc / (1.0 - low_acc))
+    lo_high = np.log(high_acc / (1.0 - high_acc))
+    
+    return float(np.mean(lo_low - lo_high))
+outcome: self_sim=0.1706 (var=0.3527) adversary_sim=0.5063 (var=0.4050) welch_t=-1.928 p=0.05979 (N=25, alpha=0.01) -> reject
+
+[3] rationale: Previous attempts to measure the accuracy drop included all matched trial pairs, which diluted the effect because some 'high conflict' pairs had relatively small increases in conflict (e.g., only one pair of canceling features). By restricting the analysis strictly to the trials with the absolute minimum conflict (0 canceling features) and the absolute maximum conflict (2 canceling features), we double the expected difference in total conflict between the sets. Under the Evidence-Dependent Noise theory, this maximizes the difference in effective temperature, leading to a much larger predicted accuracy drop, while Pure WADD still rigorously predicts a difference of exactly zero.
+metric_source:
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+    
+    data = data.copy()
+    data['A'] = data['option_a_ratings'].apply(tuple)
+    data['B'] = data['option_b_ratings'].apply(tuple)
+    
+    # Lowest conflict trials (0 canceling feature pairs)
+    low_pairs = {
+        ((1,0,0,0,0,0), (0,0,0,0,0,0)): 0,
+        ((0,0,0,0,0,0), (1,0,0,0,0,0)): 1,
+        ((0,0,0,0,0,1), (0,0,0,0,0,0)): 0,
+    }
+    
+    # Highest conflict trials (2 canceling feature pairs)
+    high_pairs = {
+        ((1,1,0,1,0,0), (0,0,1,0,1,0)): 0,
+        ((0,1,0,1,0,0), (1,0,1,0,1,0)): 1,
+        ((0,1,0,1,0,1), (0,0,1,0,1,0)): 0,
+    }
+    
+    low_accs = []
+    high_accs = []
+    
+    for subj, subj_df in data.groupby('subject_id'):
+        low_correct = 0
+        low_total = 0
+        high_correct = 0
+        high_total = 0
+        
+        for _, row in subj_df.iterrows():
+            pair = (row['A'], row['B'])
+            resp = row['response']
+            if pair in low_pairs:
+                if resp == low_pairs[pair]:
+                    low_correct += 1
+                low_total += 1
+            elif pair in high_pairs:
+                if resp == high_pairs[pair]:
+                    high_correct += 1
+                high_total += 1
+                
+        if low_total > 0 and high_total > 0:
+            low_accs.append(low_correct / low_total)
+            high_accs.append(high_correct / high_total)
+            
+    if not low_accs:
+        return 0.0
+        
+    return float(np.mean(low_accs) - np.mean(high_accs))
+outcome: self_sim=0.0311 (var=0.0180) adversary_sim=0.1278 (var=0.0231) welch_t=-2.382 p=0.02128 (N=25, alpha=0.01) -> reject
+
+[4] rationale: Previous attempts mapped trial pairs that were not actually present in the experimental design, severely reducing the available data and statistical power. By explicitly targeting the exact low-conflict (Trials 1, 4, 10) and high-conflict (Trials 3, 5, 11) pairs from the experimental schedule, we can perfectly isolate the effect of total feature conflict while holding net evidence constant. Pure WADD predicts exactly zero difference in accuracy between these sets, whereas Evidence-Dependent Noise predicts a strictly positive difference (accuracy drop on high conflict trials due to increased decision noise). Averaging this paired difference within each subject provides a highly robust, low-variance contrast.
+metric_source:
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+    
+    data = data.copy()
+    data['A'] = data['option_a_ratings'].apply(tuple)
+    data['B'] = data['option_b_ratings'].apply(tuple)
+    data['pair'] = list(zip(data['A'], data['B']))
+    
+    # Using the exact trial pairs from the experimental design
+    # These pairs have identical net evidence but differ greatly in total conflict
+    low_conflict = {
+        ((1,0,0,0,0,0), (0,0,0,0,0,0)), # Trial 1
+        ((0,0,1,0,0,0), (0,0,0,0,1,0)), # Trial 4
+        ((0,0,1,0,1,0), (0,0,0,0,0,0))  # Trial 10
+    }
+    
+    high_conflict = {
+        ((1,0,1,0,1,0), (0,0,0,1,0,1)), # Trial 3
+        ((1,0,1,0,0,0), (0,1,0,0,1,0)), # Trial 5
+        ((1,0,1,0,1,0), (0,1,0,0,0,0))  # Trial 11
+    }
+    
+    # For all these trials, Option A is the higher-evidence choice
+    # Response == 0 means chosen A
+    data['correct'] = (data['response'] == 0).astype(float)
+    
+    diffs = []
+    for subj, subj_df in data.groupby('subject_id'):
+        low_mask = subj_df['pair'].isin(low_conflict)
+        high_mask = subj_df['pair'].isin(high_conflict)
+        
+        if low_mask.sum() > 0 and high_mask.sum() > 0:
+            low_acc = subj_df.loc[low_mask, 'correct'].mean()
+            high_acc = subj_df.loc[high_mask, 'correct'].mean()
+            diffs.append(low_acc - high_acc)
+            
+    if not diffs:
+        return 0.0
+        
+    return float(np.mean(diffs))
+outcome: self_sim=0.0042 (var=0.0177) adversary_sim=0.0850 (var=0.0102) welch_t=-2.421 p=0.01958 (N=25, alpha=0.01) -> reject
+
+[5] rationale: Previous attempts to measure the accuracy drop suffered from high between-subject variance because they pooled trials with different baseline net-evidence levels together. By explicitly grouping the experimental trials into 4 subsets that are perfectly matched on net evidence (Groups A, B, C, D) and computing the low-vs-high conflict accuracy drop within each subset, we control for baseline accuracy differences. Averaging these 4 independent contrasts per subject yields a highly stable, low-variance measure of the conflict effect. Pure WADD predicts exactly zero difference across all groups, while Evidence-Dependent Noise predicts a consistent positive drop.
+metric_source:
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+    
+    data = data.copy()
+    data['A'] = data['option_a_ratings'].apply(tuple)
+    data['B'] = data['option_b_ratings'].apply(tuple)
+    data['pair'] = list(zip(data['A'], data['B']))
+    
+    # Define the groups of trials matched exactly by net evidence
+    # Group A: Net Evidence ~0.9
+    low_A = {((1,0,0,0,0,0), (0,0,0,0,0,0))} # T1
+    high_A = {((1,0,1,0,1,0), (0,0,0,1,0,1))} # T3
+    
+    # Group B: Net Evidence ~0.2
+    low_B = {
+        ((0,0,1,0,0,0), (0,0,0,0,1,0)), # T4
+        ((1,0,0,0,0,0), (0,0,1,0,0,0))  # T6
+    }
+    high_B = {
+        ((1,0,1,0,0,0), (0,1,0,0,1,0)), # T5
+        ((1,0,0,0,1,0), (0,0,1,0,0,1))  # T7
+    }
+    
+    # Group C: Net Evidence ~1.6
+    low_C = {((1,0,1,0,0,0), (0,0,0,0,0,0))} # T8
+    high_C = {((1,0,1,0,1,0), (0,0,0,0,0,1))} # T9
+    
+    # Group D: Net Evidence ~1.2
+    low_D = {((0,0,1,0,1,0), (0,0,0,0,0,0))} # T10
+    high_D = {((1,0,1,0,1,0), (0,1,0,0,0,0))} # T11
+    
+    # Option A is always the higher-evidence choice for all these trials.
+    # response == 0 means chose A.
+    data['correct'] = (data['response'] == 0).astype(float)
+    
+    diffs = []
+    for subj, subj_df in data.groupby('subject_id'):
+        
+        def get_acc(pair_set):
+            mask = subj_df['pair'].isin(pair_set)
+            if mask.sum() > 0:
+                return subj_df.loc[mask, 'correct'].mean()
+            return np.nan
+            
+        acc_low_A = get_acc(low_A)
+        acc_high_A = get_acc(high_A)
+        
+        acc_low_B = get_acc(low_B)
+        acc_high_B = get_acc(high_B)
+        
+        acc_low_C = get_acc(low_C)
+        acc_high_C = get_acc(high_C)
+        
+        acc_low_D = get_acc(low_D)
+        acc_high_D = get_acc(high_D)
+        
+        subj_diffs = []
+        if not np.isnan(acc_low_A) and not np.isnan(acc_high_A):
+            subj_diffs.append(acc_low_A - acc_high_A)
+        if not np.isnan(acc_low_B) and not np.isnan(acc_high_B):
+            subj_diffs.append(acc_low_B - acc_high_B)
+        if not np.isnan(acc_low_C) and not np.isnan(acc_high_C):
+            subj_diffs.append(acc_low_C - acc_high_C)
+        if not np.isnan(acc_low_D) and not np.isnan(acc_high_D):
+            subj_diffs.append(acc_low_D - acc_high_D)
+            
+        if subj_diffs:
+            diffs.append(np.mean(subj_diffs))
+            
+    if not diffs:
+        return 0.0
+        
+    return float(np.mean(diffs))
+outcome: self_sim=0.0066 (var=0.0114) adversary_sim=0.0678 (var=0.0092) welch_t=-2.135 p=0.03794 (N=25, alpha=0.01) -> reject
+
+[6] rationale: Previous attempts to measure the conflict-induced accuracy drop were diluted by including trials with very low net evidence (where baseline accuracy is already near 0.5, leaving little room to drop). By strictly selecting the highest net-evidence pairs that are perfectly matched between low and high conflict conditions (Trials 1, 8, 10 vs. Trials 3, 9, 11), we maximize the baseline accuracy. Under the Evidence-Dependent Noise theory, this larger baseline accuracy will result in a dramatically larger absolute drop when high conflict increases decision noise. Pure WADD still rigorously predicts an exact difference of zero across these matched sets.
+metric_source:
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+    
+    data = data.copy()
+    data['A'] = data['option_a_ratings'].apply(tuple)
+    data['B'] = data['option_b_ratings'].apply(tuple)
+    data['pair'] = list(zip(data['A'], data['B']))
+    
+    # High Net Evidence, Low Conflict trials
+    low_conflict = {
+        ((1,0,0,0,0,0), (0,0,0,0,0,0)), # Trial 1 (Net=0.9)
+        ((1,0,1,0,0,0), (0,0,0,0,0,0)), # Trial 8 (Net=1.6)
+        ((0,0,1,0,1,0), (0,0,0,0,0,0))  # Trial 10 (Net=1.2)
+    }
+    
+    # High Net Evidence, High Conflict trials (matched exact net evidence)
+    high_conflict = {
+        ((1,0,1,0,1,0), (0,0,0,1,0,1)), # Trial 3 (Net=0.9)
+        ((1,0,1,0,1,0), (0,0,0,0,0,1)), # Trial 9 (Net=1.6)
+        ((1,0,1,0,1,0), (0,1,0,0,0,0))  # Trial 11 (Net=1.2)
+    }
+    
+    # Option A is always the correct (higher evidence) choice for all these pairs
+    data['correct'] = (data['response'] == 0).astype(float)
+    
+    diffs = []
+    for subj, subj_df in data.groupby('subject_id'):
+        low_mask = subj_df['pair'].isin(low_conflict)
+        high_mask = subj_df['pair'].isin(high_conflict)
+        
+        if low_mask.sum() > 0 and high_mask.sum() > 0:
+            low_acc = subj_df.loc[low_mask, 'correct'].mean()
+            high_acc = subj_df.loc[high_mask, 'correct'].mean()
+            diffs.append(low_acc - high_acc)
+            
+    if not diffs:
+        return 0.0
+        
+    return float(np.mean(diffs))
+outcome: self_sim=0.0200 (var=0.0165) adversary_sim=0.0575 (var=0.0134) welch_t=-1.084 p=0.284 (N=25, alpha=0.01) -> reject
+
+[7] rationale: Previous attempts to measure the accuracy drop diluted the effect by including trials with very low net evidence (floor effect, accuracy near 0.5) or very high net evidence (ceiling effect, accuracy near 1.0). By strictly isolating the trials with MODERATE net evidence (Trials 1 and 10 vs. Trials 3 and 11), we hit the steepest part of the logistic curve. This mathematically maximizes the accuracy drop predicted by the Evidence-Dependent Noise theory, while Pure WADD continues to strictly predict a difference of exactly zero. Removing the floor/ceiling trials significantly boosts the mean gap without inflating the between-subject variance.
+metric_source:
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+    
+    data = data.copy()
+    data['A'] = data['option_a_ratings'].apply(tuple)
+    data['B'] = data['option_b_ratings'].apply(tuple)
+    data['pair'] = list(zip(data['A'], data['B']))
+    
+    # Low Conflict, Moderate Net Evidence
+    low_pairs = {
+        ((1,0,0,0,0,0), (0,0,0,0,0,0)), # T1
+        ((0,0,1,0,1,0), (0,0,0,0,0,0))  # T10
+    }
+    
+    # High Conflict, Moderate Net Evidence
+    high_pairs = {
+        ((1,0,1,0,1,0), (0,0,0,1,0,1)), # T3
+        ((1,0,1,0,1,0), (0,1,0,0,0,0))  # T11
+    }
+    
+    # Option A is always the correct (higher net evidence) choice
+    data['correct'] = (data['response'] == 0).astype(float)
+    
+    diffs = []
+    for subj, subj_df in data.groupby('subject_id'):
+        low_mask = subj_df['pair'].isin(low_pairs)
+        high_mask = subj_df['pair'].isin(high_pairs)
+        
+        if low_mask.sum() > 0 and high_mask.sum() > 0:
+            low_acc = subj_df.loc[low_mask, 'correct'].mean()
+            high_acc = subj_df.loc[high_mask, 'correct'].mean()
+            diffs.append(low_acc - high_acc)
+            
+    if not diffs:
+        return 0.0
+        
+    return float(np.mean(diffs))
+outcome: self_sim=0.0312 (var=0.0232) adversary_sim=0.0762 (var=0.0157) welch_t=-1.142 p=0.2594 (N=25, alpha=0.01) -> reject
+
+[8] rationale: Measures the 'magnitude effect' reversal. Pure WADD predicts that as net evidence for Option A increases (from T1/T2 to T3/T4), the probability of choosing A must strictly increase, yielding a positive difference. In contrast, Evidence-Dependent Noise predicts that the massive increase in total conflict on T3/T4 will overwhelm the small gain in net evidence, increasing decision noise and regressing choice probabilities toward 0.5, yielding a negative or near-zero difference.
+metric_source:
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+    
+    data = data.copy()
+    data['A'] = data['option_a_ratings'].apply(tuple)
+    data['B'] = data['option_b_ratings'].apply(tuple)
+    
+    t1_A = (0, 0, 0, 0, 1, 0, 0, 0)
+    t1_B = (0, 0, 0, 0, 0, 1, 0, 0)
+    
+    t2_A = (1, 0, 0, 0, 1, 0, 0, 0)
+    t2_B = (0, 1, 0, 0, 0, 1, 0, 0)
+    
+    t3_A = (1, 0, 1, 0, 1, 0, 0, 0)
+    t3_B = (0, 1, 0, 1, 0, 1, 0, 0)
+    
+    t4_A = (1, 0, 1, 0, 1, 0, 1, 0)
+    t4_B = (0, 1, 0, 1, 0, 1, 0, 1)
+    
+    diffs = []
+    for subj, subj_df in data.groupby('subject_id'):
+        p1 = (subj_df.loc[(subj_df['A'] == t1_A) & (subj_df['B'] == t1_B), 'response'] == 0).mean()
+        p2 = (subj_df.loc[(subj_df['A'] == t2_A) & (subj_df['B'] == t2_B), 'response'] == 0).mean()
+        p3 = (subj_df.loc[(subj_df['A'] == t3_A) & (subj_df['B'] == t3_B), 'response'] == 0).mean()
+        p4 = (subj_df.loc[(subj_df['A'] == t4_A) & (subj_df['B'] == t4_B), 'response'] == 0).mean()
+        
+        if pd.notna(p1) and pd.notna(p2) and pd.notna(p3) and pd.notna(p4):
+            diffs.append((p4 + p3) - (p1 + p2))
+            
+    if not diffs:
+        return 0.0
+        
+    return float(np.mean(diffs))
+outcome: self_sim=0.0700 (var=0.0920) adversary_sim=-0.0083 (var=0.0859) welch_t=+0.928 p=0.3578 (N=25, alpha=0.01) -> reject
+
+[9] rationale: By pooling the lowest-net-evidence/lowest-conflict trials (Group 1) and the highest-net-evidence/highest-conflict trials (Group 2), we halve the binomial noise compared to single-trial contrasts. Pure WADD dictates that choice probability for Option A must be higher in Group 2 because the net evidence is strictly greater (0.175 vs 0.05). Conversely, Evidence-Dependent Noise predicts that the massive increase in total conflict (5.57 vs 1.55) overwhelmingly inflates decision noise, regressing choice probabilities toward 0.5 and causing Group 2 to have a strictly lower probability of choosing Option A than Group 1. This strong directional divergence coupled with grouped trial pooling yields a robust, low-variance discriminator.
+metric_source:
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+    
+    data = data.copy()
+    data['A'] = data['option_a_ratings'].apply(tuple)
+    data['B'] = data['option_b_ratings'].apply(tuple)
+    
+    # Group 1: Low Net Evidence, Low Conflict
+    # T1: Net = 0.05, Conflict = 1.45
+    # T5: Net = 0.05, Conflict = 1.65
+    group1_pairs = {
+        ((0,0,0,0,1,0,0,0), (0,0,0,0,0,1,0,0)), # T1
+        ((0,0,1,0,0,0,0,0), (0,0,0,1,0,0,0,0))  # T5
+    }
+    
+    # Group 2: High Net Evidence, High Conflict
+    # T3: Net = 0.15, Conflict = 4.95
+    # T4: Net = 0.20, Conflict = 6.20
+    group2_pairs = {
+        ((1,0,1,0,1,0,0,0), (0,1,0,1,0,1,0,0)), # T3
+        ((1,0,1,0,1,0,1,0), (0,1,0,1,0,1,0,1))  # T4
+    }
+    
+    data['pair'] = list(zip(data['A'], data['B']))
+    data['chose_A'] = (data['response'] == 0).astype(float)
+    
+    diffs = []
+    for subj, subj_df in data.groupby('subject_id'):
+        g1_mask = subj_df['pair'].isin(group1_pairs)
+        g2_mask = subj_df['pair'].isin(group2_pairs)
+        
+        if g1_mask.sum() > 0 and g2_mask.sum() > 0:
+            p_g1 = subj_df.loc[g1_mask, 'chose_A'].mean()
+            p_g2 = subj_df.loc[g2_mask, 'chose_A'].mean()
+            diffs.append(p_g2 - p_g1)
+            
+    if not diffs:
+        return 0.0
+        
+    return float(np.mean(diffs))
+outcome: self_sim=0.0325 (var=0.0228) adversary_sim=0.0075 (var=0.0227) welch_t=+0.586 p=0.5605 (N=25, alpha=0.01) -> reject
+
+[10] rationale: This metric isolates the two trials with the highest net evidence (Trials 7 and 8) to test the magnitude effect reversal. Because both trials have high net evidence, choice probabilities for Option A are lifted well above the 0.5 floor, making changes in decision noise highly visible. Under Pure WADD, Trial 8 has strictly more net evidence than Trial 7, so the probability of choosing Option A must increase (yielding a positive difference). Under Evidence-Dependent Noise, the total conflict in Trial 8 is exactly double that of Trial 7. This massive increase in conflict inflates decision noise, which regresses the choice probability toward 0.5, counteracting the increased net evidence and yielding a negative or significantly smaller difference. Focusing strictly on these two high-signal trials reduces the variance that plagued multi-trial poolings.
+metric_source:
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+    
+    data = data.copy()
+    data['A'] = data['option_a_ratings'].apply(tuple)
+    data['B'] = data['option_b_ratings'].apply(tuple)
+    
+    # Trial 7: High Net Evidence (0.35), Low Conflict (1.55)
+    t7_A = (1, 0, 0, 0, 0, 0, 0, 0)
+    t7_B = (0, 0, 0, 0, 0, 0, 0, 1)
+    
+    # Trial 8: Very High Net Evidence (0.60), High Conflict (3.10)
+    t8_A = (1, 1, 0, 0, 0, 0, 0, 0)
+    t8_B = (0, 0, 0, 0, 0, 0, 1, 1)
+    
+    diffs = []
+    for subj, subj_df in data.groupby('subject_id'):
+        t7_mask = (subj_df['A'] == t7_A) & (subj_df['B'] == t7_B)
+        t8_mask = (subj_df['A'] == t8_A) & (subj_df['B'] == t8_B)
+        
+        if t7_mask.sum() > 0 and t8_mask.sum() > 0:
+            # response == 0 means chose Option A
+            p7 = (subj_df.loc[t7_mask, 'response'] == 0).mean()
+            p8 = (subj_df.loc[t8_mask, 'response'] == 0).mean()
+            # We compute P(A | Trial 8) - P(A | Trial 7)
+            diffs.append(p8 - p7)
+            
+    if len(diffs) == 0:
+        return 0.0
+        
+    return float(np.mean(diffs))
+outcome: self_sim=0.0633 (var=0.0315) adversary_sim=0.0183 (var=0.0245) welch_t=+0.950 p=0.3468 (N=25, alpha=0.01) -> reject
+
+## RESPONSE FORMAT
+Return a JSON object with the following fields:
+- metric: Python source defining def metric(data: pd.DataFrame) -> float.
+- rationale: Reasoning behind this metric; used when interpreting results.
+
+
+## Response
+
+```json
+{
+  "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    import pandas as pd\n    \n    data = data.copy()\n    data['A'] = data['option_a_ratings'].apply(tuple)\n    data['B'] = data['option_b_ratings'].apply(tuple)\n    data['pair'] = list(zip(data['A'], data['B']))\n    \n    # Group 1: Low Net Evidence, Low/Moderate Conflict\n    # T1, T2, T5, T6\n    group1 = {\n        ((0,0,0,0,1,0,0,0), (0,0,0,0,0,1,0,0)),\n        ((1,0,0,0,1,0,0,0), (0,1,0,0,0,1,0,0)),\n        ((0,0,1,0,0,0,0,0), (0,0,0,1,0,0,0,0)),\n        ((0,0,1,0,0,0,1,0), (0,0,0,1,0,0,0,1))\n    }\n    \n    # Group 2: Higher Net Evidence, High Conflict\n    # T3, T4\n    group2 = {\n        ((1,0,1,0,1,0,0,0), (0,1,0,1,0,1,0,0)),\n        ((1,0,1,0,1,0,1,0), (0,1,0,1,0,1,0,1))\n    }\n    \n    data['chose_A'] = (data['response'] == 0).astype(float)\n    \n    diffs = []\n    for subj, subj_df in data.groupby('subject_id'):\n        g1_mask = subj_df['pair'].isin(group1)\n        g2_mask = subj_df['pair'].isin(group2)\n        \n        if g1_mask.sum() > 0 and g2_mask.sum() > 0:\n            p_g1 = subj_df.loc[g1_mask, 'chose_A'].mean()\n            p_g2 = subj_df.loc[g2_mask, 'chose_A'].mean()\n            diffs.append(p_g2 - p_g1)\n            \n    if not diffs:\n        return 0.0\n        \n    return float(np.mean(diffs))",
+  "rationale": "By pooling four trials with low net evidence and low/moderate conflict (Group 1) and contrasting them with two trials that have strictly higher net evidence but massively higher conflict (Group 2), we greatly reduce the per-subject variance while isolating the 'magnitude effect reversal'. Pure WADD predicts that Group 2 MUST have a higher probability of choosing Option A than Group 1 because its net evidence is structurally larger. Evidence-Dependent Noise predicts that the massive increase in total conflict in Group 2 will overwhelm the net evidence gain, drastically inflating decision noise and pulling the choice probability toward 0.5. This structural divergence provides a robust, low-variance discriminator between the two theories."
+}
+```
+
+## Usage
+
+```json
+{
+  "prompt_token_count": 13147,
+  "candidates_token_count": 768,
+  "total_token_count": 16712
+}
+```

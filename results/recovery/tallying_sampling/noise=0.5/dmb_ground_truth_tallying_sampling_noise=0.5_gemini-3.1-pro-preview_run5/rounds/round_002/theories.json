@@ -1,0 +1,54 @@
+{
+  "round_idx": 2,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_3",
+      "killed": false,
+      "theory": {
+        "description": "Tallying (Equal-Weight) Theory: People compare two options by simply counting the number of positive cues (features) for each option and choosing the one with the higher count. This theory posits that decision-makers ignore the varying validities of the cues, treating all features as equally important. It is a compensatory strategy because multiple cues can outweigh a single cue, but it is more frugal than a Weighted Additive (WADD) rule because it avoids multiplying by or storing cardinal validities. Response noise is modeled via a softmax function over the tally scores, along with an independent lapse rate.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Tallying expects a (2, n_features) stimulus.\")\n    \n    # Tallying: count the number of positive cues for each option\n    # Since cues are binary (0 or 1), we can just sum them.\n    scores = np.sum(stim, axis=1)\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax over the tally scores\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    # Uniform lapse blended into the softmax\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))",
+        "parameters": {
+          "beta": "[0.0, 5.0]",
+          "epsilon": "[0.1, 0.5]"
+        },
+        "rationale": "Following the critic's feedback, the Tallying mechanism is retained exactly as before, but the parameter ranges have been constrained to induce more stochasticity. Specifically, the upper bound of beta has been reduced to 5.0, and the lower bound of epsilon has been raised to 0.1. This prevents the model from making overly deterministic predictions and brings the expected choice shares closer to the empirical observations (e.g., lowering the Exp 1 prediction from ~0.87 toward ~0.69)."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_4",
+      "killed": true,
+      "theory": {
+        "description": "Noisy-Validity Take-The-Best (NV-TTB) Model: Decision makers use a strict lexicographic search (Take-The-Best), consulting cues in descending order of their validity and stopping at the first cue that discriminates between options. However, subjects have noisy internal representations of cue validities. On each choice, Gaussian noise is added to the objective validities, and cues are sorted based on these noisy values. This probabilistic cue ordering allows the model to capture aggregate deviations from pure TTB (and approach Tallying-like behavior when noise is high) while preserving the non-compensatory, one-reason decision mechanism at the single-trial level.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Expects a (2, n_features) stimulus.\")\n    \n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    sigma = float(parameters[\"sigma\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    n_features = stim.shape[1]\n    \n    # Marginalize over noisy validities via sampling to produce choice probabilities\n    n_samples = 200\n    noise = np.random.normal(0, sigma + 1e-9, size=(n_samples, n_features))\n    noisy_validities = validities + noise\n    \n    # Sort cues for each sample (descending order of noisy validity)\n    cue_orders = np.argsort(-noisy_validities, axis=1)\n    \n    a, b = stim[0], stim[1]\n    wins = np.zeros(2)\n    \n    for i in range(n_samples):\n        winner = None\n        for j in cue_orders[i]:\n            if a[j] > b[j]:\n                winner = 0\n                break\n            elif b[j] > a[j]:\n                winner = 1\n                break\n        if winner is None:\n            wins += 0.5\n        else:\n            wins[winner] += 1.0\n            \n    p_core = wins / n_samples\n    \n    # Incorporate lapse rate\n    n_opts = 2\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+        "parameters": {
+          "sigma": "[0.0, 5.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "The previous accepted candidate (Power-Weighted Additive) was a compensatory model, which explicitly violated the arbiter's instruction to use the Take-The-Best (TTB) mechanism family. To comply with the critic's instruction to implement TTB with probabilistic cue ordering, a larger rewrite of `predict` was necessary to replace the additive weighted sum with a sequential lexicographic search. In this Noisy-Validity TTB model, Gaussian noise (parameterized by `sigma`) is added to the validities on each simulated trial to determine the search order, and the search stops strictly at the first discriminating cue. By marginalizing over these noisy orderings, the model introduces probabilistic variation into TTB, allowing it to capture aggregate deviations from pure TTB (bridging the gap to Tallying when noise is high) without using the previously rejected probabilistic stopping rule."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_5",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Validity-Biased Tallying: Decision-makers evaluate options using a compensatory strategy where they compute a weighted sum of the features. However, instead of using the objective cue validities as weights (as in pure WADD) or completely ignoring them (as in pure Tallying), they use subjective weights that are heavily compressed toward equality. This means the weight of each cue is a mixture of a uniform value and its actual validity, capturing the dominant tallying behavior while allowing for a slight, noisy pull from the objective cue validities.",
+      "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Expects a (2, n_features) stimulus.\")\n        \n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    alpha = float(parameters[\"alpha\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Interpolate between uniform weights (Tallying) and objective validities (WADD)\n    w = (1.0 - alpha) * 1.0 + alpha * validities\n    \n    # Calculate weighted sum of features for each option\n    scores = stim @ w\n    \n    # Softmax choice rule\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    # Incorporate uniform lapse rate\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+      "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+      "parameters": {
+        "alpha": "[0.0, 1.0]",
+        "beta": "[0.0, 10.0]",
+        "epsilon": "[0.0, 0.5]",
+        "validities": "validities"
+      },
+      "rationale": "The arbiter suggested a 'Validity-Biased Tallying' theory where decision-makers use a compensatory approach but with weights compressed heavily toward equality. This model implements this by introducing an `alpha` parameter that interpolates between pure Tallying (equal weights of 1.0) and Weighted Additive (WADD, weights equal to validities). By allowing `alpha` to vary, the model can capture the dominant tallying behavior while accounting for the slight pull of cue validities seen in the observed data, overcoming the rigidity of strict lexicographic or pure equal-weight models."
+    }
+  }
+}

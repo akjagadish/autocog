@@ -1,0 +1,58 @@
+{
+  "round_idx": 4,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_3",
+      "killed": true,
+      "theory": {
+        "description": "Probabilistic Cue Sampling with Softmax Validities: Decision-makers evaluate options by sampling a single feature on each trial. The probability of sampling a feature is determined by a softmax function over the objective validities scaled by a sensitivity parameter gamma. The option that is superior on the sampled feature is chosen; ties result in guessing. This predicts intermediate choice proportions when validities are mixed, avoiding deterministic winner-takes-all behavior.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    gamma = float(parameters[\"gamma\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Compute subjective validities using softmax for sampling probabilities\n    z = gamma * validities\n    z = z - np.max(z)  # numerical stability\n    e = np.exp(z)\n    p_feat = e / np.sum(e)\n\n    a, b = stim[0], stim[1]\n\n    # Identify wins and ties for each feature\n    a_wins = (a > b).astype(float)\n    b_wins = (b > a).astype(float)\n    ties = (a == b).astype(float)\n\n    # Analytically marginalize over the sampled feature:\n    # P(Choose A) = sum_i P(sample i) * P(Choose A | sample i)\n    # P(Choose A | sample i) = 1 if a_i > b_i, 0 if b_i > a_i, 0.5 if a_i == b_i\n    p_A = np.sum(p_feat * (a_wins + 0.5 * ties))\n    p_B = np.sum(p_feat * (b_wins + 0.5 * ties))\n\n    p_core = np.array([p_A, p_B])\n\n    # Apply uniform lapse rate\n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+        "parameters": {
+          "gamma": "[0.0, 2.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Applying the minimal diff requested by the critic: narrowing the range of the `gamma` parameter from `[0.0, 10.0]` to `[0.0, 2.0]`. This restricts the model from selecting overly high inverse temperatures, forcing it to distribute its sampling more evenly across cues and bringing the choice proportions closer to the empirical ~0.50 mark on incongruent trials."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_6",
+      "killed": false,
+      "theory": {
+        "description": "Mixture of Simple Heuristics (Take-The-Best and Tallying) with Softened Determinism",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    w_ttb = float(parameters[\"w_ttb\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # TTB Heuristic: find the first discriminating cue in descending order of validity\n    order = np.argsort(validities)[::-1]\n    ttb_diff = 0.0\n    for idx in order:\n        if stim[0, idx] != stim[1, idx]:\n            ttb_diff = stim[0, idx] - stim[1, idx]\n            break\n\n    # Tallying Heuristic: unweighted count of winning features\n    a_wins = np.sum(stim[0] > stim[1])\n    b_wins = np.sum(stim[1] > stim[0])\n    tally_diff = a_wins - b_wins\n\n    # Translate differences into probabilities using softmax (decision noise)\n    # Bound the differences to prevent overflow\n    z_ttb = np.clip(beta * ttb_diff, -100, 100)\n    p_ttb_A = 1.0 / (1.0 + np.exp(-z_ttb))\n    \n    z_tally = np.clip(beta * tally_diff, -100, 100)\n    p_tally_A = 1.0 / (1.0 + np.exp(-z_tally))\n\n    # Mixture of the two heuristics\n    p_core_A = w_ttb * p_ttb_A + (1.0 - w_ttb) * p_tally_A\n    p_core_B = 1.0 - p_core_A\n\n    # Apply uniform lapse rate\n    p_final = (1.0 - epsilon) * np.array([p_core_A, p_core_B]) + epsilon * np.array([0.5, 0.5])\n\n    return p_final\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+        "parameters": {
+          "beta": "[0.0, 2.0]",
+          "epsilon": "[0.0, 1.0]",
+          "w_ttb": "[0.0, 1.0]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's feedback, the attempt to decouple the temperatures of TTB and Tallying was rejected because it failed to improve the fit and increased the aggregate loss. We revert to the highly successful single-temperature mixture model from Iteration 2 (which dropped the loss from 0.58 to 0.22). To address the over-determinism in Experiment 8 where both heuristics strongly align, we adjust the parameter bounds: restricting `beta` to a lower range [0.0, 2.0] enforces softer probability bounds, and widening `epsilon` to [0.0, 1.0] allows the model to rely more heavily on random guessing if needed. This minimal edit softens the predictions while preserving the core mechanism that successfully captured near-chance behavior in the other experiments."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_7",
+    "slot": 1,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Stochastic Leaky Competing Accumulator (LCA): Decision-makers evaluate all features in parallel, accumulating evidence for each option proportional to the objective cue validities. The accumulation process is subject to leakage, lateral inhibition, and within-trial Gaussian noise. Due to these stochastic dynamics and a non-negativity constraint, the system frequently dampens small net differences in inputs, producing near-chance behavior when net evidence is weak or closely matched, while still robustly discriminating when one option is strongly superior.",
+      "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    leak = float(parameters[\"leak\"])\n    inhibition = float(parameters[\"inhibition\"])\n    theta = float(parameters[\"theta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    noise_std = float(parameters[\"noise_std\"])\n\n    # Parallel evaluation: compute total input evidence for each option\n    I_A = np.sum(validities * stim[0])\n    I_B = np.sum(validities * stim[1])\n\n    # Stochastic Leaky Competing Accumulator (LCA) dynamics\n    # We simulate multiple paths to compute a stable expected choice probability\n    n_sims = 100\n    x_A = np.zeros(n_sims)\n    x_B = np.zeros(n_sims)\n    dt = 0.1\n    steps = 50\n    sqrt_dt = np.sqrt(dt)\n\n    for _ in range(steps):\n        dx_A = I_A - leak * x_A - inhibition * x_B\n        dx_B = I_B - leak * x_B - inhibition * x_A\n        \n        # Add Gaussian noise at each time step (Euler-Maruyama method)\n        noise_A = np.random.normal(0, noise_std, n_sims) * sqrt_dt\n        noise_B = np.random.normal(0, noise_std, n_sims) * sqrt_dt\n        \n        # Update with non-negativity constraint\n        x_A = np.maximum(0.0, x_A + dx_A * dt + noise_A)\n        x_B = np.maximum(0.0, x_B + dx_B * dt + noise_B)\n\n    # Translate final activation difference into choice probabilities\n    diff = x_A - x_B\n    # Numerically stable logistic function\n    z = np.clip(theta * diff, -100, 100)\n    p_A_sim = 1.0 / (1.0 + np.exp(-z))\n    \n    # Expected probability over stochastic paths\n    p_A = np.mean(p_A_sim)\n    p_B = 1.0 - p_A\n\n    # Apply uniform lapse rate to account for execution errors or guessing\n    return (1.0 - epsilon) * np.array([p_A, p_B]) + epsilon * np.array([0.5, 0.5])\n",
+      "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+      "parameters": {
+        "leak": "[0.0, 5.0]",
+        "inhibition": "[0.0, 5.0]",
+        "theta": "[0.0, 10.0]",
+        "epsilon": "[0.0, 0.5]",
+        "noise_std": "[0.0, 5.0]",
+        "validities": "validities"
+      },
+      "rationale": "Following the critic's feedback, we modified the deterministic simplified LCA by introducing within-trial stochasticity (Gaussian noise) to the evidence accumulation updates. By simulating multiple noisy trajectories per trial and averaging the resulting choice probabilities, the model naturally captures the observed near-chance behavior when net evidence is closely matched, without relying exclusively on the uniform lapse rate."
+    }
+  }
+}

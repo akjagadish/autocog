@@ -1,0 +1,58 @@
+{
+  "round_idx": 2,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_3",
+      "killed": true,
+      "theory": {
+        "description": "Weighted Additive (WADD) Theory with Non-Linear Cue Scaling: People evaluate multi-attribute options by computing an overall value for each option. This value is determined by taking a weighted sum of the option's features, where the weights correspond to the subjective validities of the respective cues scaled by a non-linear parameter. This scaling allows decision-makers to flexibly upweight highly valid cues (approaching a non-compensatory strategy) or downweight them (approaching an equal-weight tallying strategy). Decision-makers then choose probabilistically between the options by comparing these total weighted scores via a softmax function.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"WADD expects a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    gamma = float(parameters[\"gamma\"])\n    \n    # Non-linear scaling of validities\n    weights = val ** gamma\n    \n    a, b = stim[0], stim[1]\n    \n    # Calculate weighted sums for both options\n    score_a = np.sum(weights * a)\n    score_b = np.sum(weights * b)\n    scores = np.array([score_a, score_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Numerically stable softmax\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    # Incorporate lapse rate\n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities",
+          "gamma": "[0.1, 6.0]"
+        },
+        "rationale": "Following the critic's advice, I adjusted the upper bound of the `gamma` parameter from 4.0 to 6.0. The previous iteration showed that a maximum gamma of 4.0 caused an undershoot in non-compensatory behavior for Experiment 2 (overpredicting Tallying adherence), whereas an upper bound of 10.0 in an earlier iteration allowed too much non-compensatory behavior. Expanding the range to [0.1, 6.0] should help dial in the exact sweet spot between TTB and Tallying adherence."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_4",
+      "killed": false,
+      "theory": {
+        "description": "Hybrid Heuristic Theory: Decision-makers integrate evidence from multiple strategies before making a choice, rather than probabilistically sampling between distinct strategies. Specifically, individuals compute a combined subjective value for each option by taking a weighted average of normalized compensatory (validity-weighted) and non-compensatory (tallying) evidence. A single stochastic decision process then operates on these integrated values.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    n_features = len(val)\n    \n    # Normalized WADD scores\n    sum_val = np.sum(val)\n    score_wadd_a = np.sum(val * a) / sum_val\n    score_wadd_b = np.sum(val * b) / sum_val\n    \n    # Normalized Tallying scores\n    score_tal_a = float(np.sum(a > b)) / n_features\n    score_tal_b = float(np.sum(b > a)) / n_features\n    \n    beta = float(parameters[\"beta\"])\n    w_mix = float(parameters[\"w_mix\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Combined integrated scores\n    score_combined_a = w_mix * score_wadd_a + (1.0 - w_mix) * score_tal_a\n    score_combined_b = w_mix * score_wadd_b + (1.0 - w_mix) * score_tal_b\n    scores = np.array([score_combined_a, score_combined_b])\n    \n    # Single Softmax\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p = e / np.sum(e)\n    \n    # Lapse rate\n    return (1.0 - epsilon) * p + epsilon * np.array([0.5, 0.5])\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "w_mix": "[0.0, 1.0]",
+          "validities": "validities"
+        },
+        "rationale": "Initial logic and parameters are validated. The final transformation implements a single-softmax Hybrid Heuristic. By normalizing the WADD scores by the sum of validities and the Tallying scores by the total number of features, both evidence sources are projected onto a comparable scale. These normalized scores are then integrated via a weighted average before applying a single softmax temperature, avoiding the dual-softmax calibration issues of previous iterations while capturing the nuanced influence of both strategies."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_5",
+    "slot": 1,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Probabilistic Strategy Selection Theory: Decision-makers maintain a repertoire of distinct decision heuristics (Take-The-Best, Tallying, and Weighted Additive/WADD). On each trial, they probabilistically sample one strategy from this repertoire according to base-rate strategy weights, and execute it purely. This discrete mixture of strategies accounts for intermediate aggregate choice proportions while naturally predicting exact ties when the sampled strategy itself encounters a tie.",
+      "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Take-The-Best (TTB)\n    diff = a - b\n    order = np.argsort(val)[::-1]\n    ttb_pred = np.array([0.5, 0.5])\n    for idx in order:\n        if diff[idx] > 0:\n            ttb_pred = np.array([1.0, 0.0])\n            break\n        elif diff[idx] < 0:\n            ttb_pred = np.array([0.0, 1.0])\n            break\n            \n    # Tallying\n    tal_diff = np.sum(a) - np.sum(b)\n    if tal_diff > 0:\n        tal_pred = np.array([1.0, 0.0])\n    elif tal_diff < 0:\n        tal_pred = np.array([0.0, 1.0])\n    else:\n        tal_pred = np.array([0.5, 0.5])\n        \n    # Weighted Additive (WADD)\n    wadd_diff = np.sum(val * a) - np.sum(val * b)\n    if wadd_diff > 0:\n        wadd_pred = np.array([1.0, 0.0])\n    elif wadd_diff < 0:\n        wadd_pred = np.array([0.0, 1.0])\n    else:\n        wadd_pred = np.array([0.5, 0.5])\n        \n    w_ttb = float(parameters[\"w_ttb\"])\n    w_tal = float(parameters[\"w_tal\"])\n    w_wadd = float(parameters[\"w_wadd\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    w_arr = np.array([w_ttb, w_tal, w_wadd])\n    sum_w = np.sum(w_arr)\n    if sum_w == 0:\n        p_strat = np.array([1/3, 1/3, 1/3])\n    else:\n        p_strat = w_arr / sum_w\n        \n    p_core = p_strat[0] * ttb_pred + p_strat[1] * tal_pred + p_strat[2] * wadd_pred\n    \n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])",
+      "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))",
+      "parameters": {
+        "w_ttb": "[0.0, 1.0]",
+        "w_tal": "[0.0, 1.0]",
+        "w_wadd": "[0.0, 1.0]",
+        "epsilon": "[0.0, 0.5]",
+        "validities": "validities"
+      },
+      "rationale": "Following the arbiter's recommendation, this model implements the Probabilistic Strategy Selection theory. Instead of integrating evidence from different heuristics into a single subjective value (as in the previous Hybrid theory), this model assumes that decision-makers have a repertoire of three distinct strategies: Take-The-Best, Tallying, and Weighted Additive. On any given trial, the decision-maker probabilistically samples one of these strategies and executes it purely. This trial-by-trial mixture of deterministic strategies can produce intermediate aggregate choice proportions while also preserving exact ties when the sampled strategy predicts a tie, addressing the mechanistic failures of the previous integration-based model."
+    }
+  }
+}

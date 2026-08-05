@@ -1,0 +1,59 @@
+{
+  "round_idx": 4,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_5",
+      "killed": false,
+      "theory": {
+        "description": "Dual-Process Strategy Mixture: Decision-making is driven by a probabilistic mixture of two distinct strategies. With a certain probability (mixture_p), subjects employ a non-compensatory Take-The-Best (TTB) heuristic, making a choice based solely on the most valid discriminating cue. Otherwise, they use a compensatory Weighted Additive (WADD) strategy, integrating all available features weighted by their validities into a comprehensive utility score. This blend captures both the strict, flat sensitivity of heuristic processing and the graded, trade-off sensitivity of compensatory processing.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    val = np.asarray(parameters['validities'], dtype=float)\n    \n    mixture_p = float(parameters['mixture_p'])\n    beta = float(parameters['beta'])\n    epsilon = float(parameters['epsilon'])\n    \n    # --- TTB Component ---\n    cue_order = np.argsort(-val, kind='stable')\n    a, b = stim[0], stim[1]\n    \n    p_ttb = np.array([0.5, 0.5])\n    for j in cue_order:\n        if a[j] > b[j]:\n            p_ttb = np.array([1.0, 0.0])\n            break\n        elif b[j] > a[j]:\n            p_ttb = np.array([0.0, 1.0])\n            break\n            \n    # --- WADD Component ---\n    # WADD uses validities as weights\n    scores = stim @ val\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_wadd = e / e.sum()\n    \n    # --- Mixture ---\n    p_core = mixture_p * p_ttb + (1.0 - mixture_p) * p_wadd\n    \n    # --- Lapse ---\n    p_final = (1.0 - epsilon) * p_core + epsilon * 0.5\n    \n    return p_final",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))",
+        "parameters": {
+          "mixture_p": "[0.0, 1.0]",
+          "beta": "[0.1, 3.5]",
+          "epsilon": "[0.0, 1.0]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's advice, the parameter range for `beta` has been slightly widened to [0.1, 3.5]. This intermediate range aims to strike a better balance by restoring some of the compensatory determinism lost in the previous iteration, which should help recover performance in Experiments 2 and 6 while maintaining the gains achieved in Experiments 3 and 4."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_6",
+      "killed": true,
+      "theory": {
+        "description": "Sequential Evidence Accumulation: Decision-making is driven by a sequential sampling process where features are evaluated in order of their subjective validity. As each feature is processed, the validity-weighted difference between the options is added to a running accumulator. If this accumulated evidence reaches a predefined threshold at any point, search is immediately terminated and a choice is made (mimicking non-compensatory heuristics like Take-The-Best). If all features are exhausted without the evidence hitting the boundary, the subject makes a probabilistic choice based on the final accumulated tally (mimicking compensatory strategies like WADD). This single-process model naturally unifies fast-and-frugal heuristics and exhaustive compensatory integration depending on the height of the evidence threshold.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    val = np.asarray(parameters['validities'], dtype=float)\n    \n    threshold = float(parameters['threshold'])\n    beta = float(parameters['beta'])\n    epsilon = float(parameters['epsilon'])\n    \n    # Sort cues by descending validity; stable sort to preserve original order on ties\n    cue_order = np.argsort(-val, kind='stable')\n    \n    a, b = stim[0], stim[1]\n    \n    A_val = 0.0\n    decided = False\n    p_a = 0.5\n    \n    # Sequentially accumulate evidence\n    for j in cue_order:\n        A_val += val[j] * (a[j] - b[j])\n        if A_val >= threshold:\n            p_a = 1.0\n            decided = True\n            break\n        elif A_val <= -threshold:\n            p_a = 0.0\n            decided = True\n            break\n            \n    # If boundary not reached, make a soft choice based on the final tally\n    if not decided:\n        z = beta * A_val\n        # Numerically stable logistic function for P(A)\n        if z > 100:\n            p_a = 1.0\n        elif z < -100:\n            p_a = 0.0\n        else:\n            p_a = 1.0 / (1.0 + np.exp(-z))\n            \n    p_b = 1.0 - p_a\n    p_core = np.array([p_a, p_b])\n    \n    # Blend with standard uniform lapse rate\n    return (1.0 - epsilon) * p_core + epsilon * 0.5\n",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+        "parameters": {
+          "threshold": "[0.0, 5.0]",
+          "beta": "[0.1, 1.5]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's advice, we further reduce the upper bound of the `beta` parameter from 5.0 to 1.5. This makes the soft choice component (used when the sequential evidence threshold is not reached) even more probabilistic. This minimal edit aims to further dampen the model's overestimation of compensatory and deterministic responding in Experiments 6, 7, and 8, bringing the simulated metrics closer to the muted empirical effects observed in the data."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_7",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Normalized Rank-Dependent Cue Weighting with Base Influence: Decision-making relies on a compensatory integration process where the subjective weight of each cue is a product of its exponentially decaying rank and a dampened version of its objective validity, plus a constant base weight. These weights are then normalized across all available cues to sum to 1. The base weight ensures that even the lowest-ranked cues retain a strict minimum influence, allowing the model to capture the compensatory integration of multiple weak cues without abandoning the core exponential decay that successfully captures heuristic-like dominance of top cues.",
+      "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    val = np.asarray(parameters['validities'], dtype=float)\n    \n    decay = float(parameters['decay'])\n    beta = float(parameters['beta'])\n    epsilon = float(parameters['epsilon'])\n    gamma = float(parameters['gamma'])\n    base_weight = float(parameters['base_weight'])\n    \n    # Sort cues by descending validity; stable sort to preserve original order on ties\n    cue_order = np.argsort(-val, kind='stable')\n    \n    a, b = stim[0], stim[1]\n    \n    weights = np.zeros(len(val))\n    for rank, j in enumerate(cue_order):\n        weights[j] = (val[j] ** gamma) * (decay ** rank) + base_weight\n        \n    weights_sum = np.sum(weights)\n    if weights_sum > 0:\n        weights /= weights_sum\n        \n    evidence_diff = np.sum(weights * (a - b))\n        \n    z = beta * evidence_diff\n    \n    # Numerically stable logistic function\n    if z > 100:\n        p_a = 1.0\n    elif z < -100:\n        p_a = 0.0\n    else:\n        p_a = 1.0 / (1.0 + np.exp(-z))\n        \n    p_core = np.array([p_a, 1.0 - p_a])\n    \n    # Blend with lapse rate\n    return (1.0 - epsilon) * p_core + epsilon * 0.5\n",
+      "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+      "parameters": {
+        "decay": "[0.01, 1.0]",
+        "beta": "[0.1, 25.0]",
+        "epsilon": "[0.0, 0.5]",
+        "gamma": "[0.0, 1.0]",
+        "base_weight": "[0.0, 0.5]",
+        "validities": "validities"
+      },
+      "rationale": "Following the critic's advice, I added a `base_weight` parameter to the exponential decay model from Iteration 3. The Iteration 4 hyperbolic decay was rejected because it distorted the relative weighting too much, worsening fit on Exps 4 and 9. By reverting to the accepted exponential decay and adding a constant `base_weight` before normalization, we provide a strict minimum influence floor for lower-ranked cues. This 'fat tail' allows the model to better capture the compensatory behavior seen in Experiments 2 and 4 while preserving the successful heuristic-like dominance of top cues."
+    }
+  }
+}

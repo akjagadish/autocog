@@ -1,0 +1,57 @@
+{
+  "round_idx": 1,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_3",
+      "killed": false,
+      "theory": {
+        "description": "Take-The-Best (TTB) heuristic with subjective validity noise: Decision-makers search through features in descending order of their subjective validity, but their assessment of validity is noisy. On any given evaluation, they sample validities with some variance, sort features by these sampled validities, and stop at the first feature that discriminates between the two options. Response noise is modeled via a softmax over the resulting binary preference scores, plus an independent lapse rate. Averaging over multiple samples naturally smooths the aggregate predictions when validities are close.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"TTB expects a (2, n_features) stimulus.\")\n    \n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    sigma = float(parameters[\"sigma\"])\n    \n    n_samples = 50\n    avg_p_core = np.zeros(2)\n    \n    for _ in range(n_samples):\n        noisy_v = validities + np.random.normal(0, sigma, size=validities.shape)\n        order = np.argsort(noisy_v)[::-1]\n        \n        scores = np.zeros(2)\n        # Search for the first discriminating feature\n        for idx in order:\n            if stim[0, idx] > stim[1, idx]:\n                scores[0] = 1.0\n                break\n            elif stim[1, idx] > stim[0, idx]:\n                scores[1] = 1.0\n                break\n                \n        # Softmax over the scores\n        z = beta * (scores - scores.max())\n        e = np.exp(z)\n        p_core = e / e.sum()\n        avg_p_core += p_core\n        \n    avg_p_core /= n_samples\n    \n    n_opts = avg_p_core.shape[0]\n    return (1.0 - epsilon) * avg_p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "sigma": "[0.0, 2.0]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's advice, we introduce a `sigma` parameter to add Gaussian noise to the subjective validities. We sample these noisy validities multiple times (50 iterations for stability) per trial, apply the strict TTB stopping rule for each sample, and average the resulting choice probabilities. This softens the deterministic feature ordering of TTB and captures subjective uncertainty or individual differences in feature validities, preventing extreme deterministic predictions when validities are close."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_2",
+      "killed": true,
+      "theory": {
+        "description": "People compare two options by computing, for each option, a weighted sum of its feature values, where each feature is weighted by its subjective validity (or importance). The option with the higher weighted sum is chosen. WADD is the compensatory benchmark against which one-reason heuristics like Take The Best are contrasted: a large deficit on a high-validity cue can be compensated by a sufficiently strong advantage on lower-validity cues, so no single feature is ever decisive on its own. Unlike Tallying, WADD uses cardinal feature magnitudes and weights them by validity, so it exploits both the sign and the size of each feature-wise comparison as well as inter-cue differences in informativeness. Unlike Equal-Weight, weights differ across features. Behavior is invariant to a shared affine rescaling across options but scales linearly with per-feature weight. When the two weighted sums are equal the model has no basis for preference and the learner must guess. Response noise enters through a softmax over the two weighted sums with inverse temperature beta (interpolating between fully deterministic choice at large beta and uniform guessing at beta = 0), plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+        "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Weighted Additive rule (Payne, Bettman & Johnson\n    # 1993). Stimulus is the pair of option feature vectors for the\n    # current trial: array-like of shape (2, n_features), row 0 =\n    # option A, row 1 = option B. Each option's score is the dot\n    # product of its feature vector with the (subjective) validity\n    # weights. History is ignored: the choice depends only on the\n    # current stimulus.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"WADD expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n    n_features = stim.shape[1]\n\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    w = np.asarray(parameters[\"weights\"], dtype=float)\n    if w.shape[0] != n_features:\n        raise ValueError(\n            f\"weights length {w.shape[0]} != n_features {n_features}.\"\n        )\n\n    # Weighted sum per option (dot product with per-feature weights).\n    scores = stim @ (validities * w)\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability.\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    # Uniform lapse blended into the softmax (standard choice-with-lapse\n    # formulation; epsilon=0.5 yields equiprobable options, matching\n    # the paper's maximum-noise condition).\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities",
+          "weights": "[(0.0, 1.0)] * n_features"
+        },
+        "rationale": null
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_4",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Strategy Mixture: Decision-makers are heterogeneous and use a mixture of non-compensatory and compensatory heuristics. On any given trial, a decision is made either via Take-The-Best (relying solely on the most valid discriminating feature) or Tallying (counting the total number of winning features), governed by a mixing parameter. When these strategies conflict, their opposing choices average out across the population, naturally capturing the ~0.5 aggregate choice proportions observed across experiments without relying on massive uniform noise.",
+      "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be shape (2, n_features).\")\n    \n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    p_ttb = float(parameters[\"p_ttb\"])\n    \n    # Take-The-Best (TTB) predictions\n    order = np.argsort(validities)[::-1]\n    ttb_scores = np.zeros(2)\n    for idx in order:\n        if stim[0, idx] > stim[1, idx]:\n            ttb_scores[0] = 1.0\n            break\n        elif stim[1, idx] > stim[0, idx]:\n            ttb_scores[1] = 1.0\n            break\n            \n    z_ttb = beta * (ttb_scores - np.max(ttb_scores))\n    e_ttb = np.exp(z_ttb)\n    p_ttb_dist = e_ttb / e_ttb.sum()\n    \n    # Tallying predictions\n    a_wins = float(np.sum(stim[0] > stim[1]))\n    b_wins = float(np.sum(stim[1] > stim[0]))\n    tally_scores = np.array([a_wins, b_wins])\n    \n    z_tally = beta * (tally_scores - np.max(tally_scores))\n    e_tally = np.exp(z_tally)\n    p_tally_dist = e_tally / e_tally.sum()\n    \n    # Mixture of the two strategies\n    p_core = p_ttb * p_ttb_dist + (1.0 - p_ttb) * p_tally_dist\n    \n    # Uniform lapse\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+      "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+      "parameters": {
+        "beta": "[0.1, 20.0]",
+        "epsilon": "[0.0, 0.5]",
+        "p_ttb": "[0.0, 1.0]",
+        "validities": "validities"
+      },
+      "rationale": "Following the arbiter's recommendation, this theory models a 'Strategy Mixture'. Instead of assuming all subjects use a single heuristic, it posits that the population consists of a mix of decision-makers (or that subjects probabilistically switch strategies). By computing the choice probabilities for both Take-The-Best (non-compensatory) and Tallying (compensatory) and blending them via the `p_ttb` parameter, the model can capture the ~0.5 aggregate choice proportions. When these heuristics conflict\u2014which is common in the experimental designs\u2014their opposing choices naturally average out across the population, providing a mechanistic explanation for the empirical data without relying on excessive random noise."
+    }
+  }
+}

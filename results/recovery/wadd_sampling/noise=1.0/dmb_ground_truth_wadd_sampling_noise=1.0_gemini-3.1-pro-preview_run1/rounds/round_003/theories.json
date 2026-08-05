@@ -1,0 +1,55 @@
+{
+  "round_idx": 3,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_4",
+      "killed": false,
+      "theory": {
+        "description": "Decision-makers use a Compensatory / Weighted Additive (WADD) strategy, where an overall value for each option is computed by weighting each feature by a subjective transformation of its validity (validity raised to a power) and summing these weighted features. On strict conflict trials, the high weight of the single discriminating cue roughly balances the combined weights of multiple opposing lower-validity cues. This produces a near-zero difference in overall value, naturally resulting in a choice probability near 0.5 without requiring a mixture of distinct heuristics.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    a, b = stim[0], stim[1]\n    \n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    gamma = float(parameters[\"gamma\"])\n    \n    # Subjective transformation of validities\n    w = val ** gamma\n    \n    val_a = np.sum(a * w)\n    val_b = np.sum(b * w)\n    \n    beta = float(parameters[\"beta\"])\n    scores = np.array([val_a, val_b])\n    \n    z = beta * (scores - np.max(scores))\n    p = np.exp(z)\n    p = p / np.sum(p)\n    \n    epsilon = float(parameters[\"epsilon\"])\n    p = (1.0 - epsilon) * p + epsilon * 0.5\n    return p",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))",
+        "parameters": {
+          "gamma": "[3.0, 8.0]",
+          "beta": "[0.1, 2.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's advice, we slightly shift the lower bound of the gamma range from 1.0 to 3.0 (resulting in [3.0, 8.0]). This ensures that the subjective weighting always amplifies the highest-validity cue enough to truly balance out multiple secondary cues, eliminating the slight Tallying bias observed in the previous iteration and bringing the simulated TTB match rate squarely to the empirical ~0.50 level. The rest of the mechanism and parameters are kept exactly the same."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_5",
+      "killed": true,
+      "theory": {
+        "description": "Top-K Tallying with Restricted Scope: Decision-makers simplify complex multi-attribute choices by focusing only on the top K most valid cues, ignoring all lower-validity information. By restricting K to a narrow band (1, 2, or 3) and allowing for a high degree of random guessing (lapse rate), the model produces consistent behavior across individuals while naturally capturing the pervasive ~0.5 choice probabilities on strict conflict trials where the top cues often tie or balance out.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    a, b = stim[0], stim[1]\n    \n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    k = int(parameters[\"k\"])\n    \n    # Ensure k doesn't exceed the number of available features\n    k = min(k, len(val))\n    \n    # Sort cues by validity descending\n    cue_order = np.argsort(-val, kind=\"stable\")\n    top_k_cues = cue_order[:k]\n    \n    # Tally positive features among top K\n    a_score = np.sum(a[top_k_cues])\n    b_score = np.sum(b[top_k_cues])\n    \n    if a_score > b_score:\n        p_core = np.array([1.0, 0.0])\n    elif b_score > a_score:\n        p_core = np.array([0.0, 1.0])\n    else:\n        p_core = np.array([0.5, 0.5])\n        \n    epsilon = float(parameters[\"epsilon\"])\n    p_final = (1.0 - epsilon) * p_core + epsilon * 0.5\n    return p_final\n",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+        "parameters": {
+          "k": "{1, 2, 3}",
+          "epsilon": "[0.0, 1.0]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's advice, we expand the discrete parameter 'k' from {2, 3} to {1, 2, 3}. The previous restriction successfully lowered variance and captured the ~0.5 conflict rates on exps 1, 3, and 4, but caused systematic biases on exps 5 and 6 because k=3 uniquely favors one option while k=2 yields ties. Restoring k=1 introduces a subpopulation that strictly follows the single best cue, perfectly balancing out the k=3 predictions and returning the aggregate metrics on exps 5 and 6 to their empirical values of ~0.50 and ~0.00."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_6",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Conflict-Induced Guessing with Evidence Threshold: Decision-makers evaluate options using simple heuristics (Take The Best and Tallying) but also monitor the overall Weighted Additive (WADD) evidence. When the heuristics make strict opposing predictions, OR when the overall WADD evidence difference between the options is too small to confidently discriminate, the decision-maker experiences uncertainty and resorts to random guessing. This captures the pervasive ~0.5 choice probabilities and low variance across both strict heuristic conflict trials and trials with nominally agreeing heuristics but weak overall evidence.",
+      "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    a, b = stim[0], stim[1]\n    \n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    cue_order = np.argsort(-val, kind=\"stable\")\n    \n    # Determine Take The Best (TTB) winner\n    ttb_winner = None\n    for j in cue_order:\n        if a[j] > b[j]:\n            ttb_winner = 0\n            break\n        elif b[j] > a[j]:\n            ttb_winner = 1\n            break\n            \n    # Determine Tallying winner\n    a_wins = np.sum(a > b)\n    b_wins = np.sum(b > a)\n    if a_wins > b_wins:\n        tally_winner = 0\n    elif b_wins > a_wins:\n        tally_winner = 1\n    else:\n        tally_winner = None\n        \n    # Compute WADD difference\n    wadd_a = np.sum(a * val)\n    wadd_b = np.sum(b * val)\n    wadd_diff = abs(wadd_a - wadd_b)\n    threshold = float(parameters[\"threshold\"])\n        \n    # Check for strict conflict or insufficient WADD evidence\n    conflict = (ttb_winner is not None and tally_winner is not None and ttb_winner != tally_winner)\n    \n    if conflict or (wadd_diff <= threshold):\n        p_core = np.array([0.5, 0.5])\n    else:\n        # No conflict: rely on the agreed winner (or the one that isn't tied)\n        winner = ttb_winner if ttb_winner is not None else tally_winner\n        if winner == 0:\n            p_core = np.array([1.0, 0.0])\n        elif winner == 1:\n            p_core = np.array([0.0, 1.0])\n        else:\n            p_core = np.array([0.5, 0.5])\n            \n    epsilon = float(parameters[\"epsilon\"])\n    p_final = (1.0 - epsilon) * p_core + epsilon * 0.5\n    return p_final",
+      "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))",
+      "parameters": {
+        "epsilon": "[0.0, 0.2]",
+        "threshold": "[0.0, 15.0]",
+        "validities": "validities"
+      },
+      "rationale": "Following the critic's advice, I increased the upper bound of the `threshold` parameter from 5.0 to 15.0. This minimal edit allows the parameter search to find a threshold large enough to classify the larger WADD evidence differences in Experiment 8 as 'too close to call', naturally bringing the choice probabilities down closer to the empirical 0.51 while maintaining the successful fits on all other experiments."
+    }
+  }
+}

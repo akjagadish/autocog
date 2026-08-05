@@ -1,0 +1,257 @@
+# metric_exp00_attempt_01
+
+## System Prompt
+
+You are a psychology researcher proposing a metric in the Decision Making (Binary Features) domain.
+
+Your goal is adversarial: propose a metric that DISCRIMINATES the two theories — i.e., its value, computed on data simulated under your advocated theory, should be as far as possible from its value computed on data simulated under the competing theory. The direction of the gap does not matter; what matters is that the two theories produce visibly different numbers on this metric. The metric is computed on the data collected from the experimental design provided in the prompt. Produce a metric where you're prediction will be much more accurate than the competing theory's prediction on human data.
+
+Your metric is a Python function
+
+    metric(data: pd.DataFrame) -> float
+
+Available imports inside `metric`:
+- numpy as np
+- pandas as pd
+
+The system evaluates your metric in two ways and reports the pair as `point_estimate (var=between_subject_variance)` everywhere downstream:
+- `point_estimate` is `metric(data)` applied to the FULL pooled DataFrame (all subjects together) — the canonical scalar;
+- `between_subject_variance` is the population variance (`ddof=0`) of `metric(subj_df)` re-applied per `subject_id`, summarising how stable the metric is across subjects. If your metric only makes sense on multi-subject data this will fall back to `n/a` and the metric is rejected (the acceptance test below cannot run without it). Prefer metrics that work both on the pooled DataFrame and on a single subject's slice.
+
+Acceptance rule: the system simulates each theory and runs Welch's two-sample t-test on `(point_estimate_self, between_subject_variance_self, N)` vs. `(point_estimate_adv, between_subject_variance_adv, N)`, where N is the number of HUMAN subjects the experiment will actually be run with (a fixed small number, currently 25). Your metric is admitted iff the two-sided p-value is below the significance level (currently alpha=0.01). Implication: a large between-theory gap is NOT enough — if either theory's metric is also highly variable across subjects, N humans won't reliably distinguish them and the metric will be rejected. Aim for contrasts that are both large in mean AND tight per subject.
+
+Do NOT propose metrics that are trivially true for your theory.
+
+
+## User Prompt
+
+## EXPERIMENTAL DOMAIN
+Subjects repeatedly choose between two fictitious products, A and B. Each option is described by a vector of binary expert ratings (each 0 or 1). Every experiment fixes its own feature count (via `validities` length) and per-expert validities; both are LLM-proposed. The validities are communicated to the subject in the instructions. Subjects pick whichever product they believe is of higher quality. There is no trial-by-trial correctness feedback.
+
+Each subject completes ~96 trials in a single block, with order randomized independently per subject. On every trial the subject sees two options A and B, each described by `n_features` binary expert ratings (each 0 or 1). The per-feature validities and n_features are fixed per experiment (design-time choices). Validities are communicated to the subject in the instructions. Both `n_features` and `validities` are exposed to your `predict` via the `parameters` dict. The subject chooses A or B; no correctness feedback is provided after the choice.
+
+## CHOSEN EXPERIMENTAL DESIGN
+**Validities (n_features=5):** [0.9, 0.8, 0.7, 0.6, 0.5]
+
+**Trial pairs (n=8):**
+  trial 1: A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1]
+  trial 2: A=[0, 1, 0, 0, 0]  B=[0, 0, 1, 1, 1]
+  trial 3: A=[0, 0, 1, 0, 0]  B=[0, 0, 0, 1, 1]
+  trial 4: A=[1, 0, 1, 0, 0]  B=[0, 1, 0, 1, 1]
+  trial 5: A=[1, 1, 0, 0, 0]  B=[0, 0, 1, 1, 1]
+  trial 6: A=[0, 1, 1, 0, 0]  B=[1, 0, 0, 1, 1]
+  trial 7: A=[1, 0, 0, 1, 0]  B=[0, 1, 1, 0, 1]
+  trial 8: A=[0, 0, 0, 1, 1]  B=[1, 1, 1, 0, 0]
+
+**Rationale:** To quantitatively dissociate Threshold-based Sequential Search (TSS) from Probabilistic Stopping Sequential Search (PSSS), we exploit the difference between deterministic and probabilistic stopping rules. TSS employs a hard threshold: search terminates exactly when accumulated evidence crosses this threshold. PSSS uses a soft, logistic stopping probability at each step. We use a 5-feature design with linearly descending validities. We design 'compensatory' trials that systematically vary the maximum accumulated evidence and the step at which it is reached (e.g., strong initial evidence for A followed by consistent evidence for B, versus a tie on the first cue followed by moderate evidence for A). TSS predicts a sharp, step-like change in choice probabilities across these trials depending on whether the hard threshold is crossed at step 1, step 2, etc. In contrast, PSSS predicts a smoother, graded change in choice probabilities because the stopping probability scales continuously with the evidence magnitude at each step.
+
+**Computed schedule:** 8 unique pairs × 12 reps = 96 trials per subject.
+
+
+
+## ADVOCATED THEORY
+**Description:** Threshold-based Sequential Search integrates the fast-and-frugal nature of Take-The-Best with the compensatory evidence accumulation of Weighted Additive (WADD) models. Decision-makers search through cues in descending order of their validity, maintaining a running tally of the evidence (weighted by each cue's validity). Instead of stopping at the very first discriminating cue, search terminates only when the absolute accumulated evidence exceeds an internal confidence threshold. If all cues are exhausted without reaching this threshold, the option with the higher accumulated evidence is chosen. This allows for fast, one-reason decisions when a highly valid cue strongly favors one option, while enabling compensatory behavior when early cues provide weak or conflicting evidence.
+
+**Parameters:**
+- threshold: [0.0, 1.25]
+- beta: [0.1, 5.0]
+- epsilon: [0.0, 0.25]
+- validities: validities
+
+**`predict source code`:**
+```python
+def predict(parameters, stimulus, history):
+    import numpy as np
+    
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(f"Expected a (2, n_features) stimulus; got shape {stim.shape}.")
+        
+    validities = np.asarray(parameters["validities"], dtype=float)
+    
+    # Sort cues in descending order of validity
+    order = np.argsort(validities)[::-1]
+    
+    a, b = stim[0], stim[1]
+    evidence = 0.0
+    threshold = float(parameters["threshold"])
+    
+    # Sequential search with evidence accumulation
+    for idx in order:
+        diff = a[idx] - b[idx]
+        evidence += diff * validities[idx]
+        
+        # Stop search if the confidence threshold is met or exceeded
+        if abs(evidence) >= threshold:
+            break
+            
+    # Convert accumulated evidence into discrete choice scores
+    scores = np.zeros(2)
+    if evidence > 0:
+        scores[0] = 1.0
+    elif evidence < 0:
+        scores[1] = 1.0
+        
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+    
+    # Softmax over the scores
+    z = beta * (scores - scores.max())
+    e = np.exp(z)
+    p_core = e / e.sum()
+    
+    # Blend in uniform lapse
+    n_opts = p_core.shape[0]
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+```
+
+**`policy source code`:**
+```python
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities /= probabilities.sum()
+    return np.random.choice(len(probabilities), p=probabilities)
+```
+
+
+## COMPETING THEORY
+**Description:** Probabilistic Stopping Sequential Search
+
+**Parameters:**
+- threshold: [0.0, 1.5]
+- slope: [0.1, 5.0]
+- beta: [0.1, 10.0]
+- epsilon: [0.0, 0.5]
+- validities: validities
+
+**`predict source code`:**
+```python
+def predict(parameters, stimulus, history):
+    import numpy as np
+    
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(f"Expected a (2, n_features) stimulus; got shape {stim.shape}.")
+        
+    validities = np.asarray(parameters["validities"], dtype=float)
+    order = np.argsort(validities)[::-1]
+    
+    a, b = stim[0], stim[1]
+    evidence = 0.0
+    
+    threshold = float(parameters["threshold"])
+    slope = float(parameters["slope"])
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+    
+    p_continue = 1.0
+    p_A = 0.0
+    
+    # Sequential search with probabilistic stopping
+    for i, idx in enumerate(order):
+        diff = a[idx] - b[idx]
+        evidence += diff * validities[idx]
+        
+        # Determine stopping probability at this step
+        if i == len(order) - 1:
+            p_stop = 1.0
+        else:
+            # Logistic function for stopping probability
+            z = -slope * (abs(evidence) - threshold)
+            z = np.clip(z, -50, 50)  # Prevent overflow
+            p_stop = 1.0 / (1.0 + np.exp(z))
+            
+        p_stop_here = p_continue * p_stop
+        p_continue *= (1.0 - p_stop)
+        
+        # Softmax choice probability if search stops at this step
+        z_choice = -beta * evidence
+        z_choice = np.clip(z_choice, -50, 50)
+        p_A_given_stop = 1.0 / (1.0 + np.exp(z_choice))
+        
+        p_A += p_stop_here * p_A_given_stop
+        
+    p_B = 1.0 - p_A
+    probs = np.array([p_A, p_B])
+    
+    # Blend in uniform lapse
+    return (1.0 - epsilon) * probs + epsilon * 0.5
+```
+
+**`policy source code`:**
+```python
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities /= probabilities.sum()
+    return np.random.choice(len(probabilities), p=probabilities)
+```
+
+
+## DATA SCHEMA
+Your metric receives a tidy per-trial pandas DataFrame stacking all subjects (rows grouped by `subject_id`, in trial order). Columns:
+- subject_id: Subject identifier (one row per trial per subject).
+- option_a_ratings: List of n_features binary expert ratings (each 0 or 1) for option A on this trial.
+- option_b_ratings: List of n_features binary expert ratings (each 0 or 1) for option B on this trial.
+- response: 0 if subject chose A, 1 if subject chose B.
+
+## IMPLEMENTATION GUARDRAILS
+Any column in the schema above whose description names a list / tuple / np.ndarray (i.e. a per-trial sequence of values) holds non-scalar cells. Those cells are NOT hashable, so operations that hash row values fail with `TypeError: unhashable type: 'list'`. Treating `<seq_col>` as a placeholder for any such sequence-valued column:
+- Avoid: `data.groupby('<seq_col>')`, `data['<seq_col>'].value_counts()`,     `data['<seq_col>'].nunique()`, `data['<seq_col>'].unique()` (returns     an object array but downstream `set()` / `in dict` will crash),     `set(data['<seq_col>'])`, `data['<seq_col>'].isin([...])` against list     values, or using a list cell as a dict key.
+- If you need a hashable surrogate, project to one first, e.g.:
+    - `data['<seq_col>_key'] = data['<seq_col>'].apply(tuple)` then group by `<seq_col>_key`
+    - `data['<seq_col>_str'] = data['<seq_col>'].apply(lambda x: ''.join(map(str, x)))`
+    Scalar columns (ints, floats, strings like `subject_id`, integer     responses, etc.) hash fine and can be used directly.
+- Generator expressions inside function calls like `map()` or `join()` MUST be     parenthesized. For example:
+    - WRONG: `map(str, int(v) for v in x)` → SyntaxError
+    - RIGHT: `map(str, (int(v) for v in x))` or use a list comp: `[str(int(v)) for v in x]`
+- Always verify your code is syntactically valid Python before returning it.
+
+## METRICS YOU ALREADY TRIED AND FAILED ON
+Each entry below is a metric you previously proposed in this round that did NOT discriminate the two theories at the human sample size — either it errored, its between-subject variance was unavailable, or Welch's t-test on `(self mean, self var, N)` vs. `(adv mean, adv var, N)` returned p ≥ alpha. The `outcome` line is the simulation result (means, between-subject variances, t-statistic and p-value at the human N) on the same `data_self` / `data_adv` your next metric will be evaluated on. Use the numbers to see where your hypothesised contrast collapsed — small mean gap, large per-subject variance, or both — and propose something qualitatively different. Don't repeat the same idea with cosmetic tweaks.
+[0] rationale: In Trial 1 (A=[1,0,0,0,0], B=[0,1,1,1,1]) and Trial 4 (A=[1,0,1,0,0], B=[0,1,0,1,1]), the first cue strongly favors A (evidence +0.9). In Threshold-based Sequential Search (TSS), if the threshold is <= 0.9, search stops immediately at cue 1 and A is chosen for BOTH trials. If the threshold > 0.9, search continues. In both trials, the maximum cumulative evidence never exceeds 0.9 again, so TSS searches to the end. At the end, both trials have negative cumulative evidence for A (-1.7 for Trial 1, -0.3 for Trial 4), so B is chosen. Thus, TSS predicts identical choice probabilities for Trial 1 and Trial 4 (P(A) difference is ~0). In contrast, Probabilistic Stopping Sequential Search (PSSS) is sensitive to the intermediate evidence. Trial 4 has much stronger intermediate evidence for A (+0.8 at step 3) compared to Trial 1 (-0.6 at step 3), leading to a higher probability of stopping and choosing A. Thus, PSSS predicts P(A | Trial 4) > P(A | Trial 1).
+metric_source:
+def metric(data: pd.DataFrame) -> float:
+    data = data.copy()
+    data['A_str'] = data['option_a_ratings'].apply(lambda x: ''.join(map(str, int(v) for v in x)) if isinstance(x[0], (int, float)) else ''.join(map(str, x)))
+    data['B_str'] = data['option_b_ratings'].apply(lambda x: ''.join(map(str, int(v) for v in x)) if isinstance(x[0], (int, float)) else ''.join(map(str, x)))
+    
+    # Fix string conversion in case it's not strictly ints
+    data['A_str'] = data['option_a_ratings'].apply(lambda x: ''.join([str(int(v)) for v in x]))
+    data['B_str'] = data['option_b_ratings'].apply(lambda x: ''.join([str(int(v)) for v in x]))
+    
+    t1_mask = (data['A_str'] == '10000') & (data['B_str'] == '01111')
+    t4_mask = (data['A_str'] == '10100') & (data['B_str'] == '01011')
+    
+    # response is 0 for A, 1 for B. So 1 - mean(response) is P(A)
+    p_a_t1 = 1.0 - data.loc[t1_mask, 'response'].mean()
+    p_a_t4 = 1.0 - data.loc[t4_mask, 'response'].mean()
+    
+    return float(p_a_t4 - p_a_t1)
+outcome: evaluation failed (SyntaxError: Generator expression must be parenthesized (<string>, line 3))
+
+## RESPONSE FORMAT
+Return a JSON object with the following fields:
+- metric: Python source defining def metric(data: pd.DataFrame) -> float.
+- rationale: Reasoning behind this metric; used when interpreting results.
+
+
+## Response
+
+```json
+{
+  "metric_source": "def metric(data: pd.DataFrame) -> float:\n    data = data.copy()\n    data['A_str'] = data['option_a_ratings'].apply(lambda x: ''.join([str(int(v)) for v in x]))\n    data['B_str'] = data['option_b_ratings'].apply(lambda x: ''.join([str(int(v)) for v in x]))\n    \n    t1_mask = (data['A_str'] == '10000') & (data['B_str'] == '01111')\n    t4_mask = (data['A_str'] == '10100') & (data['B_str'] == '01011')\n    \n    p_a_t1 = 1.0 - data.loc[t1_mask, 'response'].mean()\n    p_a_t4 = 1.0 - data.loc[t4_mask, 'response'].mean()\n    \n    # If for some reason a subject has no trials of this type, fill with 0\n    if pd.isna(p_a_t1):\n        p_a_t1 = 0.5\n    if pd.isna(p_a_t4):\n        p_a_t4 = 0.5\n        \n    return float(p_a_t4 - p_a_t1)",
+  "rationale": "In Trial 1 (A=[1,0,0,0,0], B=[0,1,1,1,1]) and Trial 4 (A=[1,0,1,0,0], B=[0,1,0,1,1]), the first cue strongly favors A (evidence +0.9). In Threshold-based Sequential Search (TSS), if the threshold is <= 0.9, search stops immediately at cue 1 and A is chosen for BOTH trials. If the threshold > 0.9, search continues. In both trials, the maximum cumulative evidence never exceeds 0.9 again, so TSS searches to the end. At the end, both trials have negative cumulative evidence for A (-1.7 for Trial 1, -0.3 for Trial 4), so B is chosen. Thus, TSS predicts identical choice probabilities for Trial 1 and Trial 4 (P(A) difference is ~0). In contrast, Probabilistic Stopping Sequential Search (PSSS) is sensitive to the intermediate evidence. Trial 4 has much stronger intermediate evidence for A (+0.8 at step 3) compared to Trial 1 (-0.6 at step 3), leading to a higher probability of stopping and choosing A. Thus, PSSS predicts P(A | Trial 4) > P(A | Trial 1)."
+}
+```
+
+## Usage
+
+```json
+{
+  "prompt_token_count": 4234,
+  "candidates_token_count": 638,
+  "total_token_count": 5719
+}
+```

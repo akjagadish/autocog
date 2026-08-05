@@ -1,0 +1,267 @@
+# metric_exp01_attempt_00
+
+## System Prompt
+
+You are a psychology researcher proposing a metric in the Decision Making (Binary Features) domain.
+
+Your goal is adversarial: propose a metric that DISCRIMINATES the two theories — i.e., its value, computed on data simulated under your advocated theory, should be as far as possible from its value computed on data simulated under the competing theory. The direction of the gap does not matter; what matters is that the two theories produce visibly different numbers on this metric. The metric is computed on the data collected from the experimental design provided in the prompt. Produce a metric where you're prediction will be much more accurate than the competing theory's prediction on human data.
+
+Your metric is a Python function
+
+    metric(data: pd.DataFrame) -> float
+
+Available imports inside `metric`:
+- numpy as np
+- pandas as pd
+
+The system evaluates your metric in two ways and reports the pair as `point_estimate (var=between_subject_variance)` everywhere downstream:
+- `point_estimate` is `metric(data)` applied to the FULL pooled DataFrame (all subjects together) — the canonical scalar;
+- `between_subject_variance` is the population variance (`ddof=0`) of `metric(subj_df)` re-applied per `subject_id`, summarising how stable the metric is across subjects. If your metric only makes sense on multi-subject data this will fall back to `n/a` and the metric is rejected (the acceptance test below cannot run without it). Prefer metrics that work both on the pooled DataFrame and on a single subject's slice.
+
+Acceptance rule: the system simulates each theory and runs Welch's two-sample t-test on `(point_estimate_self, between_subject_variance_self, N)` vs. `(point_estimate_adv, between_subject_variance_adv, N)`, where N is the number of HUMAN subjects the experiment will actually be run with (a fixed small number, currently 25). Your metric is admitted iff the two-sided p-value is below the significance level (currently alpha=0.01). Implication: a large between-theory gap is NOT enough — if either theory's metric is also highly variable across subjects, N humans won't reliably distinguish them and the metric will be rejected. Aim for contrasts that are both large in mean AND tight per subject.
+
+Do NOT propose metrics that are trivially true for your theory.
+
+
+## User Prompt
+
+## EXPERIMENTAL DOMAIN
+Subjects repeatedly choose between two fictitious products, A and B. Each option is described by a vector of binary expert ratings (each 0 or 1). Every experiment fixes its own feature count (via `validities` length) and per-expert validities; both are LLM-proposed. The validities are communicated to the subject in the instructions. Subjects pick whichever product they believe is of higher quality. There is no trial-by-trial correctness feedback.
+
+Each subject completes ~96 trials in a single block, with order randomized independently per subject. On every trial the subject sees two options A and B, each described by `n_features` binary expert ratings (each 0 or 1). The per-feature validities and n_features are fixed per experiment (design-time choices). Validities are communicated to the subject in the instructions. Both `n_features` and `validities` are exposed to your `predict` via the `parameters` dict. The subject chooses A or B; no correctness feedback is provided after the choice.
+
+## CHOSEN EXPERIMENTAL DESIGN
+**Validities (n_features=6):** [0.95, 0.8, 0.75, 0.6, 0.55, 0.5]
+
+**Trial pairs (n=6):**
+  trial 1: A=[1, 0, 0, 1, 1, 1]  B=[0, 1, 1, 0, 0, 0]
+  trial 2: A=[0, 1, 1, 1, 1, 0]  B=[1, 0, 0, 0, 0, 1]
+  trial 3: A=[0, 1, 0, 1, 1, 1]  B=[1, 0, 1, 0, 0, 0]
+  trial 4: A=[1, 1, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 1]
+  trial 5: A=[1, 0, 1, 0, 1, 0]  B=[0, 1, 0, 1, 0, 1]
+  trial 6: A=[0, 1, 1, 1, 0, 0]  B=[1, 0, 0, 0, 1, 1]
+
+**Rationale:** To quantitatively dissociate the Thresholded WADD model (Advocated) from the Tallying + WADD Mixture model (Competing), we exploit the Advocated model's step-function threshold mechanism. The Competing model cannot completely ignore low-validity features without using a very high non-linear scaling parameter (gamma), which simultaneously forces it to over-weight the single best cue (Take-The-Best behavior). We use a 6-feature design with a gap in validities: [0.95, 0.80, 0.75, 0.60, 0.55, 0.50]. In Trial 1, Option A wins on the 0.95 cue and all three low-validity cues, while Option B wins on the 0.80 and 0.75 cues. The Competing model strictly prefers A across its entire parameter space: Tallying favors A (4-to-2), and WADD favors A for all gamma values (either due to the sheer number of features at low gamma, or the dominance of the 0.95 cue at high gamma). However, the Advocated model with a threshold (e.g., theta = 0.70) completely ignores the bottom three cues. This isolates the top three cues, where B's compensatory sum (0.80 + 0.75 = 1.55) outweighs A's single cue (0.95), allowing the Advocated model to strongly prefer B. Other trials further map out the divergence by pitting Tallying against WADD and isolating threshold-driven choice inversions.
+
+**Computed schedule:** 6 unique pairs × 16 reps = 96 trials per subject.
+
+
+
+## ADVOCATED THEORY
+**Description:** Decision makers employ a Thresholded Weighted Additive (WADD) strategy. Instead of integrating all available information or relying entirely on a single cue, subjects impose a depth-of-processing limit by ignoring features whose validities fall below a subjective threshold. Features that exceed this threshold are integrated into a compensatory sum weighted by a non-linear transformation of their validities. By allowing the threshold to be arbitrarily low and constraining the non-linear scaling, the model captures bounded rationality while avoiding an over-reliance on a single best cue.
+
+**Parameters:**
+- beta: [0.01, 10.0]
+- gamma: [0.0, 3.0]
+- theta: [0.0, 1.0]
+- epsilon: [0.0, 0.5]
+- validities: validities
+
+**`predict source code`:**
+```python
+def predict(parameters, state, history):
+    import numpy as np
+    
+    stim = np.asarray(state, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(f"Expected a (2, n_features) state; got shape {stim.shape}.")
+    
+    a, b = stim[0], stim[1]
+    
+    val = np.asarray(parameters["validities"], dtype=float)
+    gamma = float(parameters["gamma"])
+    beta = float(parameters["beta"])
+    theta = float(parameters["theta"])
+    epsilon = float(parameters["epsilon"])
+    
+    # Thresholded WADD Component: Only integrate features whose validities are >= theta
+    mask = val >= theta
+    subjective_weights = np.zeros_like(val)
+    if np.any(mask):
+        subjective_weights[mask] = val[mask] ** gamma
+        
+    sum_weights = np.sum(subjective_weights)
+    if sum_weights > 0:
+        score_a_wadd = np.sum(a * subjective_weights) / sum_weights
+        score_b_wadd = np.sum(b * subjective_weights) / sum_weights
+    else:
+        score_a_wadd, score_b_wadd = 0.5, 0.5
+        
+    scores_wadd = np.array([score_a_wadd, score_b_wadd])
+    z_wadd = beta * (scores_wadd - np.max(scores_wadd))
+    e_wadd = np.exp(z_wadd)
+    p_wadd = e_wadd / np.sum(e_wadd)
+    
+    # Incorporate response noise (lapse rate)
+    p_final = (1.0 - epsilon) * p_wadd + epsilon * np.array([0.5, 0.5])
+    
+    return p_final
+```
+
+**`policy source code`:**
+```python
+def policy(probs):
+    import numpy as np
+    probs = np.asarray(probs, dtype=np.float64)
+    probs /= probs.sum()
+    return int(np.random.choice(len(probs), p=probs))
+```
+
+
+## COMPETING THEORY
+**Description:** Decision makers employ a dual-process or strategy mixture approach when evaluating multi-attribute options. Rather than relying entirely on a single strategy, choices are generated by a probabilistic mixture of a simple, unweighted Tallying heuristic (which counts the number of strictly winning features) and a compensatory Weighted Additive (WADD) strategy (which integrates all features weighted by their subjective validities). To ensure equitable application of choice determinism, the evidence scores for both strategies are normalized to a common [0, 1] scale before applying a shared inverse temperature parameter. The mixture parameter 'alpha' dictates the reliance on Tallying versus WADD, allowing the model to capture exact chance-level responding in scenarios where features tie while maintaining sensitivity to cue validities in general.
+
+**Parameters:**
+- beta: [0.01, 10.0]
+- gamma: [0.0, 5.0]
+- alpha: [0.0, 1.0]
+- epsilon: [0.0, 0.5]
+- validities: validities
+
+**`predict source code`:**
+```python
+def predict(parameters, state, history):
+    import numpy as np
+    
+    stim = np.asarray(state, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(f"Expected a (2, n_features) state; got shape {stim.shape}.")
+    
+    a, b = stim[0], stim[1]
+    n_features = stim.shape[1]
+    
+    val = np.asarray(parameters["validities"], dtype=float)
+    gamma = float(parameters["gamma"])
+    beta = float(parameters["beta"])
+    alpha = float(parameters["alpha"])
+    epsilon = float(parameters["epsilon"])
+    
+    # WADD Component: Weighted sum using non-linearly scaled validities, normalized to [0, 1]
+    subjective_weights = val ** gamma
+    sum_weights = np.sum(subjective_weights)
+    score_a_wadd = np.sum(a * subjective_weights) / sum_weights
+    score_b_wadd = np.sum(b * subjective_weights) / sum_weights
+    scores_wadd = np.array([score_a_wadd, score_b_wadd])
+    
+    z_wadd = beta * (scores_wadd - np.max(scores_wadd))
+    e_wadd = np.exp(z_wadd)
+    p_wadd = e_wadd / np.sum(e_wadd)
+    
+    # Tallying Component: Count of strict feature-wise wins, normalized to [0, 1]
+    a_wins = float(np.sum(a > b)) / n_features
+    b_wins = float(np.sum(b > a)) / n_features
+    scores_tally = np.array([a_wins, b_wins])
+    
+    z_tally = beta * (scores_tally - np.max(scores_tally))
+    e_tally = np.exp(z_tally)
+    p_tally = e_tally / np.sum(e_tally)
+    
+    # Mixture of the two strategies
+    p_mixed = alpha * p_tally + (1.0 - alpha) * p_wadd
+    
+    # Incorporate response noise (lapse rate)
+    return (1.0 - epsilon) * p_mixed + epsilon * np.array([0.5, 0.5])
+```
+
+**`policy source code`:**
+```python
+def policy(probs):
+    import numpy as np
+    probs = np.asarray(probs, dtype=np.float64)
+    probs /= probs.sum()
+    return int(np.random.choice(len(probs), p=probs))
+```
+
+
+## DATA SCHEMA
+Your metric receives a tidy per-trial pandas DataFrame stacking all subjects (rows grouped by `subject_id`, in trial order). Columns:
+- subject_id: Subject identifier (one row per trial per subject).
+- option_a_ratings: List of n_features binary expert ratings (each 0 or 1) for option A on this trial.
+- option_b_ratings: List of n_features binary expert ratings (each 0 or 1) for option B on this trial.
+- response: 0 if subject chose A, 1 if subject chose B.
+
+## IMPLEMENTATION GUARDRAILS
+Any column in the schema above whose description names a list / tuple / np.ndarray (i.e. a per-trial sequence of values) holds non-scalar cells. Those cells are NOT hashable, so operations that hash row values fail with `TypeError: unhashable type: 'list'`. Treating `<seq_col>` as a placeholder for any such sequence-valued column:
+- Avoid: `data.groupby('<seq_col>')`, `data['<seq_col>'].value_counts()`,     `data['<seq_col>'].nunique()`, `data['<seq_col>'].unique()` (returns     an object array but downstream `set()` / `in dict` will crash),     `set(data['<seq_col>'])`, `data['<seq_col>'].isin([...])` against list     values, or using a list cell as a dict key.
+- If you need a hashable surrogate, project to one first, e.g.:
+    - `data['<seq_col>_key'] = data['<seq_col>'].apply(tuple)` then group by `<seq_col>_key`
+    - `data['<seq_col>_str'] = data['<seq_col>'].apply(lambda x: ''.join(map(str, x)))`
+    Scalar columns (ints, floats, strings like `subject_id`, integer     responses, etc.) hash fine and can be used directly.
+- Generator expressions inside function calls like `map()` or `join()` MUST be     parenthesized. For example:
+    - WRONG: `map(str, int(v) for v in x)` → SyntaxError
+    - RIGHT: `map(str, (int(v) for v in x))` or use a list comp: `[str(int(v)) for v in x]`
+- Always verify your code is syntactically valid Python before returning it.
+
+## METRICS YOU ALREADY TRIED AND FAILED ON
+Each entry below is a metric you previously proposed in this round that did NOT discriminate the two theories at the human sample size — either it errored, its between-subject variance was unavailable, or Welch's t-test on `(self mean, self var, N)` vs. `(adv mean, adv var, N)` returned p ≥ alpha. The `outcome` line is the simulation result (means, between-subject variances, t-statistic and p-value at the human N) on the same `data_self` / `data_adv` your next metric will be evaluated on. Use the numbers to see where your hypothesised contrast collapsed — small mean gap, large per-subject variance, or both — and propose something qualitatively different. Don't repeat the same idea with cosmetic tweaks.
+[0] rationale: The metric computes the proportion of 'Option B' choices on Trial 1 and Trial 5. In these trials, Option A has a large number of winning features (including the highest validity cue in Trial 1), making it strictly preferred by both the Tallying heuristic and the unthresholded WADD strategy across the entire parameter space of the Competing theory. Thus, the Competing theory always predicts a preference for A (response closer to 0). In contrast, the Advocated theory's threshold mechanism can ignore the numerous low-validity cues that favor A, allowing the moderately high validities favoring B to dominate. Consequently, the Advocated theory can predict a preference for B (response > 0.5). This creates a stark, qualitative divergence between the two models on these specific trials.
+metric_source:
+def metric(data: pd.DataFrame) -> float:
+    import pandas as pd
+    a_str = data['option_a_ratings'].apply(lambda x: ''.join(map(str, x)))
+    mask = a_str.isin(['100111', '000111'])
+    if mask.sum() == 0:
+        return 0.0
+    return float(data.loc[mask, 'response'].mean())
+outcome: self_sim=0.3506 (var=0.0143) adversary_sim=0.3094 (var=0.0211) welch_t=+1.096 p=0.2787 (N=25, alpha=0.01) -> reject
+
+[1] rationale: By taking the difference in the rate of choosing Option B between trials where Tallying strongly favors B (Trials 2 and 4) and trials where Tallying strongly favors A (Trials 1 and 5), we cancel out the baseline guessing noise caused by high lapse rates (epsilon) and low inverse temperature (beta). The Competing theory, driven by the Tallying heuristic, will show a strongly positive difference because it consistently follows the cue counts. In contrast, the Advocated theory's threshold mechanism frequently ignores the numerous low-validity cues, causing it to choose A in Trials 2 and 4 and B in Trials 1 and 5, thereby significantly compressing or even reversing this difference.
+metric_source:
+def metric(data: pd.DataFrame) -> float:
+    import pandas as pd
+    a_str = data['option_a_ratings'].apply(lambda x: ''.join([str(int(v)) for v in x]))
+    mask_high = a_str.isin(['101000', '110000'])
+    mask_low = a_str.isin(['100111', '000111'])
+    if mask_high.sum() == 0 or mask_low.sum() == 0:
+        return 0.0
+    return float(data.loc[mask_high, 'response'].mean() - data.loc[mask_low, 'response'].mean())
+outcome: self_sim=0.2300 (var=0.0543) adversary_sim=0.3569 (var=0.0739) welch_t=-1.771 p=0.08302 (N=25, alpha=0.01) -> reject
+
+[2] rationale: We calculate the difference in the proportion of 'Option B' choices between Trial 2 and Trial 5. In Trial 2, Option B is strongly favored by both Tallying and WADD across the entire parameter space of the Competing model, leading to a high expected response rate for B. In Trial 5, Option A is strongly favored by the Competing model, leading to a low expected response rate for B. Thus, the Competing model predicts a large positive difference (T2 - T5 > 0). In contrast, the Advocated model's threshold mechanism often ignores low-validity cues. In Trial 2, if the threshold is high, Option A wins on the highest validity cues, reducing the B response rate. In Trial 5, ignoring low-validity cues allows Option B (which possesses the only active cue) to win, increasing the B response rate. This causes the Advocated model to predict a negative or significantly compressed difference, providing a stark divergence between the two models.
+metric_source:
+def metric(data: pd.DataFrame) -> float:
+    import pandas as pd
+    a_str = data['option_a_ratings'].apply(lambda x: ''.join([str(int(v)) for v in x]))
+    t2_mask = a_str == '101000'
+    t5_mask = a_str == '000111'
+    if t2_mask.sum() == 0 or t5_mask.sum() == 0:
+        return 0.0
+    return float(data.loc[t2_mask, 'response'].mean() - data.loc[t5_mask, 'response'].mean())
+outcome: self_sim=0.2375 (var=0.0536) adversary_sim=0.3575 (var=0.0963) welch_t=-1.550 p=0.1282 (N=25, alpha=0.01) -> reject
+
+[3] rationale: This metric isolates the difference in the proportion of 'Option B' choices between Trial 4 and Trial 6. In Trial 4, Option B is strongly favored by both Tallying and WADD across the entire parameter space of the Competing model, leading to a high expected B response. In Trial 6, Option A is strongly favored by the Competing model, leading to a low expected B response. Consequently, the Competing model predicts a large positive difference (T4 - T6 > 0). Conversely, the Advocated model's threshold mechanism can ignore low-validity cues, causing Option A to win in Trial 4 and Option B to win in Trial 6. This leads the Advocated model to predict a negative or significantly compressed difference, clearly distinguishing the two theories.
+metric_source:
+def metric(data: pd.DataFrame) -> float:
+    import pandas as pd
+    a_str = data['option_a_ratings'].apply(lambda x: ''.join([str(int(v)) for v in x]))
+    t4_mask = a_str == '110000'
+    t6_mask = a_str == '010111'
+    if t4_mask.sum() == 0 or t6_mask.sum() == 0:
+        return 0.0
+    return float(data.loc[t4_mask, 'response'].mean() - data.loc[t6_mask, 'response'].mean())
+outcome: self_sim=0.1938 (var=0.0947) adversary_sim=0.3087 (var=0.0876) welch_t=-1.347 p=0.1844 (N=25, alpha=0.01) -> reject
+
+## RESPONSE FORMAT
+Return a JSON object with the following fields:
+- metric: Python source defining def metric(data: pd.DataFrame) -> float.
+- rationale: Reasoning behind this metric; used when interpreting results.
+
+
+## Response
+
+```json
+{
+  "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import pandas as pd\n    a_str = data['option_a_ratings'].apply(lambda x: ''.join([str(int(v)) for v in x]))\n    t13_mask = a_str.isin(['100111', '010111'])\n    t4_mask = a_str == '110000'\n    if t13_mask.sum() == 0 or t4_mask.sum() == 0:\n        return 0.0\n    return float(data.loc[t13_mask, 'response'].mean() - data.loc[t4_mask, 'response'].mean())",
+  "rationale": "This metric contrasts the proportion of 'Option B' choices in Trials 1 & 3 against Trial 4. In Trials 1 and 3, Option A has more winning features and a higher unthresholded WADD sum, leading the Competing model (Tallying + WADD) to strongly prefer A (low B response). In Trial 4, Option B has more winning features and a higher unthresholded WADD sum, leading the Competing model to strongly prefer B (high B response). Thus, the Competing model predicts a strongly negative difference (Trials 1&3 - Trial 4). Conversely, the Advocated model's threshold mechanism frequently ignores the numerous low-validity features. This causes Option B to win in Trials 1 and 3 (reversing the preference to B) and Option A to win in Trial 4 (reversing the preference to A). Therefore, the Advocated model predicts a positive or significantly less negative difference, creating a robust and highly discriminative contrast between the two theories."
+}
+```
+
+## Usage
+
+```json
+{
+  "prompt_token_count": 5469,
+  "candidates_token_count": 400,
+  "total_token_count": 8164
+}
+```

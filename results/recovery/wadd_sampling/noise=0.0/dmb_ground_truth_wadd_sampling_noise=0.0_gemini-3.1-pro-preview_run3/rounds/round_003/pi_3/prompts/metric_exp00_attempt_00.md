@@ -1,0 +1,228 @@
+# metric_exp00_attempt_00
+
+## System Prompt
+
+You are a psychology researcher proposing a metric in the Decision Making (Binary Features) domain.
+
+Your goal is adversarial: propose a metric that DISCRIMINATES the two theories — i.e., its value, computed on data simulated under your advocated theory, should be as far as possible from its value computed on data simulated under the competing theory. The direction of the gap does not matter; what matters is that the two theories produce visibly different numbers on this metric. The metric is computed on the data collected from the experimental design provided in the prompt. Produce a metric where you're prediction will be much more accurate than the competing theory's prediction on human data.
+
+Your metric is a Python function
+
+    metric(data: pd.DataFrame) -> float
+
+Available imports inside `metric`:
+- numpy as np
+- pandas as pd
+
+The system evaluates your metric in two ways and reports the pair as `point_estimate (var=between_subject_variance)` everywhere downstream:
+- `point_estimate` is `metric(data)` applied to the FULL pooled DataFrame (all subjects together) — the canonical scalar;
+- `between_subject_variance` is the population variance (`ddof=0`) of `metric(subj_df)` re-applied per `subject_id`, summarising how stable the metric is across subjects. If your metric only makes sense on multi-subject data this will fall back to `n/a` and the metric is rejected (the acceptance test below cannot run without it). Prefer metrics that work both on the pooled DataFrame and on a single subject's slice.
+
+Acceptance rule: the system simulates each theory and runs Welch's two-sample t-test on `(point_estimate_self, between_subject_variance_self, N)` vs. `(point_estimate_adv, between_subject_variance_adv, N)`, where N is the number of HUMAN subjects the experiment will actually be run with (a fixed small number, currently 25). Your metric is admitted iff the two-sided p-value is below the significance level (currently alpha=0.01). Implication: a large between-theory gap is NOT enough — if either theory's metric is also highly variable across subjects, N humans won't reliably distinguish them and the metric will be rejected. Aim for contrasts that are both large in mean AND tight per subject.
+
+Do NOT propose metrics that are trivially true for your theory.
+
+
+## User Prompt
+
+## EXPERIMENTAL DOMAIN
+Subjects repeatedly choose between two fictitious products, A and B. Each option is described by a vector of binary expert ratings (each 0 or 1). Every experiment fixes its own feature count (via `validities` length) and per-expert validities; both are LLM-proposed. The validities are communicated to the subject in the instructions. Subjects pick whichever product they believe is of higher quality. There is no trial-by-trial correctness feedback.
+
+Each subject completes ~96 trials in a single block, with order randomized independently per subject. On every trial the subject sees two options A and B, each described by `n_features` binary expert ratings (each 0 or 1). The per-feature validities and n_features are fixed per experiment (design-time choices). Validities are communicated to the subject in the instructions. Both `n_features` and `validities` are exposed to your `predict` via the `parameters` dict. The subject chooses A or B; no correctness feedback is provided after the choice.
+
+## CHOSEN EXPERIMENTAL DESIGN
+**Validities (n_features=5):** [0.9, 0.8, 0.7, 0.6, 0.5]
+
+**Trial pairs (n=8):**
+  trial 1: A=[1, 0, 0, 0, 0]  B=[0, 1, 0, 0, 1]
+  trial 2: A=[0, 1, 1, 0, 0]  B=[1, 0, 0, 0, 0]
+  trial 3: A=[1, 0, 0, 1, 0]  B=[0, 1, 1, 0, 0]
+  trial 4: A=[1, 0, 0, 0, 1]  B=[0, 1, 1, 0, 0]
+  trial 5: A=[0, 1, 1, 1, 0]  B=[1, 0, 0, 0, 0]
+  trial 6: A=[1, 0, 1, 0, 0]  B=[0, 1, 0, 1, 1]
+  trial 7: A=[0, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0]
+  trial 8: A=[1, 1, 0, 0, 0]  B=[0, 0, 1, 1, 1]
+
+**Rationale:** To cleanly dissociate the pure Weighted Additive (WADD) theory from the Strategy Mixture theory, we must create a set of trials where the WADD value difference between options varies systematically while the predictions of Take The Best (TTB) and Tallying are orthogonal or directly opposed. In the Strategy Mixture theory, choice probabilities are a rigid linear combination of the three strategies. By designing trials where WADD predicts a strong preference but TTB and Tallying either predict a tie or strongly oppose WADD, we can observe whether choices follow the continuous compensatory differences predicted by pure WADD or the fixed mixture patterns predicted by the competing theory.
+
+**Computed schedule:** 8 unique pairs × 12 reps = 96 trials per subject.
+
+
+
+## ADVOCATED THEORY
+**Description:** Weighted Additive (WADD) Theory: Decision-makers evaluate options using a fully compensatory strategy. They multiply each feature's value by its corresponding cue validity and sum these products to form an overall subjective value for each option. The option with the higher weighted sum is chosen. This allows multiple lower-validity cues to collectively outweigh a single high-validity cue, capturing behavior that falls between pure Take The Best and pure Tallying. To account for empirical response noise, the decision process incorporates a moderate degree of stochasticity.
+
+**Parameters:**
+- beta: [0.1, 5.0]
+- epsilon: [0.1, 0.5]
+- validities: validities
+
+**`predict source code`:**
+```python
+def predict(parameters, state, history):
+    import numpy as np
+    
+    stim = np.asarray(state, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError("WADD expects a (2, n_features) stimulus.")
+        
+    val = np.asarray(parameters["validities"], dtype=float)
+    
+    a, b = stim[0], stim[1]
+    
+    # Calculate weighted sums for each option
+    score_a = np.sum(a * val)
+    score_b = np.sum(b * val)
+    
+    scores = np.array([score_a, score_b])
+    
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+    
+    # Softmax choice rule with max-subtraction for numerical stability
+    z = beta * (scores - np.max(scores))
+    e = np.exp(z)
+    p_core = e / np.sum(e)
+    
+    n_opts = len(scores)
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+```
+
+**`policy source code`:**
+```python
+def policy(probs):
+    import numpy as np
+    probs = np.asarray(probs, dtype=np.float64)
+    probs /= probs.sum()
+    return int(np.random.choice(len(probs), p=probs))
+```
+
+
+## COMPETING THEORY
+**Description:** Strategy Mixture Theory: Decision-makers are heterogeneous, employing different strategies on different trials or across different individuals. The population's behavior is best modeled as a probabilistic mixture of three distinct decision rules: Weighted Additive (WADD) for compensatory evaluation, Tallying for unweighted cue counting, and Take The Best (TTB) for fast lexicographic choice. Each strategy computes its own preference, and the final choice probabilities are a weighted average of these underlying strategies' predictions, plus a uniform lapse rate. This mixture naturally accounts for the intermediate levels of consistency observed with any single heuristic.
+
+**Parameters:**
+- beta: [0.1, 10.0]
+- epsilon: [0.0, 0.5]
+- w_wadd: [0.0, 1.0]
+- w_tally: [0.0, 1.0]
+- w_ttb: [0.0, 1.0]
+- validities: validities
+
+**`predict source code`:**
+```python
+def predict(parameters, state, history):
+    import numpy as np
+    
+    stim = np.asarray(state, dtype=float)
+    val = np.asarray(parameters["validities"], dtype=float)
+    
+    a, b = stim[0], stim[1]
+    
+    # 1. WADD Strategy
+    score_a_wadd = np.sum(a * val)
+    score_b_wadd = np.sum(b * val)
+    scores_wadd = np.array([score_a_wadd, score_b_wadd])
+    
+    # 2. Tallying Strategy
+    a_wins = float(np.sum(a > b))
+    b_wins = float(np.sum(b > a))
+    scores_tally = np.array([a_wins, b_wins])
+    
+    # 3. TTB Strategy
+    cue_order = np.argsort(-val, kind='stable')
+    scores_ttb = np.array([0.0, 0.0])
+    for cue in cue_order:
+        if a[cue] > b[cue]:
+            scores_ttb[0] = 1.0
+            break
+        elif b[cue] > a[cue]:
+            scores_ttb[1] = 1.0
+            break
+    if np.sum(scores_ttb) == 0:
+        scores_ttb = np.array([0.5, 0.5])
+        
+    beta = float(parameters["beta"])
+    
+    def get_probs(scores):
+        z = beta * scores
+        z_shifted = z - np.max(z)
+        e = np.exp(z_shifted)
+        return e / np.sum(e)
+        
+    p_wadd = get_probs(scores_wadd)
+    p_tally = get_probs(scores_tally)
+    p_ttb = get_probs(scores_ttb)
+    
+    w1 = float(parameters["w_wadd"])
+    w2 = float(parameters["w_tally"])
+    w3 = float(parameters["w_ttb"])
+    
+    total_w = w1 + w2 + w3
+    if total_w == 0:
+        w1, w2, w3 = 1.0/3.0, 1.0/3.0, 1.0/3.0
+        total_w = 1.0
+        
+    p_mix = (w1 * p_wadd + w2 * p_tally + w3 * p_ttb) / total_w
+    
+    epsilon = float(parameters["epsilon"])
+    return (1.0 - epsilon) * p_mix + epsilon * np.array([0.5, 0.5])
+```
+
+**`policy source code`:**
+```python
+def policy(probs):
+    import numpy as np
+    probs = np.asarray(probs, dtype=np.float64)
+    probs /= probs.sum()
+    return int(np.random.choice(len(probs), p=probs))
+```
+
+
+## DATA SCHEMA
+Your metric receives a tidy per-trial pandas DataFrame stacking all subjects (rows grouped by `subject_id`, in trial order). Columns:
+- subject_id: Subject identifier (one row per trial per subject).
+- option_a_ratings: List of n_features binary expert ratings (each 0 or 1) for option A on this trial.
+- option_b_ratings: List of n_features binary expert ratings (each 0 or 1) for option B on this trial.
+- response: 0 if subject chose A, 1 if subject chose B.
+
+## IMPLEMENTATION GUARDRAILS
+Any column in the schema above whose description names a list / tuple / np.ndarray (i.e. a per-trial sequence of values) holds non-scalar cells. Those cells are NOT hashable, so operations that hash row values fail with `TypeError: unhashable type: 'list'`. Treating `<seq_col>` as a placeholder for any such sequence-valued column:
+- Avoid: `data.groupby('<seq_col>')`, `data['<seq_col>'].value_counts()`,     `data['<seq_col>'].nunique()`, `data['<seq_col>'].unique()` (returns     an object array but downstream `set()` / `in dict` will crash),     `set(data['<seq_col>'])`, `data['<seq_col>'].isin([...])` against list     values, or using a list cell as a dict key.
+- If you need a hashable surrogate, project to one first, e.g.:
+    - `data['<seq_col>_key'] = data['<seq_col>'].apply(tuple)` then group by `<seq_col>_key`
+    - `data['<seq_col>_str'] = data['<seq_col>'].apply(lambda x: ''.join(map(str, x)))`
+    Scalar columns (ints, floats, strings like `subject_id`, integer     responses, etc.) hash fine and can be used directly.
+- Generator expressions inside function calls like `map()` or `join()` MUST be     parenthesized. For example:
+    - WRONG: `map(str, int(v) for v in x)` → SyntaxError
+    - RIGHT: `map(str, (int(v) for v in x))` or use a list comp: `[str(int(v)) for v in x]`
+- Always verify your code is syntactically valid Python before returning it.
+
+## METRICS YOU ALREADY TRIED AND FAILED ON
+Each entry below is a metric you previously proposed in this round that did NOT discriminate the two theories at the human sample size — either it errored, its between-subject variance was unavailable, or Welch's t-test on `(self mean, self var, N)` vs. `(adv mean, adv var, N)` returned p ≥ alpha. The `outcome` line is the simulation result (means, between-subject variances, t-statistic and p-value at the human N) on the same `data_self` / `data_adv` your next metric will be evaluated on. Use the numbers to see where your hypothesised contrast collapsed — small mean gap, large per-subject variance, or both — and propose something qualitatively different. Don't repeat the same idea with cosmetic tweaks.
+(none yet)
+
+## RESPONSE FORMAT
+Return a JSON object with the following fields:
+- metric: Python source defining def metric(data: pd.DataFrame) -> float.
+- rationale: Reasoning behind this metric; used when interpreting results.
+
+
+## Response
+
+```json
+{
+  "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    \n    def chose_ttb_option(row):\n        a = tuple(row['option_a_ratings'])\n        b = tuple(row['option_b_ratings'])\n        \n        # Identify trials where one option is exactly (1, 0, 0, 0, 0) \n        # and the other has 3 or more positive cues (Trials 5 and 7).\n        if a == (1, 0, 0, 0, 0) and sum(b) >= 3:\n            return 1.0 if row['response'] == 0 else 0.0\n        elif b == (1, 0, 0, 0, 0) and sum(a) >= 3:\n            return 1.0 if row['response'] == 1 else 0.0\n        else:\n            return np.nan\n\n    choices = data.apply(chose_ttb_option, axis=1)\n    return float(choices.dropna().mean())",
+  "rationale": "This metric calculates the proportion of times subjects choose the option favored by the Take The Best (TTB) heuristic (which has only the most valid cue, i.e., [1, 0, 0, 0, 0]) when it competes against an option strongly favored by the Weighted Additive (WADD) strategy (which has 3 or 4 of the remaining cues). Under pure WADD, the compensatory value of the 3+ lower-validity cues easily overwhelms the single highest-validity cue, making choices for the TTB option extremely rare (limited to noise). In contrast, the Strategy Mixture theory predicts a substantially higher baseline probability for choosing the TTB option on these trials, driven by the fixed probabilistic weight placed on the TTB heuristic."
+}
+```
+
+## Usage
+
+```json
+{
+  "prompt_token_count": 3532,
+  "candidates_token_count": 435,
+  "total_token_count": 6978
+}
+```
