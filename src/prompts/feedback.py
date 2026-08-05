@@ -29,7 +29,7 @@ theory and model in the {domain} domain.
 
 The candidate has been simulated on every previously run experiment. For each \
 experiment you are shown the design, the metric, the value the metric takes \
-on real (human / ground-truth) data, and the value it takes on the \
+on real data, and the value it takes on the \
 candidate's simulated data.
 
 {estimate_note}

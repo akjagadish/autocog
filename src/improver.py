@@ -10,7 +10,7 @@ Statelessness:
 - No `history`, no `save()` / `load()` — each `propose_model(...)` call
   stands alone.
 - A per-call `workspace` is used only for writing per-attempt prompt logs to
-  `<workspace>/prompts/`, mirroring `AutoPi` / `Gecco` / `Arbiter`.
+  `<workspace>/prompts/`, mirroring `AutoCog` / `Gecco` / `Arbiter`.
 
 Retry machinery:
 - The LLM's structured output is parsed into a `Model` (from
@@ -21,7 +21,7 @@ Retry machinery:
 
 The output is a runnable `Model`. To attach it back to the unchanged theory
 description, use `make_theory(theory, model)` (or write a YAML via
-`dump_theory_yaml(theory, model, path)` so `AutoPi.from_yaml(...)` can pick
+`dump_theory_yaml(theory, model, path)` so `AutoCog.from_yaml(...)` can pick
 it up unchanged).
 """
 
@@ -96,7 +96,7 @@ class Improver:
             ),
         )
 
-    # --- llm helper (mirrors AutoPi / Gecco / Arbiter) ----------------------
+    # --- llm helper (mirrors AutoCog / Gecco / Arbiter) ----------------------
 
     def _generate_response(
         self,
@@ -408,7 +408,7 @@ def dump_theory_yaml(
     """Write `(theory.description, model.*)` to disk in seed-YAML format.
 
     The output uses the LLM-facing keys (`name`/`theory`/`predict`/`policy`/
-    `parameters`) so `AutoPi.from_yaml(path, ...)` consumes it unchanged.
+    `parameters`) so `AutoCog.from_yaml(path, ...)` consumes it unchanged.
     """
     out = {
         "name": name or "Improved Model",

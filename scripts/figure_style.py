@@ -1,4 +1,4 @@
-"""Shared publication figure style for autopi plots.
+"""Shared publication figure style for autocog plots.
 
 One palette (the user's "neutral harmony" scheme), one base font size, and
 small helpers so every plotting script styles axes and saves figures the
@@ -61,12 +61,6 @@ FAMILY_COLOR: dict[str, str] = {
     "ttb": NEUTRAL_HARMONY["terracotta"],
     "wadd": NEUTRAL_HARMONY["slate"],
     "tallying": NEUTRAL_HARMONY["sage"],
-}
-
-# Judge metrics (family vs algorithm match).
-METRIC_COLOR: dict[str, str] = {
-    "gt_family_match": NEUTRAL_HARMONY["slate"],
-    "gt_algorithm_match": NEUTRAL_HARMONY["terracotta"],
 }
 
 # Categorical cycle for unkeyed series (e.g. one color per ground truth).

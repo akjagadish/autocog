@@ -1,4 +1,4 @@
-"""Evaluate base + surfaced models from an autopi run against humans on
+"""Evaluate base + surfaced models from an autocog run against humans on
 Hilbig (2014) Exp 1, in stimulus choice-proportion space.
 
 For each unique (option_a, option_b) pair the human dataset contains, we
@@ -17,7 +17,7 @@ Each base / surfaced theory from `--run-dir` is replayed on the same
 unique stimulus pairs:
 
   - validities are pinned to the human-task vector ([0.9, 0.8, 0.7, 0.6])
-    regardless of what the autopi run was tuned on, because that is the
+    regardless of what the autocog run was tuned on, because that is the
     cue ordering subjects were told.
   - rating_max=1 because the human ratings are binary; theories whose
     sample_parameters declare `rating_max` get pinned too so any
@@ -72,8 +72,8 @@ from src.theory import Theory  # noqa: E402
 
 
 HUMAN_DATA_DEFAULT: Path = (
-    _REPO_ROOT / "results" / "heuristic_decision_making" / "humans"
-    / "hdm_full_prolific_run_full" / "ttb+tallying" / "prolific_exp"
+    _REPO_ROOT / "results" / "human_decision_making_cardinal"
+    / "ttb+tallying" / "prolific_exp"
 )
 CANONICAL_YAML_DIR: Path = _REPO_ROOT / "theories" / "heuristic_decision_making"
 
@@ -90,7 +90,7 @@ _INT_PARAM_KEYS: tuple[str, ...] = (
 
 # ---------------------------------------------------------------------------
 # Inlined hilibig_battery / recovery_battery helpers (Theory parameter
-# sampling, autopi run-dir traversal). Inlined to keep this script
+# sampling, autocog run-dir traversal). Inlined to keep this script
 # self-contained in environments where the wider battery deps don't
 # install cleanly. Behavior matches `scripts.hilibig_battery` 1:1.
 # ---------------------------------------------------------------------------
@@ -242,7 +242,7 @@ def load_canonical_theories(
     """Load every `*.yaml` under `yaml_dir` as a `Theory`, keyed by the
     file stem (e.g. `ttb`, `wadd`, `tallying`, `ew`). These are the
     paper-faithful canonical heuristics — useful as a fixed reference
-    baseline alongside whatever the autopi run discovered."""
+    baseline alongside whatever the autocog run discovered."""
     if not yaml_dir.is_dir():
         raise FileNotFoundError(f"No canonical YAML dir at {yaml_dir!s}")
     out: dict[str, Theory] = {}
@@ -689,7 +689,7 @@ def _check_design_compatibility(
         or int(design["rating_max"]) != human_rating_max
     ):
         print(
-            f"[eval_hilbig] NOTE: autopi run validities="
+            f"[eval_hilbig] NOTE: autocog run validities="
             f"{design['validities']} rating_max={design['rating_max']} "
             f"differ from human task (validities={human_validities}, "
             f"rating_max={human_rating_max}). Replaying with human "
@@ -822,7 +822,7 @@ def _eval_one(
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         description=(
-            "Evaluate base + surfaced models from an autopi run vs human "
+            "Evaluate base + surfaced models from an autocog run vs human "
             "stimulus choice proportions on Hilbig (2014) Exp 1."
         ),
     )

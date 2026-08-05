@@ -50,7 +50,7 @@ from src.improver import Improver, make_theory
 from src.logger import info
 from src.observation import Observations
 from src.online_config import OnlineConfig  # noqa: F401  (used in commented snippet)
-from src.pi import AutoPi
+from src.autocog import AutoCog
 from src.run_config import REAL_N_SUBJECTS
 from src.theory import Theory
 from src.theory_generator import TheoryGenerator
@@ -64,7 +64,7 @@ parser.add_argument(
     "--condition",
     choices=("baseline", "jsd_metric", "neutral_proposer", "blind_design", "blind_design_jsd"),
     default="baseline",
-    help="Stage-0 condition; selects which AutoPi class fills the slots.",
+    help="Stage-0 condition; selects which AutoCog class fills the slots.",
 )
 parser.add_argument(
     "--design_seed",
@@ -155,14 +155,14 @@ GROUND_TRUTH_YAML = f"{THEORIES_DIR}/{args.ground_truth}.yaml"
 # The design space is binary by construction (ratings ∈ [0, 1]); there is no
 # rating_max to pin, so the experiment class is used directly. Every
 # downstream `experiment_class=` goes through EXPERIMENT_CLASS so the choice is
-# honoured end-to-end (pool loading, AutoPi seeding, Arbiter/Improver/Generator).
+# honoured end-to-end (pool loading, AutoCog seeding, Arbiter/Improver/Generator).
 EXPERIMENT_CLASS: type[DecisionMakingBinaryExperiment] = DecisionMakingBinaryExperiment
 
 # --- ablation condition wiring ------------------------------------------------
 # The slot pis are the ONLY thing a Stage-0 condition changes; everything
 # downstream (run_round, arbiter, improver, generator) is untouched.
-from src.controls import JsdAutoPi, NeutralAutoPi  # noqa: E402
-from src.ablations import BlindAutoPi, BlindJsdAutoPi  # noqa: E402
+from src.controls import JsdAutoCog, NeutralAutoCog  # noqa: E402
+from src.ablations import BlindAutoCog, BlindJsdAutoCog  # noqa: E402
 
 # Agents built via from_config/from_yaml read configs/default.yaml (gemini)
 # regardless of --llm_provider; that made fully-mocked dry-runs impossible.
@@ -174,30 +174,30 @@ CONFIG_PATH = (
 
 
 def _make_slot_pi(*, label, theory, llm_client):
-    """Build the slot AutoPi subclass for the active --condition."""
+    """Build the slot AutoCog subclass for the active --condition."""
     if args.condition == "jsd_metric":
         cal = json.loads(Path("configs/jsd_threshold.json").read_text())
-        return JsdAutoPi(
+        return JsdAutoCog(
             label=label, theory=theory, experiment_class=EXPERIMENT_CLASS,
             llm_client=llm_client,
             jsd_threshold=cal["threshold"], jsd_n_runs=cal["n_runs"],
         )
     if args.condition == "neutral_proposer":
-        return NeutralAutoPi(
+        return NeutralAutoCog(
             label=label, theory=theory, experiment_class=EXPERIMENT_CLASS,
             llm_client=llm_client,
         )
     if args.condition == "blind_design":
-        return BlindAutoPi(
+        return BlindAutoCog(
             label=label, theory=theory, experiment_class=EXPERIMENT_CLASS,
             llm_client=llm_client, seed=args.design_seed,
         )
     if args.condition == "blind_design_jsd":
-        return BlindJsdAutoPi(
+        return BlindJsdAutoCog(
             label=label, theory=theory, experiment_class=EXPERIMENT_CLASS,
             llm_client=llm_client, seed=args.design_seed,
         )
-    return AutoPi(
+    return AutoCog(
         label=label, theory=theory, experiment_class=EXPERIMENT_CLASS,
         llm_client=llm_client,
     )
@@ -537,9 +537,9 @@ def _theory_for_slot(
     slot_idx: int,
     default_yaml: str,
     fallback_label: str,
-    ground_truth: AutoPi,
-) -> AutoPi:
-    """Resolve which `AutoPi` should occupy `slot_idx` for the next round.
+    ground_truth: AutoCog,
+) -> AutoCog:
+    """Resolve which `AutoCog` should occupy `slot_idx` for the next round.
 
     Walks rounds in reverse to find the most recent `next_theory` admitted
     into this slot; falls back to the seed YAML when none has ever been
@@ -553,11 +553,11 @@ def _theory_for_slot(
                 theory=r.next_theory,
                 llm_client=ground_truth.llm_client,
             )
-    # Mirror the original seed path exactly: AutoPi.from_yaml builds its own
+    # Mirror the original seed path exactly: AutoCog.from_yaml builds its own
     # client from configs/default.yaml (NOT the CLI provider/model) — keep
     # that behavior so `--condition baseline` is bit-identical to the
     # original runner, and only swap the class around it.
-    seed_pi = AutoPi.from_yaml(
+    seed_pi = AutoCog.from_yaml(
         default_yaml,
         label=fallback_label,
         experiment_class=EXPERIMENT_CLASS,
@@ -576,7 +576,7 @@ def run_round(
     *,
     pool: Observations,
     run_dir: Path,
-    ground_truth: AutoPi,
+    ground_truth: AutoCog,
     arbiter: Arbiter,
     improver: Improver,
     theory_generator: TheoryGenerator,
@@ -655,7 +655,7 @@ def run_round(
     info(f"[round {round_idx}] slots: 1={pi_1.label}, 2={pi_2.label}")
 
     # Collect "real" data via the ground-truth theory. `REAL_N_SUBJECTS` is
-    # also the N used by `AutoPi.propose_round`'s metric-acceptance Welch
+    # also the N used by `AutoCog.propose_round`'s metric-acceptance Welch
     # test, so the discriminability check uses the exact sample size humans
     # will be run at.
     if obs_pi_1.real_value is None:
@@ -823,7 +823,7 @@ def main(n_rounds: int = N_ROUNDS, run_dir: Path = RUN_DIR) -> None:
     pool_dir = run_dir / "observations"
 
     # Build shared resources once.
-    ground_truth = AutoPi.from_yaml(
+    ground_truth = AutoCog.from_yaml(
         theory_path=GROUND_TRUTH_YAML,
         label="pi_ground_truth",
         experiment_class=EXPERIMENT_CLASS,

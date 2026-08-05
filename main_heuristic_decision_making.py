@@ -50,7 +50,7 @@ def _make_rating_max_locked_class(
     Pydantic's `Field` re-declaration on the subclass narrows the allowed
     range to `[rating_max, rating_max]` AND makes the default the same
     value — so the LLM response schema still advertises the field but any
-    out-of-range proposal is rejected by validation (triggering autopi's
+    out-of-range proposal is rejected by validation (triggering autocog's
     existing propose-and-retry loop), and a correctly-pinned proposal
     validates cleanly. The class name encodes the bound so run logs stay
     self-describing.
@@ -79,7 +79,7 @@ def _make_rating_max_locked_class(
 from src.logger import info
 from src.observation import Observations
 from src.online_config import OnlineConfig  # noqa: F401  (used in commented snippet)
-from src.pi import AutoPi
+from src.autocog import AutoCog
 from src.run_config import REAL_N_SUBJECTS
 from src.theory import Theory
 from src.theory_generator import TheoryGenerator
@@ -139,8 +139,7 @@ parser.add_argument(
         "Results root the run dir is written under. The "
         "<ground_truth>/noise=<eps>/<run_dir> substructure is preserved "
         "beneath it, so one value serves a whole gt/noise/run sweep "
-        "(e.g. --out_path results/heuristic_decision_making/"
-        "synthetic_corrected_theories). Defaults to 'results', reproducing "
+        "(e.g. --out_path results/recovery). Defaults to 'results', reproducing "
         "the historical path."
     ),
 )
@@ -178,7 +177,7 @@ GROUND_TRUTH_YAML = f"{THEORIES_DIR}/{args.ground_truth}.yaml"
 # Pick the experiment class once: either the base (LLM picks rating_max) or
 # a dynamically-generated subclass with rating_max pinned. Every downstream
 # `experiment_class=` goes through HDM_EXPERIMENT_CLASS so the choice is
-# honoured end-to-end (pool loading, AutoPi seeding, Arbiter/Improver/Generator).
+# honoured end-to-end (pool loading, AutoCog seeding, Arbiter/Improver/Generator).
 HDM_EXPERIMENT_CLASS: type[HeuristicDecisionMakingExperiment] = (
     _make_rating_max_locked_class(args.force_rating_max)
     if args.force_rating_max is not None
@@ -522,9 +521,9 @@ def _theory_for_slot(
     slot_idx: int,
     default_yaml: str,
     fallback_label: str,
-    ground_truth: AutoPi,
-) -> AutoPi:
-    """Resolve which `AutoPi` should occupy `slot_idx` for the next round.
+    ground_truth: AutoCog,
+) -> AutoCog:
+    """Resolve which `AutoCog` should occupy `slot_idx` for the next round.
 
     Walks rounds in reverse to find the most recent `next_theory` admitted
     into this slot; falls back to the seed YAML when none has ever been
@@ -533,13 +532,13 @@ def _theory_for_slot(
     for r in reversed(pool.rounds):
         if r.next_theory_idx == slot_idx and r.next_theory is not None:
             label = r.next_theory_label or fallback_label
-            return AutoPi(
+            return AutoCog(
                 label=label,
                 theory=r.next_theory,
                 experiment_class=HDM_EXPERIMENT_CLASS,
                 llm_client=ground_truth.llm_client,
             )
-    return AutoPi.from_yaml(
+    return AutoCog.from_yaml(
         default_yaml,
         label=fallback_label,
         experiment_class=HDM_EXPERIMENT_CLASS,
@@ -550,7 +549,7 @@ def run_round(
     *,
     pool: Observations,
     run_dir: Path,
-    ground_truth: AutoPi,
+    ground_truth: AutoCog,
     arbiter: Arbiter,
     improver: Improver,
     theory_generator: TheoryGenerator,
@@ -629,7 +628,7 @@ def run_round(
     info(f"[round {round_idx}] slots: 1={pi_1.label}, 2={pi_2.label}")
 
     # Collect "real" data via the ground-truth theory. `REAL_N_SUBJECTS` is
-    # also the N used by `AutoPi.propose_round`'s metric-acceptance Welch
+    # also the N used by `AutoCog.propose_round`'s metric-acceptance Welch
     # test, so the discriminability check uses the exact sample size humans
     # will be run at.
     if obs_pi_1.real_value is None:
@@ -797,7 +796,7 @@ def main(n_rounds: int = N_ROUNDS, run_dir: Path = RUN_DIR) -> None:
     pool_dir = run_dir / "observations"
 
     # Build shared resources once.
-    ground_truth = AutoPi.from_yaml(
+    ground_truth = AutoCog.from_yaml(
         theory_path=GROUND_TRUTH_YAML,
         label="pi_ground_truth",
         experiment_class=HDM_EXPERIMENT_CLASS,

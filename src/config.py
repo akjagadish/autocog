@@ -1,7 +1,8 @@
 """Run configuration loaded from YAML at startup.
 
-All per-run knobs live here. Domain-level framing (what a stimulus is, fit
-protocol, canonical stimuli) lives in domains/<name>/domain.yaml instead.
+All per-run knobs live here. Domain-level framing (what a stimulus is, which
+seed theories to debate) is passed explicitly by the `main_*.py` entry points
+rather than read from this file.
 """
 from __future__ import annotations
 
@@ -37,8 +38,6 @@ class LLMConfig(BaseModel):
 
 
 class RunConfig(BaseModel):
-    domain: str
-    seed_theories: list[str] = Field(..., min_length=2, max_length=2)
     llm: LLMConfig = LLMConfig()
     n_rounds: int = 5
     seed: int = 42

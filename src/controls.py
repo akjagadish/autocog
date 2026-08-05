@@ -13,7 +13,7 @@ from src.jsd import _per_trial_bernoulli, _per_trial_lag1, choice_matrix, jsd
 from src.logger import log
 from src.metric import Metric
 from src.observation import Observation, Observations
-from src.pi import AutoPi
+from src.autocog import AutoCog
 from src.prompts.experiment_proposal import _format_ledger
 
 if TYPE_CHECKING:
@@ -88,14 +88,14 @@ def render_neutral_experiment_proposal(
     return system_prompt, user_prompt
 
 
-class NeutralAutoPi(AutoPi):
+class NeutralAutoCog(AutoCog):
     """neutral_proposer ablation: same metric + Welch acceptance machinery
     as control (inherited propose_round); only the experiment-proposal
     prompt is swapped for a neutral, non-advocative framing."""
 
     def _llm_propose_experiment(
         self,
-        adversary: "AutoPi",
+        adversary: "AutoCog",
         *,
         ledger: list["Experiment"],
         workspace: Path | None = None,
@@ -298,7 +298,7 @@ def make_jsd_to_self_metric(experiment, m_self: np.ndarray) -> Metric:
     )
 
 
-class JsdAutoPi(AutoPi):
+class JsdAutoCog(AutoCog):
     """jsd_metric control: pis propose experiments via the SAME LLM prompt
     as baseline, but acceptance replaces LLM-metric + Welch with
     sequence-aware JSD > threshold, and the observation's metric is the
@@ -318,7 +318,7 @@ class JsdAutoPi(AutoPi):
 
     def propose_round(
         self,
-        adversary: AutoPi,
+        adversary: AutoCog,
         pool: Observations,
         *,
         workspace: Path | None = None,
@@ -336,7 +336,7 @@ class JsdAutoPi(AutoPi):
                 workspace=workspace,
                 log_label=f"experiment_attempt_{k_exp:02d}",
             )
-            # Mirror baseline AutoPi.propose_round: a single bad experiment
+            # Mirror baseline AutoCog.propose_round: a single bad experiment
             # (degenerate design that makes simulation/JSD/metric throw) must
             # be rejected, not crash a multi-round run. Catch, log, reject,
             # and try the next proposal.

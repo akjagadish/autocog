@@ -32,16 +32,23 @@ import argparse
 import json
 import random
 import re
+import sys
 import zlib
 from pathlib import Path
 
 import numpy as np
 from pydantic import ValidationError
 
-from src.ablations import random_design
-from src.decision_making_binary_features.experiment import DecisionMakingBinaryExperiment
-from src.jsd import sequence_jsd
-from src.theory import Theory
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from src.ablations import random_design  # noqa: E402
+from src.decision_making_binary_features.experiment import (  # noqa: E402
+    DecisionMakingBinaryExperiment,
+)
+from src.jsd import sequence_jsd  # noqa: E402
+from src.theory import Theory  # noqa: E402
 
 RESPONSE_JSON_RE = re.compile(r"## Response\s+```json\s+(\{.*?\})\s+```", re.DOTALL)
 DESIGN_KEYS = ("validities", "trial_a_ratings", "trial_b_ratings")

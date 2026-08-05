@@ -1,6 +1,6 @@
-"""Run-agnostic self-comparison: score an autopi run's surfaced theories
+"""Run-agnostic self-comparison: score an autocog run's surfaced theories
 against the run's OWN discovery behavior (the per-round JSONL observations),
-for ANY run. Every autopi run shares the same on-disk layout
+for ANY run. Every autocog run shares the same on-disk layout
 (rounds/round_NNN/, observations/data/round_NNN_obs_MM.jsonl,
 observations/state.json), so nothing about run size is hardcoded.
 
@@ -44,7 +44,7 @@ from scripts.eval_human_trajectory import (  # noqa: E402
     plot_metric_trajectory_per_metric,
 )
 from scripts.jsonl_to_hilbig_exp import convert  # noqa: E402
-from scripts.plot_autopi_convergence import theory_colors  # noqa: E402
+from scripts.plot_autocog_convergence import theory_colors  # noqa: E402
 
 GROUND_TRUTH_LABEL = "Centaur"
 
@@ -227,7 +227,7 @@ def run_cumulative(
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
-        description="Self-comparison of an autopi run vs its own behavior.",
+        description="Self-comparison of an autocog run vs its own behavior.",
     )
     p.add_argument("--run-dir", type=Path, required=True)
     p.add_argument(

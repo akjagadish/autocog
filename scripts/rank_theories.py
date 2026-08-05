@@ -1,4 +1,4 @@
-"""Rank base / surfaced / extra theories from an autopi human-eval run.
+"""Rank base / surfaced / extra theories from an autocog human-eval run.
 
 `eval_human.py` writes, per experiment, an `eval_hilbig_per_stimulus.csv`
 holding each theory's predicted P(B) alongside the human pooled P(B) for

@@ -23,7 +23,7 @@ N_ROUNDS="${N_ROUNDS:-5}"
 LLM_PROVIDER="${LLM_PROVIDER:-gemini}"
 LLM_MODEL="${LLM_MODEL:-gemini-3.1-pro-preview}"
 RUN_ID="${RUN_ID:-seedgt0}"
-OUT_DIR="${OUT_DIR:-results/heuristic_decision_making/seed_gt_control}"
+OUT_DIR="${OUT_DIR:-results/controls/seed_gt_control}"
 THEORIES_DIR="theories/heuristic_decision_making"
 ADVERSARY="tallying_sampling"   # fixed slot-2 seed for every run
 

@@ -43,15 +43,15 @@ from pathlib import Path
 
 import numpy as np
 
-_REPO = Path("/Users/aj9225/Local/autopi")
+_REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO))
 from src.theory import Theory  # noqa: E402
 
 YAML_DIR = _REPO / "theories" / "heuristic_decision_making"
 EMPTY_HISTORY = {"stimulus": [], "label": [],
                  "previous_stimuli": [], "previous_labels": []}
-WADD_ROOT = _REPO / "results/heuristic_decision_making/synthetic/wadd"
-OUT_PNG = (_REPO / "results/heuristic_decision_making/synthetic/"
+WADD_ROOT = _REPO / "results/synthetic_cardinal/wadd"
+OUT_PNG = (_REPO / "results/synthetic_cardinal/"
            "wadd_generator_check.png")
 NOISES = (0.0, 0.05, 0.3)
 N_SUBJ_MODEL = 400

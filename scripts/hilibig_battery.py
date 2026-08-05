@@ -2,7 +2,7 @@
 ground-truth models.
 
 This is the decision-making analog of `recovery_battery.py` / `shepard_battery.py`.
-For an AutoPi run directory (e.g.
+For an AutoCog run directory (e.g.
 `results/wadd/noise=0.3/hdm_ground_truth_wadd_noise=0.3_gemini-3.1-pro-preview_run2`),
 it loads the models that surfaced during discovery and replays them on the
 EXACT trial pairs the subjects saw, alongside the paper-faithful
@@ -39,7 +39,18 @@ if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
 from src.theory import Theory  # noqa: E402
-from scripts.recovery_battery import INT_PARAM_KEYS  # noqa: E402
+
+# Mirrors `scripts.recovery_battery.INT_PARAM_KEYS`. Inlined so this script
+# stays importable without recovery_battery's category-learning deps
+# (`domains.*`), which autocog does not ship — the rest of that module's
+# surface isn't needed here. `eval_hilbig.py` / `eval_human.py` inline the
+# same tuple for the same reason.
+INT_PARAM_KEYS: tuple[str, ...] = (
+    "n_categories",
+    "n_simulations",
+    "max_search_steps",
+    "seed",
+)
 
 
 YAML_DIR = _REPO_ROOT / "theories" / "heuristic_decision_making"
@@ -695,7 +706,7 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         description=(
             "Replay base / surfaced / ground-truth models on the Hilbig "
-            "heuristic-decision-making trials from an autopi run-dir."
+            "heuristic-decision-making trials from an autocog run-dir."
         )
     )
     p.add_argument(

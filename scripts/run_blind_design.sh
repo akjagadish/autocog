@@ -30,4 +30,4 @@ for GT in ttb_sampling take_the_worst perseveration; do
 done
 
 echo "=== all runs done; compute summary ==="
-python scripts/summarize_compute.py results/condition_blind_design/*/*/dmb_ground_truth_*blind* || true
+python scripts/summarize_compute.py results/controls/condition_blind_design/*/*/dmb_ground_truth_*blind* || true

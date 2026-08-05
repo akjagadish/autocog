@@ -32,7 +32,7 @@ run_gt() {
     local GT="$1"
     for RUN in 0 1 2; do
         local LOG="logs/blind_design_jsd/${GT}_run${RUN}.log"
-        local DIR="results/condition_blind_design_jsd/${GT}/noise=0.0/dmb_ground_truth_${GT}_noise=0.0_${LLM_MODEL}_runblindjsd${RUN}"
+        local DIR="results/controls/condition_blind_design_jsd/${GT}/noise=0.0/dmb_ground_truth_${GT}_noise=0.0_${LLM_MODEL}_runblindjsd${RUN}"
         # A finished round writes one "— post-admit" leaderboard entry; >= ROUNDS
         # of them means the run is complete.
         local done_rounds
@@ -64,4 +64,4 @@ done
 wait
 
 echo "=== all runs done; compute summary ==="
-python scripts/summarize_compute.py results/condition_blind_design_jsd/*/*/dmb_ground_truth_*blindjsd* || true
+python scripts/summarize_compute.py results/controls/condition_blind_design_jsd/*/*/dmb_ground_truth_*blindjsd* || true

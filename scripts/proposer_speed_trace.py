@@ -10,7 +10,7 @@ perseveration is excluded: its per-pair metric is degenerate (chance ~=
 ceiling); use proposer_perseveration_behavior.py instead.
 
 Usage: PYTHONPATH=. python scripts/proposer_speed_trace.py
-Writes results/heuristic_decision_making/proposer_comparison/speed_trace.json
+Writes results/controls/proposer_comparison/speed_trace.json
 """
 from __future__ import annotations
 
@@ -37,9 +37,9 @@ N_DRAWS = 100
 GOOD_FRAC = 0.9  # threshold for "good"; full trajectories are reported so
                  # readers can re-threshold (sensitivity noted in review)
 THEORIES_DIR = Path("theories/heuristic_decision_making")
-NP_ROOT = Path("results/heuristic_decision_making/ablation_stage0/condition_neutral_proposer")
-ADV_ROOT = Path("results/heuristic_decision_making/synthetic_corrected_theories_binary_sampling")
-OUT = Path("results/heuristic_decision_making/proposer_comparison/speed_trace.json")
+NP_ROOT = Path("results/controls/ablation_stage0/condition_neutral_proposer")
+ADV_ROOT = Path("results/recovery")
+OUT = Path("results/controls/proposer_comparison/speed_trace.json")
 
 RUNS = {
     "ttb_sampling": ["full1", "full2", "full3"],

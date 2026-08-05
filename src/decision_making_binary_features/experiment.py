@@ -155,13 +155,12 @@ class DecisionMakingBinaryExperiment(Experiment):
         description=(
             "Per-expert validities, one per feature. Each must be in "
             "[0.5, 1.0]; order is free (no descending requirement — "
-            "heuristics that rely on validity-ordering re-sort internally). "
+            "theories that depend on validity order re-sort internally). "
             "Length determines n_features for the whole experiment and must "
             "match the rating-list length in every trial pair. Pick a "
             "spread (at least one high validity and at least one low one) "
-            "— uniform validities (e.g. all 0.7) collapse WADD into a "
-            "scaled Equal-Weight rule and make them indistinguishable by "
-            "any decision."
+            "— uniform validities (e.g. all 0.7) make many candidate "
+            "theories indistinguishable, so spread them out."
         ),
     )
     trial_a_ratings: list[list[int]] = Field(
@@ -178,8 +177,8 @@ class DecisionMakingBinaryExperiment(Experiment):
         description=(
             "List of option-B rating vectors, one per trial. Same length "
             "and shape constraints as `trial_a_ratings`. Pick trials that "
-            "let the intended heuristics (TTB, EQW, Tallying, WADD) be "
-            "dissociated; avoid trials where every heuristic agrees."
+            "let the intended theories be "
+            "dissociated; avoid trials where every theory agrees."
         ),
     )
 
@@ -267,11 +266,10 @@ class DecisionMakingBinaryExperiment(Experiment):
             f"each expert's advertised accuracy; subjects are told these "
             f"values up front. Then choose "
             f"`trial_a_ratings/trial_b_ratings` (each rating value in "
-            f"[0, 1]) so that the intended heuristics (e.g. TTB, "
-            f"EQW, Tallying, WADD) make distinguishable predictions: avoid "
-            f"degenerate pairs where every heuristic agrees, and prefer "
-            f"pairs that dissociate single-feature focus from "
-            f"feature-summing strategies. Validities and the "
+            f"[0, 1]) so that the intended decision-making theories make "
+            f"distinguishable predictions: avoid degenerate pairs where "
+            f"every theory agrees, and prefer pairs that maximally "
+            f"dissociate the candidate theories. Validities and the "
             f"trial ratings together define the design; they are fixed "
             f"across all trials in this experiment. No trial-by-trial "
             f"correctness feedback. The total number of trials per subject "

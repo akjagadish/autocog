@@ -61,7 +61,7 @@ from src.llm import LLMClient
 from src.logger import info
 from src.observation import Observations
 from src.online_config import OnlineConfig  # noqa: F401  (used in commented snippet)
-from src.pi import AutoPi
+from src.autocog import AutoCog
 from src.run_config import REAL_N_SUBJECTS
 from src.theory import Theory
 from src.theory_generator import TheoryGenerator
@@ -86,7 +86,7 @@ parser.add_argument(
     default=0.05,
     help=(
         "Welch-test significance threshold used by theorist proposal "
-        "acceptance (`AutoPi.propose_round(alpha=...)`)."
+        "acceptance (`AutoCog.propose_round(alpha=...)`)."
     ),
 )
 parser.add_argument(
@@ -95,7 +95,7 @@ parser.add_argument(
     default=None,
     help=(
         "Synthetic subjects per theory used by the proposer's pre-flight "
-        "discriminability simulation (`AutoPi.propose_round(n_runs=...)`). "
+        "discriminability simulation (`AutoCog.propose_round(n_runs=...)`). "
         "These runs estimate the predicted metric mean & between-subject "
         "variance under each competing theory; those estimates are then "
         "plugged into a Welch t-test with N=--real_n_subjects to decide "
@@ -252,7 +252,7 @@ INITIAL_SEEDS: tuple[str, str] = (
 # The design space is binary by construction (ratings in [0, 1]); there is no
 # rating_max to pin, so the experiment class is used directly. Every downstream
 # `experiment_class=` goes through EXPERIMENT_CLASS so the choice is honoured
-# end-to-end (pool loading, AutoPi seeding, Arbiter/Improver/Generator).
+# end-to-end (pool loading, AutoCog seeding, Arbiter/Improver/Generator).
 EXPERIMENT_CLASS: type[DecisionMakingBinaryExperiment] = DecisionMakingBinaryExperiment
 if args.online_max_trials is not None:
     EXPERIMENT_CLASS.MAX_TRIALS = int(args.online_max_trials)
@@ -596,24 +596,24 @@ def _theory_for_slot(
     default_yaml: str,
     fallback_label: str,
     llm_client: LLMClient,
-) -> AutoPi:
-    """Resolve which `AutoPi` should occupy `slot_idx` for the next round.
+) -> AutoCog:
+    """Resolve which `AutoCog` should occupy `slot_idx` for the next round.
 
     Walks rounds in reverse to find the most recent `next_theory` admitted
     into this slot; falls back to the seed YAML when none has ever been
     pinned (i.e. on the very first round). `llm_client` is shared across
-    every spawned `AutoPi` so the whole run talks to the same model.
+    every spawned `AutoCog` so the whole run talks to the same model.
     """
     for r in reversed(pool.rounds):
         if r.next_theory_idx == slot_idx and r.next_theory is not None:
             label = r.next_theory_label or fallback_label
-            return AutoPi(
+            return AutoCog(
                 label=label,
                 theory=r.next_theory,
                 experiment_class=EXPERIMENT_CLASS,
                 llm_client=llm_client,
             )
-    return AutoPi.from_yaml(
+    return AutoCog.from_yaml(
         default_yaml,
         label=fallback_label,
         experiment_class=EXPERIMENT_CLASS,
@@ -845,7 +845,7 @@ def run_round(
     # Collect "real" data ONLINE from real participants (Firebase /
     # Prolific). There is no synthetic ground-truth theory in this script —
     # the human data IS the ground truth. `real_n_subjects` is also the N
-    # used by `AutoPi.propose_round`'s metric-acceptance Welch test, so the
+    # used by `AutoCog.propose_round`'s metric-acceptance Welch test, so the
     # discriminability check uses the exact sample size humans will be run
     # at.
     pending_obs: list = []
@@ -1067,9 +1067,9 @@ def main(n_rounds: int = N_ROUNDS, run_dir: Path = RUN_DIR) -> None:
     """
     pool_dir = run_dir / "observations"
 
-    # One LLM client shared by every spawned `AutoPi` (slot 1, slot 2, the
+    # One LLM client shared by every spawned `AutoCog` (slot 1, slot 2, the
     # improver, the theory-generator) so the whole run talks to the same
-    # model. There is no longer a "ground truth" `AutoPi` instance — the
+    # model. There is no longer a "ground truth" `AutoCog` instance — the
     # data comes from real participants, not from a stand-in theory.
     from src.config import LLMConfig
     from src.llm import make_client

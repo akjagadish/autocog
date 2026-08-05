@@ -12,7 +12,7 @@ NaN by definition (zero target variance) and its MSE scale is degenerate
 (chance ~= ceiling); use proposer_perseveration_behavior.py for that GT.
 
 Usage: PYTHONPATH=. python scripts/proposer_outcome_speed.py
-Writes results/heuristic_decision_making/proposer_comparison/outcome_speed.json
+Writes results/controls/proposer_comparison/outcome_speed.json
 """
 from __future__ import annotations
 
@@ -43,9 +43,9 @@ CAP = 5
 LAST = CAP - 1
 N_DRAWS = 100
 THEORIES_DIR = Path("theories/heuristic_decision_making")
-NP_ROOT = Path("results/heuristic_decision_making/ablation_stage0/condition_neutral_proposer")
-ADV_ROOT = Path("results/heuristic_decision_making/synthetic_corrected_theories_binary_sampling")
-OUT = Path("results/heuristic_decision_making/proposer_comparison/outcome_speed.json")
+NP_ROOT = Path("results/controls/ablation_stage0/condition_neutral_proposer")
+ADV_ROOT = Path("results/recovery")
+OUT = Path("results/controls/proposer_comparison/outcome_speed.json")
 
 RUNS = {
     "ttb_sampling": (["full1", "full2", "full3"], ["run1", "run2", "run3"]),

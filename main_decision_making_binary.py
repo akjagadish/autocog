@@ -50,7 +50,7 @@ from src.improver import Improver, make_theory
 from src.logger import info
 from src.observation import Observations
 from src.online_config import OnlineConfig  # noqa: F401  (used in commented snippet)
-from src.pi import AutoPi
+from src.autocog import AutoCog
 from src.run_config import REAL_N_SUBJECTS
 from src.theory import Theory
 from src.theory_generator import TheoryGenerator
@@ -139,7 +139,7 @@ GROUND_TRUTH_YAML = f"{THEORIES_DIR}/{args.ground_truth}.yaml"
 # The design space is binary by construction (ratings ∈ [0, 1]); there is no
 # rating_max to pin, so the experiment class is used directly. Every
 # downstream `experiment_class=` goes through EXPERIMENT_CLASS so the choice is
-# honoured end-to-end (pool loading, AutoPi seeding, Arbiter/Improver/Generator).
+# honoured end-to-end (pool loading, AutoCog seeding, Arbiter/Improver/Generator).
 EXPERIMENT_CLASS: type[DecisionMakingBinaryExperiment] = DecisionMakingBinaryExperiment
 
 # Where the run lives on disk.
@@ -476,9 +476,9 @@ def _theory_for_slot(
     slot_idx: int,
     default_yaml: str,
     fallback_label: str,
-    ground_truth: AutoPi,
-) -> AutoPi:
-    """Resolve which `AutoPi` should occupy `slot_idx` for the next round.
+    ground_truth: AutoCog,
+) -> AutoCog:
+    """Resolve which `AutoCog` should occupy `slot_idx` for the next round.
 
     Walks rounds in reverse to find the most recent `next_theory` admitted
     into this slot; falls back to the seed YAML when none has ever been
@@ -487,13 +487,13 @@ def _theory_for_slot(
     for r in reversed(pool.rounds):
         if r.next_theory_idx == slot_idx and r.next_theory is not None:
             label = r.next_theory_label or fallback_label
-            return AutoPi(
+            return AutoCog(
                 label=label,
                 theory=r.next_theory,
                 experiment_class=EXPERIMENT_CLASS,
                 llm_client=ground_truth.llm_client,
             )
-    return AutoPi.from_yaml(
+    return AutoCog.from_yaml(
         default_yaml,
         label=fallback_label,
         experiment_class=EXPERIMENT_CLASS,
@@ -504,7 +504,7 @@ def run_round(
     *,
     pool: Observations,
     run_dir: Path,
-    ground_truth: AutoPi,
+    ground_truth: AutoCog,
     arbiter: Arbiter,
     improver: Improver,
     theory_generator: TheoryGenerator,
@@ -583,7 +583,7 @@ def run_round(
     info(f"[round {round_idx}] slots: 1={pi_1.label}, 2={pi_2.label}")
 
     # Collect "real" data via the ground-truth theory. `REAL_N_SUBJECTS` is
-    # also the N used by `AutoPi.propose_round`'s metric-acceptance Welch
+    # also the N used by `AutoCog.propose_round`'s metric-acceptance Welch
     # test, so the discriminability check uses the exact sample size humans
     # will be run at.
     if obs_pi_1.real_value is None:
@@ -751,7 +751,7 @@ def main(n_rounds: int = N_ROUNDS, run_dir: Path = RUN_DIR) -> None:
     pool_dir = run_dir / "observations"
 
     # Build shared resources once.
-    ground_truth = AutoPi.from_yaml(
+    ground_truth = AutoCog.from_yaml(
         theory_path=GROUND_TRUTH_YAML,
         label="pi_ground_truth",
         experiment_class=EXPERIMENT_CLASS,

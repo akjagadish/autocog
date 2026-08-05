@@ -52,9 +52,9 @@ from scripts.recovery_correlation import (  # noqa: E402
 )
 
 FAMILIES_DEFAULT = ("ttb_sampling", "take_the_worst", "perseveration")
-BLIND_ROOT_DEFAULT = Path("results/condition_blind_design")
+BLIND_ROOT_DEFAULT = Path("results/controls/condition_blind_design")
 BASELINE_ROOT_DEFAULT = Path(
-    "results/heuristic_decision_making/synthetic_corrected_theories_binary_sampling"
+    "results/recovery"
 )
 
 

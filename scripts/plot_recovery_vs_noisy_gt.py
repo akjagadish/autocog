@@ -8,7 +8,7 @@ ceiling: gt@ε vs gt@ε, flat at the sampling floor):
 
   bars (vs noisy gt@ε):
     seed                       - round-0 starting (competitor) theories.
-    surfaced                   - theories autopi discovered.
+    surfaced                   - theories autocog discovered.
     surfaced (best per run)    - each run-dir's best surfaced theory, averaged.
   reference lines (one segment per ε):
     gt (dashed)                - the noisy gt@ε vs an independent noisy draw of

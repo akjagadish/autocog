@@ -20,8 +20,8 @@ from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BUNDLE = (
-    _REPO_ROOT / "results/heuristic_decision_making/humans/"
-    "hdm_full_prolific_run_full/ttb+tallying/preregistration_visualization"
+    _REPO_ROOT / "results/human_decision_making_cardinal/"
+    "ttb+tallying/preregistration_visualization"
 )
 
 # layout name -> (bundle module, render function). Each function returns the

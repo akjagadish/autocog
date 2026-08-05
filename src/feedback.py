@@ -12,7 +12,7 @@ experiment, return a `FeedbackVerdict`:
 
 Statelessness:
 - No persistence of its own. Per-call `workspace` controls where prompt
-  logs go (`<workspace>/prompts/<log_label>.md`), mirroring AutoPi /
+  logs go (`<workspace>/prompts/<log_label>.md`), mirroring AutoCog /
   Arbiter / Improver.
 """
 
@@ -91,7 +91,7 @@ class Feedback:
             llm_client=llm_client,
         )
 
-    # --- llm helper (mirrors AutoPi / Improver / Arbiter) -------------------
+    # --- llm helper (mirrors AutoCog / Improver / Arbiter) -------------------
 
     def _generate_response(
         self,

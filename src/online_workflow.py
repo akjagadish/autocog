@@ -41,7 +41,7 @@ def _build_payload(experiments, conditions, condition_doc_fn, *, share_template=
     With ``share_template=False``, every experiment is compiled
     independently. Use this when you mix experiments whose stimulus
     structure / `FunctionVariable` args differ across conditions
-    (e.g. autopi domain experiments with per-experiment design parameters
+    (e.g. autocog domain experiments with per-experiment design parameters
     like `validities` / `rating_max`).
     """
     if not experiments:

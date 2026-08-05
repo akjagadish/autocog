@@ -14,7 +14,7 @@ GT="${GT:-ttb_sampling}"
 N_ROUNDS="${N_ROUNDS:-5}"
 LLM_PROVIDER="${LLM_PROVIDER:-gemini}"
 LLM_MODEL="${LLM_MODEL:-gemini-3.1-pro-preview}"
-OUT_DIR="${OUT_DIR:-results/heuristic_decision_making/ablation_stage0}"
+OUT_DIR="${OUT_DIR:-results/controls/ablation_stage0}"
 
 for COND in baseline jsd_metric neutral_proposer; do
   LOG="logs/ablation_smoke/${COND}_${GT}.log"

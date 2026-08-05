@@ -1,6 +1,6 @@
 """Arbiter — the judging agent.
 
-Sibling to `AutoPi` and `Gecco`, but stateless: one call → one verdict. Its
+Sibling to `AutoCog` and `Gecco`, but stateless: one call → one verdict. Its
 sole job is, given a `Round` of two `Observation`s (one per pi), to render
 the arbitration prompt, call the LLM with `response_schema=ArbiterVerdict`,
 and return the parsed structured verdict.
@@ -57,7 +57,7 @@ class Arbiter:
             llm_client=llm_client,
         )
 
-    # --- llm helper (mirrors AutoPi / Gecco) --------------------------------
+    # --- llm helper (mirrors AutoCog / Gecco) --------------------------------
 
     def _generate_response(
         self,
@@ -117,7 +117,7 @@ class Arbiter:
         """Render the arbitration prompt for `round` and return the verdict.
 
         `round` must contain exactly two `Observation`s, each carrying its
-        own pi-label-tagged predictions (recorded by `AutoPi.propose_round`).
+        own pi-label-tagged predictions (recorded by `AutoCog.propose_round`).
         `pool` supplies the other rounds' observations for the PERFORMANCE
         ON OTHER EXPERIMENTS section; the round being arbitrated is
         excluded. `workspace` is the per-call log directory (typically a

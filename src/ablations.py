@@ -15,7 +15,7 @@ from src.jsd import choice_matrix
 from src.logger import log
 from src.metric import Metric
 from src.observation import Observation, Observations
-from src.pi import AutoPi
+from src.autocog import AutoCog
 from src.run_config import REAL_N_SUBJECTS
 
 
@@ -53,7 +53,7 @@ def _derive_rng(seed: int, label: str, round_idx: int) -> np.random.Generator:
     return np.random.default_rng(seed_seq)
 
 
-class BlindAutoPi(AutoPi):
+class BlindAutoCog(AutoCog):
     """blind_design ablation: experiments are random valid designs synthesized
     programmatically (`random_design`) — no LLM, no theory conditioning, no
     adaptivity. A design is accepted iff valid + simulable, which holds by
@@ -71,7 +71,7 @@ class BlindAutoPi(AutoPi):
 
     def propose_round(
         self,
-        adversary: AutoPi,
+        adversary: AutoCog,
         pool: Observations,
         *,
         workspace: Path | None = None,
@@ -109,7 +109,7 @@ class BlindAutoPi(AutoPi):
                     log_label=f"metric_exp{k_exp:02d}_attempt_{k_metric:02d}",
                 )
                 # Coerce values to float INSIDE the try (like the baseline,
-                # src/pi.py): a malformed LLM metric can return a non-scalar
+                # src/autocog.py): a malformed LLM metric can return a non-scalar
                 # (ndarray/Series/str). Coercing here turns that into a caught
                 # rejection instead of an uncaught ValidationError at
                 # record_prediction time, which would crash the whole run.
@@ -156,16 +156,16 @@ class BlindAutoPi(AutoPi):
         return last
 
 
-class BlindJsdAutoPi(AutoPi):
-    """blind_design_jsd ablation: random valid designs (like `BlindAutoPi` —
+class BlindJsdAutoCog(AutoCog):
+    """blind_design_jsd ablation: random valid designs (like `BlindAutoCog` —
     no LLM, no theory conditioning, no adaptivity) PAIRED WITH the fixed
-    lag-1 JSD-to-self metric (like `JsdAutoPi`).
+    lag-1 JSD-to-self metric (like `JsdAutoCog`).
 
     There is NO acceptance gate: the first valid random design is kept and
-    measured, mirroring `BlindAutoPi`'s no-selection philosophy. The metric is
-    built IDENTICALLY to `JsdAutoPi` (`make_jsd_to_self_metric` on the proposing
+    measured, mirroring `BlindAutoCog`'s no-selection philosophy. The metric is
+    built IDENTICALLY to `JsdAutoCog` (`make_jsd_to_self_metric` on the proposing
     theory's choice matrix at `jsd_n_runs`), so downstream scoring is directly
-    comparable. The ONLY differences from `JsdAutoPi` are the design source
+    comparable. The ONLY differences from `JsdAutoCog` are the design source
     (random vs LLM) and the absence of the JSD threshold gate — so the
     blind/jsd pair isolates whether adaptive/LLM design buys anything on top of
     the JSD metric. A fresh design is redrawn only when the current one makes
@@ -182,7 +182,7 @@ class BlindJsdAutoPi(AutoPi):
 
     def propose_round(
         self,
-        adversary: AutoPi,
+        adversary: AutoCog,
         pool: Observations,
         *,
         workspace: Path | None = None,
@@ -198,7 +198,7 @@ class BlindJsdAutoPi(AutoPi):
             # Fresh random valid design each iteration (rng is stateful). The
             # design is valid + simulable by construction; an error in the JSD
             # pipeline means a degenerate draw, so redraw rather than crash a
-            # multi-round run (mirrors BlindAutoPi's redraw-on-error).
+            # multi-round run (mirrors BlindAutoCog's redraw-on-error).
             experiment = random_design(
                 rng, n_features=self.n_features, n_pairs=self.n_pairs
             )
@@ -219,7 +219,7 @@ class BlindJsdAutoPi(AutoPi):
                 obs.record_prediction(
                     est_adv.value, variance=est_adv.variance, label=adversary.label
                 )
-                # Inside the try (like JsdAutoPi): if a degenerate metric ever
+                # Inside the try (like JsdAutoCog): if a degenerate metric ever
                 # yields a non-float value, the format raises here and is
                 # caught below -> redraw, rather than crashing the round.
                 print(

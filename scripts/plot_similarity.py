@@ -43,8 +43,7 @@ from scripts.figure_style import (  # noqa: E402
 )
 
 DEFAULT_ROOT = (
-    ROOT / "results" / "heuristic_decision_making"
-    / "synthetic_corrected_theories_binary_sampling"
+    ROOT / "results" / "recovery"
 )
 FAMILIES: tuple[str, ...] = ("ttb", "tallying", "wadd")
 MODE_FILES: dict[str, str] = {

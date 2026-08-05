@@ -158,7 +158,7 @@ def render(
     Each Observation carries `proposer_label` (the authoring pi) plus a
     Prediction tagged with the proposer's label (own simulation) and a
     Prediction tagged with the adversary's label (cross-simulation), as
-    written by `AutoPi.propose_round`.
+    written by `AutoCog.propose_round`.
     """
     if len(round) != 2:
         raise ValueError(

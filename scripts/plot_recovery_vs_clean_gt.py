@@ -5,7 +5,7 @@ canonical sampling family (TTB / WADD / Tallying) and action-noise level
 ε ∈ {0, 0.5, 0.75, 1.0}, score seed / surfaced / best-surfaced choice
 proportions against the gt theory sampled at ε=0 (the CLEAN, true signal) — the
 honest recovery metric, i.e. distance to the true generator rather than to the
-noisy data autopi saw. Bars only (seed / surfaced / best-surfaced); no
+noisy data autocog saw. Bars only (seed / surfaced / best-surfaced); no
 reference line.
 
 Unlike the noisy-reference figure, the correlation panel keeps ALL noise columns

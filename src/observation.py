@@ -90,7 +90,7 @@ class Observation(BaseModel):
     proposer_label: str | None = Field(
         default=None,
         description=(
-            "Stable label of the AutoPi that authored this Observation "
+            "Stable label of the AutoCog that authored this Observation "
             "(e.g. 'pi_1', 'pi_1_1', 'pi_3'). Matches the `label` field on "
             "one of this Observation's `predicted_values` (the proposer's own "
             "self-prediction); the other prediction's label identifies the "

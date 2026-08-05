@@ -28,7 +28,8 @@ LLM_PROVIDER="${LLM_PROVIDER:-gemini}"
 LLM_MODEL="${LLM_MODEL:-gemini-3.1-pro-preview}"
 read -r -a GT_EPSILONS <<< "${GT_EPSILONS:-0.0 0.5}"
 GT_SEED="${GT_SEED:-0}"
-out_dir="/Users/aj9225/Local/autopi/results/heuristic_decision_making/synthetic_corrected_theories_binary_sampling"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+out_dir="${OUT_DIR:-${REPO_ROOT}/results/recovery}"
 source /Users/aj9225/Local/autograd/.autograd-gecco/bin/activate
 mkdir -p logs
 

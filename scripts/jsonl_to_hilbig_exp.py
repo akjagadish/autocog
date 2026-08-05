@@ -10,7 +10,7 @@ the raw 1–5 rating values and emits the actual Prolific validities;
 downstream consumers (e.g. `eval_hilbig.py`) can binarize or override
 validities if they need to map onto Hilbig's exact design.
 
-Output columns mirror `results/heuristic_decision_making/hilbig2014/exp1.txt`:
+Output columns mirror `results/hilbig2014/exp1.txt`:
     , participant, task, trial, choice, reward, stimulus_0, stimulus_1,
     validities, item_type, tier
 

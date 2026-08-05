@@ -1,0 +1,42 @@
+name: "Weighted Additive — lumped weights (WADD variant)"
+theory: |
+  People compare two options by computing, for each option, a weighted sum of its feature values, and choose the option with the higher weighted sum. This variant of WADD departs from Payne, Bettman & Johnson (1993) in one respect: it does not separate per-feature weights from per-feature validities. Instead, a single learnable weight vector absorbs both — each entry is the option's effective importance for that feature, with no further validity multiplier. This is a strict reparameterization of WADD when validities are fixed and known: any (weights, validities) pair in the canonical form maps to a single lumped vector here, so the model class spans the same set of choice functions but with fewer free parameters per trial and no exposed validity hook. Like WADD, the rule is compensatory (a deficit on one feature can be offset by advantages on others) and uses cardinal feature magnitudes, not just signs. Behavior is invariant to a shared affine rescaling across options and scales linearly with the lumped weight vector. Response noise enters through a logistic on the score difference with inverse temperature; there is no separate lapse term.
+predict: |
+  def predict(parameters, stimulus, history):
+      # Lumped weighted-additive rule. Each option's score is the dot
+      # product of its feature vector with a single learnable weight
+      # vector (weights x validities folded together). Choice
+      # probability follows a logistic with inverse temperature on the
+      # score difference. History is ignored.
+      stim = np.asarray(stimulus, dtype=float)
+      if stim.ndim != 2 or stim.shape[0] != 2:
+          raise ValueError(
+              f"expects a (2, n_features) stimulus; got shape {stim.shape}."
+          )
+      option_A, option_B = stim[0], stim[1]
+      n_features = stim.shape[1]
+
+      w = np.asarray(parameters["weights"], dtype=float)
+      if w.shape[0] != n_features:
+          raise ValueError(
+              f"weights length {w.shape[0]} != n_features {n_features}."
+          )
+      temperature = float(parameters["temperature"])
+
+      value_A = option_A @ w
+      value_B = option_B @ w
+      scaled_difference = temperature * (value_B - value_A)
+      p_B = 1.0 / (1.0 + np.exp(-scaled_difference))
+      p_B = float(np.clip(p_B, 1e-5, 1 - 1e-5))
+      return np.array([1.0 - p_B, p_B])
+policy: |
+  def policy(probabilities):
+      return int(np.argmax(probabilities))
+parameters:
+  # Temperature is the logistic inverse-temperature on the score
+  # difference: 0 yields uniform guessing, large values yield near-
+  # deterministic choice. Weights are per-feature lumped importances
+  # (weights x validities folded into one vector); unlike wadd.yaml
+  # there is no separate `validities` slot.
+  temperature: "[0.0, 20.0]"
+  weights: "[(0.0, 1.0)] * n_features"

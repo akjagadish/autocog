@@ -6,7 +6,7 @@ plotting scripts read), so the numbers here match Figures 3-5 rather than being
 re-derived. Each computed quantity is tagged with the main.tex line that carries
 the STAT / XX / YY placeholder it fills.
 
-Outputs (under ./stats_outputs/):
+Outputs (under results/stats/):
   stats_results.csv     one row per reported quantity (value, sem, n, source)
   stats_summary.png     the same table rendered as a figure
   stats_summary.pdf
@@ -22,7 +22,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-REPO = Path(__file__).resolve().parent
+REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
@@ -31,13 +31,12 @@ from scripts.recovery_correlation import (  # noqa: E402
     summarise,
 )
 
-BIN = REPO / "results/heuristic_decision_making/synthetic_corrected_theories_binary_sampling"
-CS1 = REPO / "results/online/dmb/firebase_prolific/prolific1/ttb+wadd"            # binary human run (NLSWM)
-CS2 = REPO / "results/heuristic_decision_making/humans/hdm_full_prolific_run_full/ttb+tallying"  # cardinal human run
-CENTAUR = REPO / "results/heuristic_decision_making/centaur_corrected_theories/seeds_tallying_ttb/hdm_seeds_tallying_ttb_gemini-3.1-pro-preview_rundella_centaur"
+BIN = REPO / "results/recovery"
+CS1 = REPO / "results/human_decision_making_binary/ttb+wadd"            # binary human run (NLSWM)
+CS2 = REPO / "results/human_decision_making_cardinal/ttb+tallying"  # cardinal human run
 
-OUT = REPO / "stats_outputs"
-OUT.mkdir(exist_ok=True)
+OUT = REPO / "results" / "stats"
+OUT.mkdir(parents=True, exist_ok=True)
 
 ROWS: list[dict] = []
 
@@ -83,7 +82,7 @@ def pooled_recovery(long_df: pd.DataFrame, noise: float, metric: str = "mse") ->
 # ===========================================================================
 def cluster_a():
     print("\n" + "=" * 78 + "\nCLUSTER A  canonical recovery + LLM-judge\n" + "=" * 78)
-    long = pd.read_csv(BIN / "recovery_vs_clean_gt/recovery_long.csv")
+    long = pd.read_csv(BIN / "analysis/recovery_vs_clean_gt/recovery_long.csv")
     src = "recovery_vs_clean_gt/recovery_long.csv  (MSE_pB vs clean GT)"
 
     # ---- line 218: noise-free, pooled across TTB/WADD/Tallying ----
@@ -143,7 +142,7 @@ def cluster_b():
     # (anti_majority from pi_3..pi_7 -> 0.317), whereas the figure uses the
     # EXTENDED-cycle runs (anti_majority up to pi_22 -> 0.214). cue_parity and
     # anti_majority are the only families given extra cycles here.
-    long = pd.read_csv(BIN / "per_model/recovery_long.csv")
+    long = pd.read_csv(BIN / "analysis/per_model/recovery_long.csv")
     long = long[np.isclose(long["noise"], 0.0)]
     src = "per_model/recovery_long.csv  (figure source; MSE_pB vs clean GT, eps=0)"
     best = _best_surfaced_by_metric(
@@ -335,23 +334,6 @@ def cluster_d():
 
 
 # ===========================================================================
-# CLUSTER E -- Centaur held-out Hilbig MAE; line 1140
-# ===========================================================================
-def cluster_e():
-    print("\n" + "=" * 78 + "\nCLUSTER E  Centaur held-out Hilbig MAE (line 1140)\n" + "=" * 78)
-    lb = pd.read_csv(CENTAUR / "analysis/eval_hilbig/eval_hilbig_summary.csv")
-    src = "centaur seeds_tallying_ttb/analysis/eval_hilbig/eval_hilbig_summary.csv (24 Hilbig stimuli)"
-    names = {"pi_1": "seed Tallying", "pi_2": "seed TTB",
-             "pi_6": "surfaced (winner) Non-linear Compensatory Attention",
-             "pi_7": "surfaced (other) Scale-Invariant Heuristic Selection"}
-    for _, r in lb.iterrows():
-        label = names.get(r["model"], r["model"])
-        add("E. Centaur held-out Hilbig (line 1140)", "1140",
-            f"MAE {label}", float(r["mae"]), None, int(r["n_stimuli"]), src)
-        print(f"  {label:55s} MAE={r['mae']:.3f}  (r={r['pearson_r']:.3f})")
-
-
-# ===========================================================================
 # Render
 # ===========================================================================
 def render():
@@ -462,7 +444,7 @@ def cluster_f():
 
 
 def main():
-    for fn in (cluster_a, cluster_b, cluster_c, cluster_d, cluster_e, cluster_f):
+    for fn in (cluster_a, cluster_b, cluster_c, cluster_d, cluster_f):
         try:
             fn()
         except Exception as e:  # keep going; report which cluster failed

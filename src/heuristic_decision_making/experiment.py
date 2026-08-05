@@ -65,8 +65,8 @@ class HeuristicDecisionMakingExperiment(Experiment):
     (rating_max) are all LLM-proposed per experiment and fixed across all
     trials in that experiment. Setting rating_max=1 recovers the classic
     binary-feature protocol (Hilbig & Moshagen 2014); setting rating_max>1
-    gives cardinal features that dissociate magnitude-based heuristics
-    (EW, WADD) from sign-based heuristics (Tallying). Validities are
+    gives cardinal features whose magnitudes carry information beyond sign,
+    letting more candidate theories be dissociated. Validities are
     communicated to subjects up front; there is no trial-by-trial
     correctness feedback.
     """
@@ -163,13 +163,10 @@ class HeuristicDecisionMakingExperiment(Experiment):
         description=(
             "Per-expert validities, one per feature. Each must be in "
             "[0.5, 1.0]; order is free (no descending requirement — "
-            "heuristics that rely on validity-ordering re-sort internally). "
+            "theories that depend on validity order re-sort internally). "
             "Length determines n_features for the whole experiment and must "
             "match the rating-list length in every trial pair. Pick a "
             "spread (at least one high validity and at least one low one) "
-            "— uniform validities (e.g. all 0.7) collapse WADD into a "
-            "scaled Equal-Weight rule and make them indistinguishable by "
-            "any decision."
         ),
     )
     rating_max: int = Field(
@@ -178,10 +175,7 @@ class HeuristicDecisionMakingExperiment(Experiment):
         description=(
             "Upper bound (inclusive) of each rating value. Ratings are "
             "integers in [0, rating_max]. Choose rating_max=1 for binary "
-            "ratings (note: Tallying and Equal-Weight are behaviorally "
-            "identical on binary features — if you want to dissociate "
-            "magnitude-based from sign-based heuristics, choose rating_max "
-            ">= 2 for cardinal ratings)."
+            "ratings."
         ),
     )
     trial_a_ratings: list[list[int]] = Field(
@@ -198,8 +192,8 @@ class HeuristicDecisionMakingExperiment(Experiment):
         description=(
             "List of option-B rating vectors, one per trial. Same length "
             "and shape constraints as `trial_a_ratings`. Pick trials that "
-            "let the intended heuristics (TTB, EQW, Tallying, WADD) be "
-            "dissociated; avoid trials where every heuristic agrees."
+            "let the intended decision-making theories be dissociated; "
+            "avoid trials where every theory agrees."
         ),
     )
 
@@ -287,16 +281,15 @@ class HeuristicDecisionMakingExperiment(Experiment):
             f"each expert's advertised accuracy; subjects are told these "
             f"values up front. Choose `rating_max` (>= 1) to set the upper "
             f"bound of each rating value: rating_max=1 gives binary "
-            f"ratings (but note that Tallying ≡ Equal-Weight on binary "
-            f"features), while rating_max >= 2 gives cardinal ratings that "
-            f"dissociate magnitude-based heuristics (EW, WADD) from "
-            f"sign-based ones (Tallying). Then choose "
+            f"ratings, while rating_max >= 2 gives cardinal "
+            f"ratings that dissociate magnitude-sensitive theories from "
+            f"sign-only ones. Then choose "
             f"`trial_a_ratings/trial_b_ratings` (each rating value in "
-            f"[0, rating_max]) so that the intended heuristics (e.g. TTB, "
-            f"EQW, Tallying, WADD) make distinguishable predictions: avoid "
-            f"degenerate pairs where every heuristic agrees, and prefer "
-            f"pairs that dissociate single-feature focus from "
-            f"feature-summing strategies. Validities, rating_max, and the "
+            f"[0, rating_max]) so that the intended decision-making "
+            f"theories make distinguishable predictions: avoid degenerate "
+            f"pairs where every theory agrees, and prefer pairs that "
+            f"maximally dissociate the candidate theories. Validities, "
+            f"rating_max, and the "
             f"trial ratings together define the design; they are fixed "
             f"across all trials in this experiment. No trial-by-trial "
             f"correctness feedback. The total number of trials per subject "

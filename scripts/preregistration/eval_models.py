@@ -43,7 +43,7 @@ import numpy as np
 import pandas as pd
 
 HERE = Path(__file__).resolve().parent
-REPO_ROOT = HERE.parent
+REPO_ROOT = HERE.parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
@@ -52,8 +52,8 @@ from src.theory import Theory  # noqa: E402
 
 # Surfaced theories live in their run-dirs; pin the same sources the other
 # eval scripts use so the numbers line up.
-PI7_SOURCE = (REPO_ROOT / "results" / "heuristic_decision_making" / "humans"
-              / "hdm_full_prolific_run_full" / "ttb+tallying"
+PI7_SOURCE = (REPO_ROOT / "results" / "human_decision_making_cardinal"
+              / "ttb+tallying"
               / "rounds" / "round_004" / "theories.json")
 CENTAUR_SURFACED_SOURCE = (
     REPO_ROOT / "results" / "heuristic_decision_making" / "centaur_corrected_theories"

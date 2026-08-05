@@ -8,7 +8,9 @@ MECHANISM is. Two input modes control what the judge sees per theory:
     --input-mode joint         description AND predict() source, paired
 
 Run it twice (once per mode, with distinct --out-name) to compare how much the
-code changes the score. Standalone: judge_runs.py and its outputs are untouched.
+code changes the score. This is the only LLM-judge analysis reported in the
+paper (mechanism similarity, Figure 3B); the earlier binary family/algorithm
+match rubric has been removed.
 
 Output: <runs-dir>/<out-name> (one row per (run, slot)).
 """
@@ -25,17 +27,48 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.judge_runs import (  # noqa: E402
-    GroundTruthSpec,
-    SurfacedTheory,
-    load_ground_truth,
-)
+import yaml  # noqa: E402
+
 from scripts.summarize_final_theories import final_theories_for_run  # noqa: E402
 from src.config import LLMConfig  # noqa: E402
 from src.llm import LLMClient, make_client  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 
 INPUT_MODES: tuple[str, ...] = ("description", "joint")
+
+
+# The two theory records and the ground-truth loader below used to live in
+# `judge_runs.py`, which ran the binary family/algorithm-match rubric. That
+# analysis is no longer reported — the paper reports mechanism similarity only
+# — so `judge_runs.py` was removed and these three definitions moved here
+# unchanged, leaving this script self-contained.
+class GroundTruthSpec(BaseModel):
+    name: str
+    description: str
+    predict_source: str
+
+
+class SurfacedTheory(BaseModel):
+    label: str
+    description: str
+    predict_source: str
+
+
+def load_ground_truth(
+    *,
+    theories_root: Path,
+    domain: str,
+    name: str,
+) -> GroundTruthSpec:
+    path = theories_root / domain / f"{name}.yaml"
+    if not path.exists():
+        raise FileNotFoundError(f"ground truth not found: {path}")
+    data = yaml.safe_load(path.read_text())
+    return GroundTruthSpec(
+        name=data.get("name", name),
+        description=data["theory"].strip(),
+        predict_source=data["predict"].strip(),
+    )
 
 
 class SimilarityVerdict(BaseModel):

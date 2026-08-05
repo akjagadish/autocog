@@ -13,7 +13,7 @@ values carry small jitter; the quantities reported (switch rate ~0 vs ~0.5,
 split ~0.5) are far from decision boundaries.
 
 Usage: PYTHONPATH=. python scripts/proposer_perseveration_behavior.py
-Writes results/heuristic_decision_making/proposer_comparison/perseveration_behavior.json
+Writes results/controls/proposer_comparison/perseveration_behavior.json
 """
 from __future__ import annotations
 
@@ -38,9 +38,9 @@ N_RUNS = 100
 GOOD_SWITCH = 0.05  # GT = 0.0, coin flip = 0.5
 GT = "perseveration"
 THEORIES_DIR = Path("theories/heuristic_decision_making")
-NP_ROOT = Path("results/heuristic_decision_making/ablation_stage0/condition_neutral_proposer")
-ADV_ROOT = Path("results/heuristic_decision_making/synthetic_corrected_theories_binary_sampling")
-OUT = Path("results/heuristic_decision_making/proposer_comparison/perseveration_behavior.json")
+NP_ROOT = Path("results/controls/ablation_stage0/condition_neutral_proposer")
+ADV_ROOT = Path("results/recovery")
+OUT = Path("results/controls/proposer_comparison/perseveration_behavior.json")
 
 
 def run_dir_for(cond: str, rid: str) -> Path:

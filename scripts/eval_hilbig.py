@@ -1,4 +1,4 @@
-"""Evaluate base + surfaced models from an autopi run against humans on
+"""Evaluate base + surfaced models from an autocog run against humans on
 Hilbig (2014) Exp 1, in stimulus choice-proportion space.
 
 For each unique (option_a, option_b) pair the human dataset contains, we
@@ -17,7 +17,7 @@ Each base / surfaced theory from `--run-dir` is replayed on the same
 unique stimulus pairs:
 
   - validities are pinned to the human-task vector ([0.9, 0.8, 0.7, 0.6])
-    regardless of what the autopi run was tuned on, because that is the
+    regardless of what the autocog run was tuned on, because that is the
     cue ordering subjects were told.
   - rating_max=1 because the human ratings are binary; theories whose
     sample_parameters declare `rating_max` get pinned too so any
@@ -80,7 +80,7 @@ from scripts.figure_style import (  # noqa: E402
 
 HUMAN_VALIDITIES: list[float] = [0.9, 0.8, 0.7, 0.6]
 HUMAN_RATING_MAX: int = 1
-HUMAN_DATA_DEFAULT: Path = _REPO_ROOT / "results" / "heuristic_decision_making" / "hilbig2014"/ "exp1.txt"
+HUMAN_DATA_DEFAULT: Path = _REPO_ROOT / "results" / "hilbig2014" / "exp1.txt"
 CANONICAL_YAML_DIR: Path = _REPO_ROOT / "theories" / "heuristic_decision_making"
 
 # Mirrors `scripts.recovery_battery.INT_PARAM_KEYS`. Inlined so this script
@@ -96,7 +96,7 @@ _INT_PARAM_KEYS: tuple[str, ...] = (
 
 # ---------------------------------------------------------------------------
 # Inlined hilibig_battery / recovery_battery helpers (Theory parameter
-# sampling, autopi run-dir traversal). Inlined to keep this script
+# sampling, autocog run-dir traversal). Inlined to keep this script
 # self-contained in environments where the wider battery deps don't
 # install cleanly. Behavior matches `scripts.hilibig_battery` 1:1.
 # ---------------------------------------------------------------------------
@@ -239,7 +239,7 @@ def load_canonical_theories(
     """Load every `*.yaml` under `yaml_dir` as a `Theory`, keyed by the
     file stem (e.g. `ttb`, `wadd`, `tallying`, `ew`). These are the
     paper-faithful canonical heuristics — useful as a fixed reference
-    baseline alongside whatever the autopi run discovered."""
+    baseline alongside whatever the autocog run discovered."""
     if not yaml_dir.is_dir():
         raise FileNotFoundError(f"No canonical YAML dir at {yaml_dir!s}")
     out: dict[str, Theory] = {}
@@ -626,10 +626,10 @@ def role_color_map(
 
 def _lineage_color_map(run_dir: Path) -> dict[str, str]:
     """`{pi_label: hex}` from the run's lineage (single source of truth in
-    `plot_autopi_convergence.theory_colors`). Returns `{}` if the lineage
+    `plot_autocog_convergence.theory_colors`). Returns `{}` if the lineage
     can't be parsed, so callers degrade to the categorical `CYCLE`."""
     try:
-        from scripts.plot_autopi_convergence import theory_colors
+        from scripts.plot_autocog_convergence import theory_colors
         return theory_colors(run_dir)
     except Exception as e:  # lineage parsing is best-effort for colouring
         print(
@@ -900,7 +900,7 @@ def plot_mse_swarm(
 def _check_design_compatibility(
     run_dir: Path, *, expected_n_features: int,
 ) -> None:
-    """Raise if the autopi run's last-round design has a different feature
+    """Raise if the autocog run's last-round design has a different feature
     count than the human task. Theories tuned on a different n_features
     can't be replayed on human stimuli without redefining what the
     parameters mean. Differences in `rating_max` / specific validities
@@ -918,7 +918,7 @@ def _check_design_compatibility(
     # run_n_features = len(design["validities"])
     # if run_n_features != expected_n_features:
     #     raise SystemExit(
-    #         f"[eval_hilbig] Design mismatch: autopi run uses "
+    #         f"[eval_hilbig] Design mismatch: autocog run uses "
     #         f"{run_n_features} features {design['validities']} but "
     #         f"humans saw {expected_n_features}. Theories tuned on a "
     #         f"different feature count cannot be replayed meaningfully "
@@ -930,7 +930,7 @@ def _check_design_compatibility(
         or int(design["rating_max"]) != HUMAN_RATING_MAX
     ):
         print(
-            f"[eval_hilbig] NOTE: autopi run validities="
+            f"[eval_hilbig] NOTE: autocog run validities="
             f"{design['validities']} rating_max={design['rating_max']} "
             f"differ from human task (validities={HUMAN_VALIDITIES}, "
             f"rating_max={HUMAN_RATING_MAX}). Replaying with human "
@@ -948,7 +948,7 @@ def _check_design_compatibility(
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         description=(
-            "Evaluate base + surfaced models from an autopi run vs human "
+            "Evaluate base + surfaced models from an autocog run vs human "
             "stimulus choice proportions on Hilbig (2014) Exp 1."
         ),
     )

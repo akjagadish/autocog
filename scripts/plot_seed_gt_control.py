@@ -50,7 +50,7 @@ GROUND_TRUTHS: list[tuple[str, str]] = [
     ("cue_parity", "Cue-parity"),
 ]
 RESULTS_ROOT = Path(
-    "results/heuristic_decision_making/seed_gt_control/condition_baseline"
+    "results/controls/seed_gt_control/condition_baseline"
 )
 
 
@@ -128,7 +128,7 @@ def main() -> None:
     fig.tight_layout()
     written = save_figure(
         fig,
-        "results/heuristic_decision_making/seed_gt_control/seed_persistence_trajectory",
+        "results/controls/seed_gt_control/seed_persistence_trajectory",
     )
     print("wrote:", *(str(p) for p in written), sep="\n  ")
 

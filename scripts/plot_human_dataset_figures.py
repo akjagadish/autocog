@@ -1,4 +1,4 @@
-"""Assemble the curated publication figures for the human-dataset autopi runs.
+"""Assemble the curated publication figures for the human-dataset autocog runs.
 
 One entry point that regenerates, for each human-data run, the figures we show
 in the paper: MSE and Pearson-r over cycles, the final-cycle calibration scatter
@@ -47,7 +47,7 @@ from scripts.eval_hilbig import (  # noqa: E402
     role_color_map,
 )
 from scripts.figure_style import NEUTRAL_HARMONY, save_figure  # noqa: E402
-from scripts.plot_autopi_convergence import theory_colors  # noqa: E402
+from scripts.plot_autocog_convergence import theory_colors  # noqa: E402
 
 SANDY = NEUTRAL_HARMONY["sandy"]        # headline (gold) survivor
 TERRACOTTA = NEUTRAL_HARMONY["terracotta"]  # other (peach) survivor
@@ -55,10 +55,9 @@ TERRACOTTA = NEUTRAL_HARMONY["terracotta"]  # other (peach) survivor
 # (name, run_dir) for each human dataset.
 HUMAN_DATASETS: list[tuple[str, str]] = [
     ("firebase_prolific",
-     "results/online/dmb/firebase_prolific/prolific1/ttb+wadd"),
+     "results/human_decision_making_binary/ttb+wadd"),
     ("hdm_full_prolific_run_full",
-     "results/heuristic_decision_making/humans/hdm_full_prolific_run_full/"
-     "ttb+tallying"),
+     "results/human_decision_making_cardinal/ttb+tallying"),
 ]
 
 

@@ -75,10 +75,7 @@ FAMILY_PLOT_ORDER: tuple[str, ...] = (
 # (6in each) wide regardless of how many panels it holds, so it sits next to a
 # two-panel canonical figure. Per-panel width = POOLED_FIG_WIDTH / n_panels.
 POOLED_FIG_WIDTH: float = 12.0
-RESULTS_ROOT_SAMPLING: Path = (
-    _REPO_ROOT / "results" / "heuristic_decision_making"
-    / "synthetic_corrected_theories_binary_sampling"
-)
+RESULTS_ROOT_SAMPLING: Path = _REPO_ROOT / "results" / "recovery"
 
 # Bar roles per metric: the raw recovery roles only — the two metric-specific
 # "best surfaced" bars are intentionally dropped. On BOTH metrics only

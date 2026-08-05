@@ -34,7 +34,7 @@ from __future__ import annotations
 import itertools, json, os, sys
 import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import scripts.validation_online.search as search
+import search
 
 RMAX = 5
 TARGET_TRIALS = 96               # trials per participant (per experiment)

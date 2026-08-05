@@ -31,9 +31,9 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-REPO_ROOT = os.path.dirname(HERE)
+REPO_ROOT = os.path.dirname(os.path.dirname(HERE))
 
-import scripts.validation_online.analyse as A  # noqa: E402  (build_lookup + load_design)
+import analyse as A  # noqa: E402  (build_lookup + load_design)
 
 
 def _ts(doc_id: str) -> int:

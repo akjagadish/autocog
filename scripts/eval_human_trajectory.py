@@ -1,4 +1,4 @@
-"""Trajectory of how well an autopi run's surfaced theories capture human
+"""Trajectory of how well an autocog run's surfaced theories capture human
 P(B), evaluated at the end of several round cutoffs (default 5/10/15/20/25)
 against the 10 Prolific decision-making experiments.
 

@@ -5,8 +5,8 @@ noise level (epsilon in {0.0, 0.05, 0.3}), compare three model groups
 against the ground truth sampled WITH the run's action noise, in stimulus
 choice-proportion space, via Pearson correlation:
 
-  seed     - round-0 starting (competitor) theories autopi was given.
-  surfaced - theories autopi discovered (un-killed last round + final
+  seed     - round-0 starting (competitor) theories autocog was given.
+  surfaced - theories autocog discovered (un-killed last round + final
              replacement).
   gt       - the ground-truth theory itself, sampled WITH the run's action
              noise. The recovery ceiling at that noise level.
@@ -81,12 +81,18 @@ from scripts.figure_style import (  # noqa: E402
     style_axes,
 )
 
-FAMILIES_DEFAULT: tuple[str, ...] = ("ttb", "wadd", "tallying")
-NOISES_DEFAULT: tuple[float, ...] = (0.0, 0.05, 0.3)
-N_DRAWS_DEFAULT: int = 100
-RESULTS_ROOT_DEFAULT: Path = (
-    _REPO_ROOT / "results" / "heuristic_decision_making" / "synthetic"
+# Defaults describe the recovery analysis reported in the paper: the three
+# canonical sampling heuristics under `results/recovery/`, at the noise-free
+# condition plus the two action-noise levels reported in the manuscript
+# (epsilon = 0.5 and 0.75). The epsilon = 1.0 runs also present under that root
+# are not a reported noise level — they are the source of the synthetic
+# `random` family baseline, which `build_random_family_rows` pulls in directly.
+FAMILIES_DEFAULT: tuple[str, ...] = (
+    "ttb_sampling", "wadd_sampling", "tallying_sampling",
 )
+NOISES_DEFAULT: tuple[float, ...] = (0.0, 0.5, 0.75)
+N_DRAWS_DEFAULT: int = 100
+RESULTS_ROOT_DEFAULT: Path = _REPO_ROOT / "results" / "recovery"
 # Map family name -> ground-truth YAML stem (ew alias kept for parity).
 GROUND_TRUTH_YAML: dict[str, str] = {
     "ttb": "ttb", "wadd": "wadd", "tallying": "tallying", "ew": "ew",
@@ -238,7 +244,7 @@ def simulate_sequence(
     action_noise: float = 0.0,
 ) -> tuple[np.ndarray, list[list[int]]]:
     """Sequence-aware simulation for history-dependent theories, reusing the
-    exact path AutoPi generates data with: ``DecisionMakingBinaryExperiment``
+    exact path AutoCog generates data with: ``DecisionMakingBinaryExperiment``
     presents the canonical pairs (repeated/shuffled to fill MAX_TRIALS) and
     accumulates each realized choice into ``history['response']`` so sequential
     theories see the same contract they were written against. ε-greedy action
@@ -351,7 +357,7 @@ def discover_run_dirs(
     families: list[str],
     noises: list[float] | None = None,
 ) -> list[tuple[str, float, Path]]:
-    """Enumerate autopi run-dirs as (family, noise, path), sorted
+    """Enumerate autocog run-dirs as (family, noise, path), sorted
     deterministically. Layout:
         <results_root>/<family>/noise=<eps>/hdm_ground_truth_<family>_*_run*
     `noises=None` accepts every `noise=*` dir found."""
@@ -565,9 +571,9 @@ def build_random_family_rows(
 ) -> pd.DataFrame:
     """Long-format rows for a synthetic ``random`` ground-truth family.
 
-    There is no autopi run whose GT is "random", so the data is drawn from the
+    There is no autocog run whose GT is "random", so the data is drawn from the
     canonical families' ε=`eps` run-dirs: at ε=1 every choice is a uniform coin,
-    so those runs *are* "GT = random choices". The seed/surfaced theories autopi
+    so those runs *are* "GT = random choices". The seed/surfaced theories autocog
     was given / discovered there are replayed at ε=0 (clean) and scored against a
     FIXED 0.5 reference vector (the true random process) — NOT the per-run noisy
     gt reference the canonical families use. All such run-dirs across

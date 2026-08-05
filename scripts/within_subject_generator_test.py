@@ -34,8 +34,8 @@ from pathlib import Path
 
 import numpy as np
 
-_REPO = Path("/Users/aj9225/Local/autopi")
-SYN = _REPO / "results/heuristic_decision_making/synthetic"
+_REPO = Path(__file__).resolve().parents[1]
+SYN = _REPO / "results/synthetic_cardinal"
 OUT_PNG = SYN / "within_subject_generator_test.png"
 
 

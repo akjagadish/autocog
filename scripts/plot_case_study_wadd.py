@@ -36,7 +36,7 @@ from scripts.figure_style import (  # noqa: E402
 )
 
 DEFAULT_RUN_DIR = _REPO_ROOT / (
-    "results/heuristic_decision_making/synthetic_corrected_theories_binary_sampling/"
+    "results/recovery/"
     "wadd_sampling/noise=0.0/"
     "dmb_ground_truth_wadd_sampling_noise=0.0_gemini-3.1-pro-preview_run3"
 )

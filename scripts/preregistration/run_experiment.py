@@ -48,7 +48,7 @@ import sys
 import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REPO_ROOT = os.path.dirname(HERE)
+REPO_ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, REPO_ROOT)
 
 from src.heuristic_decision_making.experiment import (  # noqa: E402

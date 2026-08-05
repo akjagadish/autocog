@@ -105,12 +105,12 @@ def count_subjects(run_dir: Path) -> int:
 def run_subtitle(run_dir: Path) -> str:
     """Truthful one-line subtitle (task / ground truth / noise / run) from the path.
 
-    The binary task lives under a `binary_sampling` directory; everything else is
-    the cardinal-rating task. Ground truth, noise, and run index are read from the
-    run directory name.
+    The binary task lives under the `results/recovery` directory; everything else
+    is the cardinal-rating task. Ground truth, noise, and run index are read from
+    the run directory name.
     """
     name = run_dir.name
-    task = "binary" if "binary_sampling" in str(run_dir) else "cardinal"
+    task = "binary" if "results/recovery" in str(run_dir) else "cardinal"
     gt = re.search(r"ground_truth_([a-z]+)", name)
     noise = re.search(r"noise=([0-9.]+)", name)
     run = re.search(r"(run\d+)", name)
@@ -1099,7 +1099,7 @@ def render_cartoon_figure(exp_results):
 # -- main --------------------------------------------------------------------
 
 DEFAULT_RUN_DIR = Path(
-    "results/heuristic_decision_making/synthetic_corrected_theories_binary_sampling/"
+    "results/recovery/"
     "wadd_sampling/noise=0.0/"
     "dmb_ground_truth_wadd_sampling_noise=0.0_gemini-3.1-pro-preview_run3"
 )

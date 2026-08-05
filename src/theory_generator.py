@@ -10,7 +10,7 @@ Statelessness:
 - No `history`, no `save()` / `load()` — each `propose_theory(...)` call
   stands alone.
 - A per-call `workspace` is used only for writing per-attempt prompt logs to
-  `<workspace>/prompts/`, mirroring `AutoPi` / `Improver` / `Arbiter`.
+  `<workspace>/prompts/`, mirroring `AutoCog` / `Improver` / `Arbiter`.
 
 Retry machinery:
 - The LLM's structured output is parsed into a `Theory` (from
@@ -20,7 +20,7 @@ Retry machinery:
   the last exception is raised.
 
 The output is a runnable `Theory`. Persist it via
-`dump_theory_yaml(theory, path)` so `AutoPi.from_yaml(...)` can pick it up
+`dump_theory_yaml(theory, path)` so `AutoCog.from_yaml(...)` can pick it up
 unchanged.
 """
 
@@ -95,7 +95,7 @@ class TheoryGenerator:
             ),
         )
 
-    # --- llm helper (mirrors AutoPi / Improver / Arbiter) -------------------
+    # --- llm helper (mirrors AutoCog / Improver / Arbiter) -------------------
 
     def _generate_response(
         self,
@@ -340,7 +340,7 @@ def dump_theory_yaml(
     """Write a `Theory` to disk in seed-YAML format.
 
     The output uses the LLM-facing keys (`name`/`theory`/`predict`/`policy`/
-    `parameters`) so `AutoPi.from_yaml(path, ...)` consumes it unchanged.
+    `parameters`) so `AutoCog.from_yaml(path, ...)` consumes it unchanged.
     """
     out = {
         "name": name or "Generated Theory",

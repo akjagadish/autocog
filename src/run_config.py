@@ -32,7 +32,7 @@ REAL_N_SUBJECTS: int = 25
 
 This is the N used to collect `Observation.real_value` in `main` (the
 ground-truth theory stands in for humans). The same N is reused as the
-sample size in `AutoPi.propose_round`'s metric-acceptance check: a metric
+sample size in `AutoCog.propose_round`'s metric-acceptance check: a metric
 is admitted only if a Welch's t-test on the two theories' simulated
 estimates and between-subject variances says they would be statistically
 distinguishable with this many participants. Centralised so the simulation

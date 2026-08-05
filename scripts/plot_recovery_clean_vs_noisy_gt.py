@@ -7,7 +7,7 @@ gets TWO bars side by side:
   vs clean gt   - MSE of the role's (noiseless) predictions to the CLEAN gt@0
                   reference. Distance to the TRUE signal (recovery quality).
   vs noisy gt   - MSE of the same predictions to the NOISY gt@ε reference, i.e.
-                  to the data autopi actually saw at that noise level.
+                  to the data autocog actually saw at that noise level.
 
 The `gt` role is the ground-truth reference itself, shown as paired bars too:
 its "vs clean gt" bar is gt@ε vs clean gt@0 (RISES with ε — the noisy

@@ -87,9 +87,9 @@ def _transient_http_exc_types() -> tuple[type[BaseException], ...]:
 def _call_with_retry(
     fn: Callable[..., _T],
     *args,
-    max_attempts: int = 10,
+    max_attempts: int = 18,
     base_delay: float = 2.0,
-    max_delay: float = 120.0,
+    max_delay: float = 300.0,
     label: str = "LLM call",
     **kwargs,
 ) -> _T:
@@ -106,10 +106,12 @@ def _call_with_retry(
     recovers, the next blip waits 2s rather than picking up where the
     earlier failure left off.
 
-    Defaults are tuned for multi-hour SBATCH jobs: 10 attempts with a
-    120s cap give ~8 minutes of total tolerance for a Gemini/Anthropic
-    outage before aborting the run, vs. ~34s under the original 5×60s
-    settings (which let a single ~1min outage kill an 8-hour job).
+    Defaults are tuned for multi-hour SBATCH jobs: 18 attempts with a
+    300s cap give ~53 minutes of total tolerance for a Gemini/Anthropic
+    outage before aborting the run. The previous 10×120s settings
+    (~8 min) proved insufficient on 2026-07-04, when a Gemini outage
+    outlasted the window and killed a ~12h H200 Centaur run at round
+    22/25 (job 10658911).
     """
     transient = _transient_http_exc_types()
     if not transient:

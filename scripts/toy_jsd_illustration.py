@@ -14,7 +14,7 @@ Mirrors the user's architecture:
     trial 0 = marginal padded into cells (00, 01).
 
 Stimuli & validities come from the eval_hilbig human data
-(results/heuristic_decision_making/hilbig2014/exp1.txt). Human
+(results/hilbig2014/exp1.txt). Human
 participants each saw their own trial permutation; the toy assumes one
 shared ordering, so we use the FIRST participant's 96-trial sequence.
 Validities are the task vector stored in the data ([0.9, 0.8, 0.7, 0.6]).
@@ -83,7 +83,7 @@ class Tally:
 # ======================================================================
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 HUMAN_DATA = (
-    _REPO_ROOT / "results" / "heuristic_decision_making" / "hilbig2014" / "exp1.txt"
+    _REPO_ROOT / "results" / "hilbig2014" / "exp1.txt"
 )
 
 
