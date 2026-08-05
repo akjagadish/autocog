@@ -1,0 +1,54 @@
+{
+  "round_idx": 4,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_6",
+      "killed": true,
+      "theory": {
+        "description": "Take-The-Best (TTB) Heuristic: Decision-makers use a fast-and-frugal lexicographic strategy rather than integrating all available information. They rank features in descending order of their validities and inspect them one by one. The search stops at the first feature that discriminates between the two options, and the option with the positive value for that cue is chosen. If no features discriminate, they guess randomly. A lapse rate accounts for attention lapses or execution noise.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Expects a (2, n_features) state.\")\n    \n    a, b = stim[0], stim[1]\n    \n    validities = np.array(parameters[\"validities\"], dtype=float)\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Sort features by validity in descending order\n    # We use stable sort to handle ties consistently\n    order = np.argsort(-validities, kind='stable')\n    \n    # Default to random guessing if no cues discriminate\n    p_core = np.array([0.5, 0.5])\n    \n    for idx in order:\n        if a[idx] > b[idx]:\n            p_core = np.array([1.0, 0.0])\n            break\n        elif b[idx] > a[idx]:\n            p_core = np.array([0.0, 1.0])\n            break\n            \n    # Mix with uniform guessing (lapse rate)\n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()  # Ensure normalization\n    return int(np.random.choice(len(probs), p=probs))\n",
+        "parameters": {
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the arbiter's feedback, this theory replaces the previous Choice Inertia/Tallying model with the Take-The-Best (TTB) heuristic. TTB is a non-compensatory, lexicographic model where decision-makers rank cues by validity and make a choice based entirely on the first discriminating cue they encounter. This avoids the cognitive burden of summing or weighting all features. A single lapse parameter (epsilon) is included to capture uniform response noise, providing a clean contrast to exhaustive integration models."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_3",
+      "killed": false,
+      "theory": {
+        "description": "Weighted Additive (WADD) Model: People integrate all available information by computing a weighted sum of feature values for each option. The weights are proportional to the log-odds of the cue validities. This allows for compensatory decision-making, where multiple weakly predictive features can jointly override a single highly predictive feature. Choice probabilities are determined by applying a softmax function to the weighted sums, with an independent lapse rate for random guessing.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"WADD expects a (2, n_features) state; got shape {stim.shape}.\")\n    \n    a, b = stim[0], stim[1]\n    \n    # Extract validities and clip to avoid log(0) or division by zero\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    val_clipped = np.clip(val, 1e-4, 1.0 - 1e-4)\n    \n    # Transform validities to weights using log-odds\n    weights = np.log(val_clipped / (1.0 - val_clipped))\n    \n    # Compute weighted sum of features for each option\n    score_a = np.sum(weights * a)\n    score_b = np.sum(weights * b)\n    scores = np.array([score_a, score_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax over scores\n    z = beta * (scores - np.max(scores))\n    p = np.exp(z)\n    p_core = p / np.sum(p)\n    \n    # Mix with uniform guessing (lapse rate)\n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()  # Ensure normalization\n    return int(np.random.choice(len(probs), p=probs))\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the arbiter's feedback, this model implements the Weighted Additive (WADD) strategy. Unlike Take The Best (which relies on a single cue) and Tallying (which treats all cues equally), WADD evaluates options by computing a weighted sum of their features. The weights are derived from the log-odds of the cue validities, allowing for compensatory decision-making where multiple weak cues can outweigh a single strong cue. This integration of all available information, appropriately weighted by its reliability, provides a more nuanced and accurate reflection of human choice probabilities in multi-attribute tasks."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_7",
+    "slot": 1,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Choice Hysteresis and Dawes Tallying with Lateral Bias: Decision-makers evaluate options by counting the number of strict feature-wise wins (Dawes' Tallying). To capture sequential dependencies and choice inertia, the utility of the previously chosen option is boosted by a hysteresis parameter. Additionally, decision-makers exhibit a baseline lateral preference (e.g., favoring Option A/left), which is modeled as a bias parameter added to the first option's score. This combination captures structural choice patterns, sequential dependencies, and asymmetric baseline preferences.",
+      "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Expects a (2, n_features) state.\")\n    \n    a, b = stim[0], stim[1]\n    \n    # Dawes Tallying: count strict feature-wise wins\n    a_wins = float(np.sum(a > b))\n    b_wins = float(np.sum(b > a))\n    scores = np.array([a_wins, b_wins])\n    \n    # Lateral Bias: boost the score of Option A\n    alpha = float(parameters[\"alpha\"])\n    scores[0] += alpha\n    \n    # Choice Inertia: boost the score of the previously chosen action\n    if history and \"response\" in history and len(history[\"response\"]) > 0:\n        last_resp = int(history[\"response\"][-1])\n        if 0 <= last_resp < 2:\n            phi = float(parameters[\"phi\"])\n            scores[last_resp] += phi\n            \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax over the modified utilities with numerical stability\n    z = beta * (scores - np.max(scores))\n    p = np.exp(z)\n    p_core = p / np.sum(p)\n    \n    # Mix with uniform guessing (lapse rate)\n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n",
+      "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()  # Ensure normalization\n    return int(np.random.choice(len(probs), p=probs))\n",
+      "parameters": {
+        "alpha": "[-2.0, 2.0]",
+        "beta": "[0.1, 20.0]",
+        "epsilon": "[0.0, 1.0]",
+        "phi": "[-5.0, 5.0]"
+      },
+      "rationale": "Following the critic's advice, I introduced a lateral bias parameter `alpha` with range [-2.0, 2.0] that is added to the score of Option A. This minimal edit introduces a baseline preference asymmetry independent of the features or previous choices, increasing the model's capacity to match the empirical divergence seen in human data while retaining the core 'Choice Hysteresis and Tallying' mechanism."
+    }
+  }
+}

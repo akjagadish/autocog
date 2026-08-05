@@ -1,0 +1,55 @@
+{
+  "round_idx": 2,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_4",
+      "killed": true,
+      "theory": {
+        "description": "Top-N Tallying (Truncated Tallying): People simplify complex decisions by restricting their attention to only the most valid cues and ignoring the rest. Within this considered subset of top cues, they abandon complex compensatory weighting and instead simply tally the number of features favoring each option. If the tallies are tied, they guess. This bridges the gap between fully compensatory WADD and unweighted Tallying by selectively ignoring low-validity features to save cognitive effort, while still avoiding the cognitive cost of cardinal weighting among the considered features.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Top-N Tallying expects a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    n_features = len(val)\n    \n    # Determine k: the number of top features to consider\n    k_prop = float(parameters[\"k_prop\"])\n    k = max(1, int(round(k_prop * n_features)))\n    \n    # Get indices of top k validities (descending order, stable tie-breaking)\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n    top_k_indices = cue_order[:k]\n    \n    a, b = stim[0], stim[1]\n    \n    # Tally only on the top k features\n    a_top = a[top_k_indices]\n    b_top = b[top_k_indices]\n    \n    a_wins = float(np.sum(a_top > b_top))\n    b_wins = float(np.sum(b_top > a_top))\n    \n    scores = np.array([a_wins, b_wins])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax with max-subtraction for numerical stability\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[1.0, 20.0]",
+          "epsilon": "[0.0, 0.1]",
+          "k_prop": "[0.8, 1.0]",
+          "validities": "validities"
+        },
+        "rationale": "Adjusted the parameter ranges based on the critic's latest feedback. Tightened `k_prop` to `[0.8, 1.0]` so the model drops at most one feature in 4- or 5-cue environments, further aligning with the strong human preference for broad feature integration in Experiments 3 and 4. Restricted `epsilon` to `[0.0, 0.1]` to reduce baseline noise and prevent predictions from regressing too much toward 0.5."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_2",
+      "killed": false,
+      "theory": {
+        "description": "People compare two options by counting, across all features, how often one option has a higher value than the other. The option that wins on more features is chosen. Tallying discards cardinal magnitudes \u2014 only the sign of each feature-wise comparison matters \u2014 so the heuristic is robust to monotone rescaling of individual features and cannot be swayed by a single large feature difference in the way Equal-Weight can. Ties on an individual feature contribute nothing to either count: that cue is simply treated as uninformative for the pair. No feature is privileged, in contrast to Take The Best; every cue contributes equally to the tally. When the two counts are equal the heuristic has no basis for preference and the learner must guess. Response noise enters through a softmax over the two tallies with inverse temperature beta (interpolating between fully deterministic choice at large beta and uniform guessing at beta = 0), plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+        "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Tallying heuristic (Dawes 1979; Gigerenzer &\n    # Goldstein 1999). Stimulus is the pair of option feature vectors\n    # for the current trial: array-like of shape (2, n_features),\n    # with row 0 = option A, row 1 = option B. History is ignored.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"Tallying expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n\n    a, b = stim[0], stim[1]\n    # Count strict feature-wise wins; ties contribute to neither option.\n    a_wins = float(np.sum(a > b))\n    b_wins = float(np.sum(b > a))\n    scores = np.array([a_wins, b_wins])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. When\n    # a_wins == b_wins the softmax is exactly uniform regardless of\n    # beta, which is the correct behavior for an undiscriminating\n    # tally.\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]"
+        },
+        "rationale": null
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_5",
+    "slot": 1,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Tallying with Take-The-Best Tiebreaker: Decision makers primarily use a simple Tallying heuristic, counting the number of features that favor each option. If one option has a higher tally, it is chosen. However, if the tallies are tied, they do not simply guess; instead, they fall back to the Take-The-Best (TTB) heuristic, breaking the tie by choosing the option favored by the single most valid differentiating feature. This tie-breaking influence can be parameterized to allow for both positive reinforcement or penalty depending on the specific cue structures.",
+      "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    a, b = stim[0], stim[1]\n    \n    # Primary heuristic: Tallying (counting strict wins)\n    a_wins = np.sum(a > b)\n    b_wins = np.sum(b > a)\n    \n    score_a = float(a_wins)\n    score_b = float(b_wins)\n    \n    # Tie-breaker: Take-The-Best\n    if score_a == score_b:\n        tau = float(parameters[\"tau\"])\n        val = np.asarray(parameters[\"validities\"], dtype=float)\n        # Sort indices by descending validity\n        order = np.argsort(-val, kind=\"stable\")\n        for idx in order:\n            if a[idx] > b[idx]:\n                score_a += tau\n                break\n            elif b[idx] > a[idx]:\n                score_b += tau\n                break\n                \n    scores = np.array([score_a, score_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax with max-subtraction for numerical stability\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = len(p_core)\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)",
+      "policy_source": "def policy(probabilities):\n    import numpy as np\n    p = np.asarray(probabilities, dtype=np.float64)\n    p /= p.sum()  # Ensure valid probabilities\n    return np.random.choice(len(p), p=p)",
+      "parameters": {
+        "beta": "[0.1, 15.0]",
+        "epsilon": "[0.0, 0.5]",
+        "tau": "[-2.0, 2.0]",
+        "validities": "validities"
+      },
+      "rationale": "Following the critic's advice, we expanded the range of the tie-breaker weight 'tau' to include negative values ([-2.0, 2.0]). Positive values for tau failed to capture the large metric difference in Experiment 6 (0.71), which requires the model to be highly confident in strict tally wins while systematically avoiding the TTB prediction on tied trials. Permitting a negative tau gives the optimizer the flexibility to invert the tie-breaker's direction if that best explains the empirical behavior on tied trials, without altering the primary tallying mechanism."
+    }
+  }
+}

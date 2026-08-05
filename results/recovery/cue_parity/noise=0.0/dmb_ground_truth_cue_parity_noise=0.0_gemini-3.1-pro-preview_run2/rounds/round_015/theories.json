@@ -1,0 +1,61 @@
+{
+  "round_idx": 15,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_16",
+      "killed": false,
+      "theory": {
+        "description": "Leaky Competing Accumulator with Non-linear Configural Weighting and Evidence Transduction: Decision-makers evaluate cues simultaneously, with evidence for each option dynamically inhibiting the other in a leaky competing accumulator (LCA). Cues have a configural impact, scaled non-linearly by the total number of supporting cues. Additionally, the integrated evidence for each option is passed through a non-linear transducer (alpha) before entering the accumulation process, allowing the model to amplify the differences driven by high-validity cues and capture strong non-compensatory reversals.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    gamma = float(parameters[\"gamma\"])\n    leak = float(parameters[\"leak\"])\n    inhibition = float(parameters[\"inhibition\"])\n    theta = float(parameters[\"theta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    alpha = float(parameters[\"alpha\"])\n    \n    sum_a = np.sum(a)\n    sum_b = np.sum(b)\n    \n    # Configural weighting: effective validity of a cue is non-linearly modulated by the total number of cues\n    # Using max(1e-6, sum) to avoid 0^negative_gamma undefined errors\n    sum_a_safe = max(1e-6, sum_a)\n    sum_b_safe = max(1e-6, sum_b)\n    \n    w_a = val * (sum_a_safe ** gamma)\n    w_b = val * (sum_b_safe ** gamma)\n    \n    # Make sure inputs are non-negative and apply non-linear transducer alpha\n    I_A = max(0.0, np.sum(w_a * a)) ** alpha\n    I_B = max(0.0, np.sum(w_b * b)) ** alpha\n    \n    # Leaky Competing Accumulator (LCA) simulation\n    x_a, x_b = 0.0, 0.0\n    dt = 0.1\n    steps = 100\n    \n    for _ in range(steps):\n        dx_a = (I_A - leak * x_a - inhibition * x_b) * dt\n        dx_b = (I_B - leak * x_b - inhibition * x_a) * dt\n        \n        x_a = max(0.0, x_a + dx_a)\n        x_b = max(0.0, x_b + dx_b)\n        \n    # Softmax choice based on final activations\n    z = theta * np.array([x_a, x_b])\n    z = z - np.max(z)\n    e = np.exp(z)\n    p = e / np.sum(e)\n    \n    return (1.0 - epsilon) * p + epsilon * np.array([0.5, 0.5])\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "gamma": "[-10.0, 10.0]",
+          "leak": "[0.1, 2.0]",
+          "inhibition": "[0.0, 5.0]",
+          "theta": "[0.1, 50.0]",
+          "epsilon": "[0.0, 0.5]",
+          "alpha": "[0.1, 10.0]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's feedback, the predict and policy functions are kept exactly the same as the previous running-best base. The only change is widening the parameter bounds for `alpha`, `gamma`, and `theta` to allow the model to fully express the extreme non-compensatory choice behavior (Take-The-Best-like reversals) observed in Experiments 20, 27, and 28. By expanding `alpha` to 10.0, `gamma` to [-10.0, 10.0], and `theta` to 50.0, the model is granted the necessary flexibility to stretch the initial evidence differences and translate them into highly deterministic choice probabilities."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_17",
+      "killed": true,
+      "theory": {
+        "description": "Sequential Evidence Accumulation with Dynamic Stopping Rule (SPRT Log-Odds Update)",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    threshold = float(parameters[\"threshold\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Process cues sequentially, ordered by validity (descending)\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n    \n    diff_evidence = 0.0\n    for j in cue_order:\n        # Evidence weight for the current cue using SPRT log-odds\n        v = np.clip(val[j], 1e-5, 1.0 - 1e-5)\n        weight = np.log(v / (1.0 - v))\n        \n        if a[j] > b[j]:\n            diff_evidence += weight\n        elif b[j] > a[j]:\n            diff_evidence -= weight\n            \n        # Dynamic stopping rule: stop search if evidence difference exceeds threshold\n        if abs(diff_evidence) >= threshold:\n            break\n            \n    # Map accumulated evidence to choice probabilities using softmax\n    # diff_evidence represents the relative evidence of A over B\n    z = np.array([beta * diff_evidence, 0.0])\n    z = z - np.max(z)\n    e = np.exp(z)\n    p = e / np.sum(e)\n    \n    # Apply lapse rate\n    return (1.0 - epsilon) * p + epsilon * np.array([0.5, 0.5])\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "threshold": "[0.0, 10.0]",
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's advice, we return to the Iteration 1 base and replace the unprincipled `val[j] ** gamma` weighting with the mathematically optimal Sequential Probability Ratio Test (SPRT) update: `np.log(v / (1.0 - v))`. The `gamma` parameter is removed entirely, eliminating the instability caused by negative exponents while keeping the robust stopping-rule dynamics. The `threshold` and `beta` parameters naturally absorb the scaling requirements."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_18",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Dual-Process Dynamic Attention Model: Decision-makers start by evaluating options using a fast, unweighted tallying process. If the relative tally difference (normalized by the number of cues) is large, this simple cue count drives the choice. However, when the initial relative tally difference is small or cues are conflicting, attention dynamically shifts toward the validities of the cues. In this later phase, cues are integrated proportionally to their reliability (validity). The decision-maker integrates the evidence (logits) from both processes before making a final choice, allowing for smooth compensatory behavior in high-conflict trials that scales consistently across environments with varying numbers of cues.",
+      "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    beta_tally = float(parameters[\"beta_tally\"])\n    beta_val = float(parameters[\"beta_val\"])\n    gamma = float(parameters[\"gamma\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Tallying process (unweighted)\n    tally_a = np.sum(a)\n    tally_b = np.sum(b)\n    \n    z_tally = beta_tally * np.array([tally_a, tally_b])\n    \n    # Validity-weighted process\n    val_a = np.sum(a * val)\n    val_b = np.sum(b * val)\n    \n    z_val = beta_val * np.array([val_a, val_b])\n    \n    # Dynamic attention shift based on relative tally difference\n    n_cues = len(a)\n    tally_diff = abs(tally_a - tally_b) / max(1, n_cues)\n    p_shift = np.exp(-gamma * tally_diff)\n    \n    # Mixture of evidence (logits) rather than probabilities\n    z_mix = (1.0 - p_shift) * z_tally + p_shift * z_val\n    z_mix = z_mix - np.max(z_mix)\n    p_mix = np.exp(z_mix) / np.sum(np.exp(z_mix))\n    \n    # Lapse rate\n    p_final = (1.0 - epsilon) * p_mix + epsilon * np.array([0.5, 0.5])\n    \n    return p_final\n",
+      "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+      "parameters": {
+        "beta_tally": "[0.1, 20.0]",
+        "beta_val": "[0.1, 20.0]",
+        "gamma": "[0.0, 20.0]",
+        "epsilon": "[0.0, 0.5]",
+        "validities": "validities"
+      },
+      "rationale": "Following the critic's advice, we normalized the tally difference by the total number of cues (`n_cues`). This ensures that the dynamic attention shift mechanism (`p_shift`) operates on a consistent, relative scale across experiments with varying numbers of features (from 3 to 8). We also expanded the upper bound of `gamma` to 20.0 to compensate for the smaller normalized tally difference values, giving the optimizer enough range to fit the shift."
+    }
+  }
+}

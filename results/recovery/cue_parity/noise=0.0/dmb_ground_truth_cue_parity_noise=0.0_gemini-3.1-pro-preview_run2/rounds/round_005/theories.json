@@ -1,0 +1,60 @@
+{
+  "round_idx": 5,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_7",
+      "killed": false,
+      "theory": {
+        "description": "Dual-Process Strategy Selection with TTB/WADD Fallback: Decision-makers evaluate the raw tally difference between two options first. If the tally difference is highly discriminative (greater than or equal to a threshold), they rely on the fast, compensatory Tallying heuristic. If the tallies are tied or very close, they switch to a more effortful strategy (WADD or Take-The-Best) and use an independent temperature parameter to scale the distinct evidence magnitudes.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    threshold = float(parameters[\"threshold\"])\n    use_ttb = int(parameters[\"use_ttb\"])\n    beta = float(parameters[\"beta\"])\n    beta_fallback = float(parameters[\"beta_fallback\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    tally_a = np.sum(a)\n    tally_b = np.sum(b)\n    \n    if abs(tally_a - tally_b) >= threshold:\n        scores = np.array([tally_a, tally_b])\n        active_beta = beta\n    else:\n        active_beta = beta_fallback\n        if use_ttb == 1:\n            cue_order = np.argsort(-val, kind=\"stable\").tolist()\n            winner = None\n            for j in cue_order:\n                if a[j] > b[j]:\n                    winner = 0\n                    break\n                if b[j] > a[j]:\n                    winner = 1\n                    break\n            if winner == 0:\n                scores = np.array([1.0, 0.0])\n            elif winner == 1:\n                scores = np.array([0.0, 1.0])\n            else:\n                scores = np.array([0.0, 0.0])\n        else:\n            wadd_a = np.sum(val * a)\n            wadd_b = np.sum(val * b)\n            scores = np.array([wadd_a, wadd_b])\n        \n    z = active_beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p = e / np.sum(e)\n    \n    return (1.0 - epsilon) * p + epsilon * np.array([0.5, 0.5])",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)",
+        "parameters": {
+          "threshold": "{1, 2, 3, 4, 5}",
+          "use_ttb": "{0, 1}",
+          "beta": "[0.1, 20.0]",
+          "beta_fallback": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Initial logic and parameters are validated. Standard processing applied. Added `beta_fallback` parameter to independently scale the determinism of the fallback strategy (TTB/WADD), preventing probability miscalibration from mismatched score magnitudes."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_3",
+      "killed": true,
+      "theory": {
+        "description": "Weighted Additive (WADD) theory with non-linear scaling posits that decision-makers integrate all available information by weighting each feature by its validity, but subjectively scale these validities to adjust the degree of compensation. By exponentiating validities by a parameter gamma and then normalizing them, the model flexibly interpolates between equal weighting (Tallying), proportional weighting, and highly non-compensatory weighting (Take The Best) while keeping the integrated scores on a stable scale. Choices are made probabilistically using a softmax over the options' scores.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"WADD expects a (2, n_features) stimulus.\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    gamma = float(parameters[\"gamma\"])\n    \n    # Non-linear scaling of validities with normalization to prevent score shrinkage\n    weights = val ** gamma\n    weights = weights / np.sum(weights)\n    \n    # Calculate overall scores by weighting features by their scaled validity\n    a_score = np.dot(a, weights)\n    b_score = np.dot(b, weights)\n    scores = np.array([a_score, b_score])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Numerically stable softmax\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "gamma": "[0.1, 30.0]",
+          "validities": "validities"
+        },
+        "rationale": "Addressed the critic's feedback by normalizing the weights after exponentiation (`weights = weights / np.sum(weights)`) and expanding the `gamma` range up to 30.0. This prevents the fractional validities from shrinking to zero when raised to a high power, ensuring the weighted scores remain on a stable scale. This allows the `beta` parameter to properly control the determinism of the choice probabilities and stops them from collapsing to 50/50, letting the model fully express strong non-compensatory (TTB-like) behavior."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_8",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Strict Tallying with Validity Tie-Breaker: Decision-makers primarily rely on the unweighted tally of positive features to evaluate options. They always compute this simple tally first. If one option has a strictly higher tally, they choose it (subject to decision noise), ignoring cue validities entirely. Only when the tallies are exactly equal do they incorporate cue validities as a tie-breaker, utilizing either a lexicographic (Take-The-Best) or Weighted Additive strategy to resolve the decision.",
+      "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    beta_tally = float(parameters[\"beta_tally\"])\n    beta_tie = float(parameters[\"beta_tie\"])\n    use_wadd = int(parameters[\"use_wadd\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    tally_a = np.sum(a)\n    tally_b = np.sum(b)\n    \n    if tally_a != tally_b:\n        scores = np.array([tally_a, tally_b])\n        active_beta = beta_tally\n    else:\n        active_beta = beta_tie\n        if use_wadd == 1:\n            wadd_a = np.sum(val * a)\n            wadd_b = np.sum(val * b)\n            scores = np.array([wadd_a, wadd_b])\n        else:\n            cue_order = np.argsort(-val, kind=\"stable\").tolist()\n            winner = None\n            for j in cue_order:\n                if a[j] > b[j]:\n                    winner = 0\n                    break\n                if b[j] > a[j]:\n                    winner = 1\n                    break\n            if winner == 0:\n                scores = np.array([1.0, 0.0])\n            elif winner == 1:\n                scores = np.array([0.0, 1.0])\n            else:\n                scores = np.array([0.0, 0.0])\n                \n    z = active_beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p = e / np.sum(e)\n    \n    return (1.0 - epsilon) * p + epsilon * np.array([0.5, 0.5])\n",
+      "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+      "parameters": {
+        "beta_tally": "[0.1, 20.0]",
+        "beta_tie": "[0.1, 20.0]",
+        "use_wadd": "{0, 1}",
+        "epsilon": "[0.0, 0.5]",
+        "validities": "validities"
+      },
+      "rationale": "Following the arbiter's instructions, this theory completely replaces the previous WADD model with a strict lexicographic hierarchy: Tally -> Validity. The decision-maker computes the unweighted tally of positive cues first. If the tallies differ, the choice is driven entirely by the tally difference, naturally predicting the high reliance on tallies (Exp 11) and the ~0 sensitivity to validities when tallies differ (Exp 2). Only when the tallies are tied does the model consider cue validities, using either a Take-The-Best or Weighted Additive tie-breaker (controlled by the `use_wadd` parameter). This maintains validity-based choices in matched-tally trials while capturing the primary dominance of the tallying heuristic."
+    }
+  }
+}

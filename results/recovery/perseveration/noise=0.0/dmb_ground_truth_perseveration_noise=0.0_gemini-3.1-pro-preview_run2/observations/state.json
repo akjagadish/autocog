@@ -1,0 +1,1905 @@
+{
+  "rounds": [
+    {
+      "observations": [
+        {
+          "experiment": {
+            "rationale": "This design strictly dissociates Take The Best (TTB) from Tallying by manipulating the distribution of feature-wise wins across cues of varying validities. In trials 1-6, one option wins on the single highest-validity cue available, while the other option wins on a greater number of lower-validity cues. TTB predicts choice strictly based on the highest-validity discriminating cue, whereas Tallying predicts choice based on the simple count of feature wins. Trials 7-8 represent cases where Tallying predicts a tie (guessing) due to equal numbers of feature wins, but TTB predicts a deterministic choice based on the highest-validity cue.",
+            "validities": [
+              0.9,
+              0.8,
+              0.7,
+              0.6
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                0
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    \n    agreements = []\n    for _, row in data.iterrows():\n        a = row['option_a_ratings']\n        b = row['option_b_ratings']\n        resp = row['response']\n        \n        ttb_pred = -1\n        # Features are in descending order of validity: [0.9, 0.8, 0.7, 0.6]\n        for i in range(len(a)):\n            if a[i] > b[i]:\n                ttb_pred = 0\n                break\n            elif b[i] > a[i]:\n                ttb_pred = 1\n                break\n                \n        if ttb_pred != -1:\n            agreements.append(1.0 if resp == ttb_pred else 0.0)\n            \n    return float(np.mean(agreements)) if agreements else 0.0\n",
+            "rationale": "This metric calculates the proportion of choices that align with the Take The Best (TTB) prediction. Under the TTB theory, subjects process cues in descending order of validity and choose the option favored by the first discriminating cue. For this experimental design, TTB makes deterministic predictions on all trials. In contrast, Tallying counts overall feature wins. On trials 1-6, the Tallying prediction is diametrically opposed to TTB (yielding ~0% agreement), and on trials 7-8 Tallying guesses (~50% agreement). Thus, data simulated under TTB will yield a metric value near 1.0, while data simulated under Tallying will yield a value near 0.125, resulting in an enormous and highly reliable gap between the two theories."
+          },
+          "proposer_theory": {
+            "description": "People compare two options by consulting cues one at a time in order of validity, stopping at the first cue that discriminates between the two options. That cue alone determines the choice: the option with the higher value on the discriminating cue wins, and no other cue is consulted. Cues with lower validity are never reached when a higher-validity cue already discriminates, so Take The Best is a \"one-reason\" decision rule \u2014 only a single feature is ever used on any given choice. Because only the sign of the comparison on the top discriminating cue matters, TTB ignores both the magnitude of that difference and all information on lower-validity cues, making it maximally frugal in the use of evidence. Cue validities are subjective and can be learned, inferred from instructions, or fixed by task structure. When no cue discriminates (all feature-wise comparisons tie) the learner has no basis for preference and must guess. Response noise enters through a softmax over the binary TTB score (winner = 1, loser = 0) with inverse temperature beta, plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+            "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Take The Best (Gigerenzer & Goldstein 1996).\n    # Stimulus is the pair of option feature vectors for the current\n    # trial: array-like of shape (2, n_features), row 0 = option A,\n    # row 1 = option B. Cue cascade: features are consulted in order\n    # of descending validity; the first discriminating cue (strict\n    # inequality) determines the winner; if no cue discriminates,\n    # the model guesses uniformly. History is ignored.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"TTB expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n    n_features = stim.shape[1]\n\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    if val.shape[0] != n_features:\n        raise ValueError(\n            f\"validities length {val.shape[0]} != n_features {n_features}.\"\n        )\n    # Descending validity; argsort is stable so validity ties break\n    # toward the earlier feature index.\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n\n    a, b = stim[0], stim[1]\n    winner = None\n    for j in cue_order:\n        if a[j] > b[j]:\n            winner = 0\n            break\n        if b[j] > a[j]:\n            winner = 1\n            break\n\n    if winner is None:\n        # No discriminating cue \u2014 pure guess.\n        return np.ones(2) / 2.0\n\n    scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. For the\n    # binary TTB score this collapses to sigmoid(beta) for the winner,\n    # giving a direct mapping from beta onto the paper's flip-noise\n    # levels (beta=0 \u2194 50/50; beta \u226b 1 \u2194 deterministic).\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]",
+              "validities": "validities"
+            },
+            "rationale": null
+          },
+          "proposer_label": "pi_1",
+          "real_value": 0.5,
+          "real_variance": 0.0,
+          "predicted_values": [
+            {
+              "value": 0.8389583333333334,
+              "variance": 0.011949696180555554,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.219375,
+              "variance": 0.006980946180555556,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.6072916666666667,
+              "variance": 0.026281467013888893,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.49041666666666667,
+              "variance": 0.0020913194444444443,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.5,
+              "variance": 0.0,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.5577083333333334,
+              "variance": 0.0016371961805555554,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.5,
+              "variance": 0.0,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_000_obs_00.jsonl"
+        },
+        {
+          "experiment": {
+            "rationale": "This design systematically dissociates Tallying from Take The Best (TTB) across a 5-feature environment. It includes 'opposition' trials where one option is favored by the highest-validity discriminating cue (triggering TTB) while the other option has a strictly greater number of feature wins (triggering Tallying). It also includes 'tie' trials where Tallying predicts a 50/50 guess because both options win on an equal number of features, yet TTB predicts a deterministic choice because one option wins on the highest-validity cue among the discriminating ones.",
+            "validities": [
+              0.95,
+              0.85,
+              0.75,
+              0.65,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                1,
+                1
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                0,
+                0
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "import pandas as pd\nimport numpy as np\n\ndef metric(data: pd.DataFrame) -> float:\n    tallying_agreements = 0\n    disagreement_trials = 0\n    \n    for _, row in data.iterrows():\n        a = np.array(row['option_a_ratings'])\n        b = np.array(row['option_b_ratings'])\n        \n        # Tallying prediction\n        a_wins = np.sum(a > b)\n        b_wins = np.sum(b > a)\n        if a_wins > b_wins:\n            tally_pred = 0\n        elif b_wins > a_wins:\n            tally_pred = 1\n        else:\n            tally_pred = -1\n            \n        # Take The Best (TTB) prediction\n        ttb_pred = -1\n        for i in range(len(a)):\n            if a[i] > b[i]:\n                ttb_pred = 0\n                break\n            elif b[i] > a[i]:\n                ttb_pred = 1\n                break\n                \n        # Check for strict opposition between the two heuristics\n        if tally_pred != -1 and ttb_pred != -1 and tally_pred != ttb_pred:\n            disagreement_trials += 1\n            if row['response'] == tally_pred:\n                tallying_agreements += 1\n                \n    if disagreement_trials == 0:\n        return 0.5\n    return tallying_agreements / disagreement_trials\n",
+            "rationale": "This metric isolates the exact trials where Tallying and Take The Best make strictly opposite deterministic predictions (the 'opposition' trials in the design). It calculates the proportion of choices on these trials that align with the Tallying heuristic. Under the advocated Tallying theory, this proportion will be high (close to 1, subject to noise), whereas under the competing Take The Best theory, the proportion will be low (close to 0), ensuring maximum separation between the two theories."
+          },
+          "proposer_theory": {
+            "description": "People compare two options by counting, across all features, how often one option has a higher value than the other. The option that wins on more features is chosen. Tallying discards cardinal magnitudes \u2014 only the sign of each feature-wise comparison matters \u2014 so the heuristic is robust to monotone rescaling of individual features and cannot be swayed by a single large feature difference in the way Equal-Weight can. Ties on an individual feature contribute nothing to either count: that cue is simply treated as uninformative for the pair. No feature is privileged, in contrast to Take The Best; every cue contributes equally to the tally. When the two counts are equal the heuristic has no basis for preference and the learner must guess. Response noise enters through a softmax over the two tallies with inverse temperature beta (interpolating between fully deterministic choice at large beta and uniform guessing at beta = 0), plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+            "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Tallying heuristic (Dawes 1979; Gigerenzer &\n    # Goldstein 1999). Stimulus is the pair of option feature vectors\n    # for the current trial: array-like of shape (2, n_features),\n    # with row 0 = option A, row 1 = option B. History is ignored.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"Tallying expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n\n    a, b = stim[0], stim[1]\n    # Count strict feature-wise wins; ties contribute to neither option.\n    a_wins = float(np.sum(a > b))\n    b_wins = float(np.sum(b > a))\n    scores = np.array([a_wins, b_wins])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. When\n    # a_wins == b_wins the softmax is exactly uniform regardless of\n    # beta, which is the correct behavior for an undiscriminating\n    # tally.\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]"
+            },
+            "rationale": null
+          },
+          "proposer_label": "pi_2",
+          "real_value": 0.44,
+          "real_variance": 0.02417777777777777,
+          "predicted_values": [
+            {
+              "value": 0.8644444444444445,
+              "variance": 0.015413271604938272,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.12305555555555556,
+              "variance": 0.01087199074074074,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.4475,
+              "variance": 0.038636496913580246,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.4936111111111111,
+              "variance": 0.0033349537037037037,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.5333333333333333,
+              "variance": 0.02666666666666666,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.37972222222222224,
+              "variance": 0.020398225308641976,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.49333333333333335,
+              "variance": 0.027733333333333336,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_000_obs_01.jsonl"
+        }
+      ],
+      "next_theory": {
+        "description": "People use a Weighted Additive (WADD) strategy when comparing two options, but they subjectively scale the stated cue validities. By applying a non-linear transformation to the validities (exponentiating them by a parameter gamma), decision-makers can amplify the differences between cues (mimicking Take The Best) or compress them (mimicking Tallying). Expanding the range of gamma allows for extreme weight disparities, accommodating individuals who rely heavily on the most valid cue.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"WADD expects a (2, n_features) stimulus.\")\n        \n    a, b = stim[0], stim[1]\n    gamma = float(parameters[\"gamma\"])\n    val = np.asarray(parameters[\"validities\"], dtype=float) ** gamma\n    \n    # Compute the weighted sum of features for each option\n    ev_a = np.sum(val * a)\n    ev_b = np.sum(val * b)\n    scores = np.array([ev_a, ev_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax with max-subtraction for numerical stability\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = len(p_core)\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "gamma": "[0.1, 20.0]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's feedback, the upper bound of the 'gamma' parameter is significantly widened from 5.0 to 20.0. This allows the model to achieve the extreme weight disparities needed to more closely mimic Take-The-Best behavior for subjects who heavily prioritize the most valid cues, reducing the over-prediction of Tallying and increasing the TTB agreement to better match empirical targets."
+      },
+      "next_theory_idx": 2,
+      "next_theory_label": "pi_3"
+    },
+    {
+      "observations": [
+        {
+          "experiment": {
+            "rationale": "This design quantitatively dissociates Take The Best (TTB) from the generalized Weighted Additive (WADD) strategy by exploiting their different confidence (choice probability) predictions. TTB generates a binary internal score (1 for the winner, 0 for the loser) based solely on the first discriminating cue, completely ignoring the magnitude of the validities and the number of opposing cues. Consequently, TTB predicts a constant choice probability across all trials where a choice is made. By contrast, WADD computes a weighted sum. To mimic TTB's choices on trials where lower-validity cues outnumber the highest-validity cue (e.g., Trial 1), WADD requires a high 'gamma' parameter to heavily skew the weights. However, a high gamma causes the absolute difference in weighted sums to shrink exponentially for trials decided by lower-validity cues (e.g., Trial 4). Thus, WADD predicts highly variable choice probabilities across these trials (very confident when Cue 1 decides, near-guessing when Cue 4 decides), whereas TTB predicts uniform confidence.",
+            "validities": [
+              0.9,
+              0.8,
+              0.7,
+              0.6,
+              0.5
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    import pandas as pd\n    \n    # Create a hashable key for trial types based on Option A's features\n    # (Since each of the 8 unique trial types has a distinct Option A, this uniquely identifies the trial type)\n    trial_keys = data['option_a_ratings'].apply(tuple)\n    \n    # Calculate whether the subject chose Option A (response == 0)\n    chose_A = (data['response'] == 0).astype(float)\n    \n    # Combine into a temporary DataFrame to group\n    df_temp = pd.DataFrame({'trial_key': trial_keys, 'chose_A': chose_A})\n    \n    # Compute the proportion of Option A choices for each trial type\n    props = df_temp.groupby('trial_key')['chose_A'].mean()\n    \n    # Return the standard deviation of these choice proportions across the 8 trial types\n    return float(np.std(props))",
+            "rationale": "By design, Option A is always favored by the first discriminating cue in all 8 trial types. Therefore, Take The Best (TTB) predicts a constant probability of choosing Option A across all trials, depending only on the subject's noise parameters. Consequently, the standard deviation of the proportion of A choices across the 8 trial types should be very small for TTB (reflecting only binomial sampling noise). In contrast, the Weighted Additive (WADD) model evaluates the weighted sum of all cues. Because the cue trade-offs and absolute value differences vary drastically across the 8 trial types, WADD predicts highly variable choice probabilities for Option A (e.g., very confident on some trials, near-guessing or even preferring B on others, depending on the gamma parameter). Thus, WADD will yield a significantly higher standard deviation of choice proportions across trial types."
+          },
+          "proposer_theory": {
+            "description": "People compare two options by consulting cues one at a time in order of validity, stopping at the first cue that discriminates between the two options. That cue alone determines the choice: the option with the higher value on the discriminating cue wins, and no other cue is consulted. Cues with lower validity are never reached when a higher-validity cue already discriminates, so Take The Best is a \"one-reason\" decision rule \u2014 only a single feature is ever used on any given choice. Because only the sign of the comparison on the top discriminating cue matters, TTB ignores both the magnitude of that difference and all information on lower-validity cues, making it maximally frugal in the use of evidence. Cue validities are subjective and can be learned, inferred from instructions, or fixed by task structure. When no cue discriminates (all feature-wise comparisons tie) the learner has no basis for preference and must guess. Response noise enters through a softmax over the binary TTB score (winner = 1, loser = 0) with inverse temperature beta, plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+            "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Take The Best (Gigerenzer & Goldstein 1996).\n    # Stimulus is the pair of option feature vectors for the current\n    # trial: array-like of shape (2, n_features), row 0 = option A,\n    # row 1 = option B. Cue cascade: features are consulted in order\n    # of descending validity; the first discriminating cue (strict\n    # inequality) determines the winner; if no cue discriminates,\n    # the model guesses uniformly. History is ignored.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"TTB expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n    n_features = stim.shape[1]\n\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    if val.shape[0] != n_features:\n        raise ValueError(\n            f\"validities length {val.shape[0]} != n_features {n_features}.\"\n        )\n    # Descending validity; argsort is stable so validity ties break\n    # toward the earlier feature index.\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n\n    a, b = stim[0], stim[1]\n    winner = None\n    for j in cue_order:\n        if a[j] > b[j]:\n            winner = 0\n            break\n        if b[j] > a[j]:\n            winner = 1\n            break\n\n    if winner is None:\n        # No discriminating cue \u2014 pure guess.\n        return np.ones(2) / 2.0\n\n    scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. For the\n    # binary TTB score this collapses to sigmoid(beta) for the winner,\n    # giving a direct mapping from beta onto the paper's flip-noise\n    # levels (beta=0 \u2194 50/50; beta \u226b 1 \u2194 deterministic).\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]",
+              "validities": "validities"
+            },
+            "rationale": null
+          },
+          "proposer_label": "pi_1",
+          "real_value": 0.0,
+          "real_variance": 0.0,
+          "predicted_values": [
+            {
+              "value": 0.011545125835414517,
+              "variance": 0.0012646534961636487,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.1069460452621892,
+              "variance": 0.0046400819202485405,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.25121708946977844,
+              "variance": 0.0036783769747061206,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.017984368212422712,
+              "variance": 0.0007314609402775591,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.0,
+              "variance": 0.0,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.00869027233942257,
+              "variance": 0.0020712791590456795,
+              "label": "pi_6"
+            },
+            {
+              "value": 5.551115123125783e-17,
+              "variance": 0.0,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_001_obs_00.jsonl"
+        },
+        {
+          "experiment": {
+            "rationale": "This design quantitatively dissociates the generalized Weighted Additive (WADD) strategy from Take The Best (TTB) by exploiting their divergent predictions regarding choice confidence. TTB relies entirely on the first discriminating cue, ignoring both the absolute validity of that cue and any opposing lower-validity cues. Consequently, TTB predicts a constant choice probability (confidence) across all trials where a choice is made. Conversely, WADD computes a weighted sum of all cues, with validities transformed by a gamma parameter. Even if gamma is high (mimicking TTB's choices), the absolute difference in weighted sums shrinks exponentially for trials decided by lower-validity cues. Thus, WADD predicts highly variable choice probabilities across trials depending on which cue decides the choice and how many cues oppose it, while TTB predicts uniform confidence.",
+            "validities": [
+              0.95,
+              0.85,
+              0.75,
+              0.65,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                1,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    # Create a hashable key for trial types based on option A (which is unique for all 8 pairs)\n    keys = data['option_a_ratings'].apply(tuple)\n    # Compute the mean response (proportion of B choices) per subject per trial type\n    means = data.assign(trial_key=keys).groupby(['subject_id', 'trial_key'])['response'].mean()\n    # Compute the variance of these means across the 8 trial types for each subject, then average\n    return float(means.groupby('subject_id').var(ddof=0).mean())",
+            "rationale": "In the chosen experimental design, Take The Best (TTB) consistently identifies Option A as the winner across all 8 trial types because the first discriminating cue always favors Option A. Consequently, TTB predicts a uniform probability of choosing Option A across all trials, leading to a near-zero true variance in choice probabilities across trial types. In contrast, the Weighted Additive (WADD) strategy integrates all cues, meaning the number of opposing cues significantly modulates choice confidence. Thus, WADD predicts highly variable choice probabilities across the 8 trial types. By calculating the variance of each subject's mean response across the 8 unique trial pairs, this metric will yield a much higher value for data generated under WADD compared to TTB."
+          },
+          "proposer_theory": {
+            "description": "People use a Weighted Additive (WADD) strategy when comparing two options, but they subjectively scale the stated cue validities. By applying a non-linear transformation to the validities (exponentiating them by a parameter gamma), decision-makers can amplify the differences between cues (mimicking Take The Best) or compress them (mimicking Tallying). Expanding the range of gamma allows for extreme weight disparities, accommodating individuals who rely heavily on the most valid cue.",
+            "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"WADD expects a (2, n_features) stimulus.\")\n        \n    a, b = stim[0], stim[1]\n    gamma = float(parameters[\"gamma\"])\n    val = np.asarray(parameters[\"validities\"], dtype=float) ** gamma\n    \n    # Compute the weighted sum of features for each option\n    ev_a = np.sum(val * a)\n    ev_b = np.sum(val * b)\n    scores = np.array([ev_a, ev_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax with max-subtraction for numerical stability\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = len(p_core)\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]",
+              "gamma": "[0.1, 20.0]",
+              "validities": "validities"
+            },
+            "rationale": "Following the critic's feedback, the upper bound of the 'gamma' parameter is significantly widened from 5.0 to 20.0. This allows the model to achieve the extreme weight disparities needed to more closely mimic Take-The-Best behavior for subjects who heavily prioritize the most valid cues, reducing the over-prediction of Tallying and increasing the TTB agreement to better match empirical targets."
+          },
+          "proposer_label": "pi_3",
+          "real_value": 0.0,
+          "real_variance": 0.0,
+          "predicted_values": [
+            {
+              "value": 0.03572482638888889,
+              "variance": 0.001048085982711227,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.008938802083333334,
+              "variance": 3.7483351907612364e-05,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.10121527777777778,
+              "variance": 0.0022036950382185575,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.017753906249999996,
+              "variance": 6.69417628535518e-05,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.0,
+              "variance": 0.0,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.0038563368055555547,
+              "variance": 4.577834988817755e-05,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.0,
+              "variance": 0.0,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_001_obs_01.jsonl"
+        }
+      ],
+      "next_theory": {
+        "description": "Random Guessing / High-Noise Tallying: Due to the lack of trial-by-trial feedback and potentially low engagement, subjects largely ignore cue validities and feature values. Instead, they make choices that are nearly indistinguishable from uniform random guessing, which can be modeled as a simple unweighted tally of features heavily diluted by extreme decision noise and high lapse rates. This explains the ~0.5 agreement with Take The Best, ~0.44 agreement with Tallying, and the near-zero variance in choice proportions across different trial types.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be of shape (2, n_features).\")\n        \n    a, b = stim[0], stim[1]\n    \n    # Unweighted tally of winning features\n    a_wins = float(np.sum(a > b))\n    b_wins = float(np.sum(b > a))\n    scores = np.array([a_wins, b_wins])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax with max-subtraction for numerical stability\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = len(p_core)\n    # Blend with uniform guessing based on epsilon\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+        "parameters": {
+          "beta": "[0.0, 0.05]",
+          "epsilon": "[0.8, 1.0]"
+        },
+        "rationale": "Following the arbiter's recommendation, this theory models subjects as being highly disengaged or unable to form a coherent strategy due to the lack of feedback. They rely on a simple Tallying heuristic but with extremely high decision noise (low beta) and a very high lapse rate (high epsilon), effectively reducing their choices to near-random guessing. This aligns with the observed ~0.50 agreement with TTB (Exp 1), ~0.44 agreement with Tallying (Exp 2), and near-zero variance across trial types in Exps 3 and 4, which is characteristic of a flat, uninformative response profile."
+      },
+      "next_theory_idx": 1,
+      "next_theory_label": "pi_4"
+    },
+    {
+      "observations": [
+        {
+          "experiment": {
+            "rationale": "This design aims to completely dissociate the Random Guessing / High-Noise Tallying theory from the Weighted Additive (WADD) theory by including trials that vary from extreme evidence disparities to complex trade-offs. WADD predicts that choice probabilities will systematically track the weighted sum of validities (transformed by gamma), leading to highly deterministic choices (probabilities near 1.0 or 0.0) when one option dominates (e.g., all 1s vs all 0s) or when the weighted evidence strongly favors one side. In stark contrast, the advocated Random Guessing theory predicts that subjects largely ignore the validities and feature values due to high noise and lapse rates, resulting in choice proportions that remain universally close to 50/50 across all trials, with only a marginal pull toward the option with more unweighted feature wins.",
+            "validities": [
+              0.95,
+              0.85,
+              0.75,
+              0.65,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import pandas as pd\n    import numpy as np\n    \n    # Create a hashable string key for each unique trial type\n    a_str = data['option_a_ratings'].apply(lambda x: \"\".join(map(str, x)))\n    b_str = data['option_b_ratings'].apply(lambda x: \"\".join(map(str, x)))\n    \n    df = data.copy()\n    df['trial_key'] = a_str + \"_\" + b_str\n    \n    # Calculate the proportion of choosing option B (response = 1) for each subject and trial type\n    subject_trial_means = df.groupby(['subject_id', 'trial_key'])['response'].mean()\n    \n    # Calculate the absolute difference from 0.5 (extremeness of choice probability)\n    abs_devs = (subject_trial_means - 0.5).abs()\n    \n    # Return the average extremeness across all subjects and trial types\n    return float(abs_devs.mean())",
+            "rationale": "The Weighted Additive (WADD) theory predicts highly deterministic choices (probabilities near 0 or 1) because subjects consistently apply subjective weights to the cues, leading to strong preferences on most trials. The Random Guessing theory, conversely, predicts that choice proportions will hover closely around 0.5 due to high noise and lapse rates. By calculating the absolute deviation of each subject's choice proportion from 0.5 for each trial type and averaging them, we directly quantify the 'extremeness' of their choices. WADD will yield high values (close to 0.5), whereas Random Guessing will yield low values (driven mostly by finite-sample binomial variance, around 0.22 for 12 repetitions)."
+          },
+          "proposer_theory": {
+            "description": "Random Guessing / High-Noise Tallying: Due to the lack of trial-by-trial feedback and potentially low engagement, subjects largely ignore cue validities and feature values. Instead, they make choices that are nearly indistinguishable from uniform random guessing, which can be modeled as a simple unweighted tally of features heavily diluted by extreme decision noise and high lapse rates. This explains the ~0.5 agreement with Take The Best, ~0.44 agreement with Tallying, and the near-zero variance in choice proportions across different trial types.",
+            "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be of shape (2, n_features).\")\n        \n    a, b = stim[0], stim[1]\n    \n    # Unweighted tally of winning features\n    a_wins = float(np.sum(a > b))\n    b_wins = float(np.sum(b > a))\n    scores = np.array([a_wins, b_wins])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax with max-subtraction for numerical stability\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = len(p_core)\n    # Blend with uniform guessing based on epsilon\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+            "parameters": {
+              "beta": "[0.0, 0.05]",
+              "epsilon": "[0.8, 1.0]"
+            },
+            "rationale": "Following the arbiter's recommendation, this theory models subjects as being highly disengaged or unable to form a coherent strategy due to the lack of feedback. They rely on a simple Tallying heuristic but with extremely high decision noise (low beta) and a very high lapse rate (high epsilon), effectively reducing their choices to near-random guessing. This aligns with the observed ~0.50 agreement with TTB (Exp 1), ~0.44 agreement with Tallying (Exp 2), and near-zero variance across trial types in Exps 3 and 4, which is characteristic of a flat, uninformative response profile."
+          },
+          "proposer_label": "pi_4",
+          "real_value": 0.5,
+          "real_variance": 0.0,
+          "predicted_values": [
+            {
+              "value": 0.11541666666666667,
+              "variance": 0.0010756944444444444,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.32875,
+              "variance": 0.006992881944444446,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.3577083333333333,
+              "variance": 0.009004383680555556,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.363125,
+              "variance": 0.006584244791666667,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.5,
+              "variance": 0.0,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.44375,
+              "variance": 0.0026215277777777773,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.5,
+              "variance": 0.0,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_002_obs_00.jsonl"
+        },
+        {
+          "experiment": {
+            "rationale": "To decisively dissociate the Weighted Additive (WADD) theory from the Random Guessing / High-Noise Tallying theory, this design spans a wide range of evidence disparities. The Random Guessing theory posits that subjects suffer from extreme noise (epsilon > 0.8) and low sensitivity (beta < 0.05), predicting that choice probabilities will remain stubbornly close to 50/50 across all trials, with only marginal biases toward options with more unweighted feature wins. In contrast, WADD predicts highly deterministic choices when one option strongly dominates or when high-validity cues heavily favor one side. By including complete dominance trials, single-cue difference trials of varying validities, and trials where a single high-validity cue opposes multiple low-validity cues, we can reveal whether subjects exhibit the high-confidence, validity-sensitive choices predicted by WADD, which the high-noise tallying model fundamentally cannot accommodate.",
+            "validities": [
+              0.95,
+              0.8,
+              0.7,
+              0.6,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import pandas as pd\n    import numpy as np\n    \n    # Create a hashable string representation for each unique trial type\n    a_str = data['option_a_ratings'].apply(lambda x: ''.join(map(str, x)))\n    b_str = data['option_b_ratings'].apply(lambda x: ''.join(map(str, x)))\n    trial_type = a_str + \"_\" + b_str\n    \n    # Response is 0 for A, 1 for B. We want proportion of choosing A.\n    chose_A = 1 - data['response']\n    \n    df = pd.DataFrame({\n        'subject_id': data['subject_id'],\n        'trial_type': trial_type,\n        'chose_A': chose_A\n    })\n    \n    # Calculate the proportion of choosing A for each subject and trial type\n    subj_trial = df.groupby(['subject_id', 'trial_type'])['chose_A'].mean()\n    \n    # Calculate the absolute deviation from 0.5 (random guessing)\n    abs_dev = (subj_trial - 0.5).abs()\n    \n    # Average across trial types for each subject\n    subj_dev = abs_dev.groupby('subject_id').mean()\n    \n    # Return the grand mean across subjects\n    return float(subj_dev.mean())",
+            "rationale": "This metric calculates the mean absolute deviation of choice proportions from 0.5 for each unique trial type. The Random Guessing / High-Noise theory predicts that choice proportions will be very close to 0.5 on all trials, resulting in a low absolute deviation (driven purely by binomial noise over 12 repetitions, yielding ~0.22). The Advocated WADD theory predicts highly deterministic choices on many trial types, pushing choice proportions close to 0 or 1, resulting in a high absolute deviation (closer to 0.5). Averaging this across all trial types per subject provides a highly stable measure of choice determinism."
+          },
+          "proposer_theory": {
+            "description": "People use a Weighted Additive (WADD) strategy when comparing two options, but they subjectively scale the stated cue validities. By applying a non-linear transformation to the validities (exponentiating them by a parameter gamma), decision-makers can amplify the differences between cues (mimicking Take The Best) or compress them (mimicking Tallying). Expanding the range of gamma allows for extreme weight disparities, accommodating individuals who rely heavily on the most valid cue.",
+            "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"WADD expects a (2, n_features) stimulus.\")\n        \n    a, b = stim[0], stim[1]\n    gamma = float(parameters[\"gamma\"])\n    val = np.asarray(parameters[\"validities\"], dtype=float) ** gamma\n    \n    # Compute the weighted sum of features for each option\n    ev_a = np.sum(val * a)\n    ev_b = np.sum(val * b)\n    scores = np.array([ev_a, ev_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax with max-subtraction for numerical stability\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = len(p_core)\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]",
+              "gamma": "[0.1, 20.0]",
+              "validities": "validities"
+            },
+            "rationale": "Following the critic's feedback, the upper bound of the 'gamma' parameter is significantly widened from 5.0 to 20.0. This allows the model to achieve the extreme weight disparities needed to more closely mimic Take-The-Best behavior for subjects who heavily prioritize the most valid cues, reducing the over-prediction of Tallying and increasing the TTB agreement to better match empirical targets."
+          },
+          "proposer_label": "pi_3",
+          "real_value": 0.5,
+          "real_variance": 0.0,
+          "predicted_values": [
+            {
+              "value": 0.27541666666666664,
+              "variance": 0.005621354166666665,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.113125,
+              "variance": 0.0010373697916666667,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.35333333333333333,
+              "variance": 0.006340451388888888,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.32083333333333336,
+              "variance": 0.00665798611111111,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.5,
+              "variance": 0.0,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.43020833333333336,
+              "variance": 0.004745008680555555,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.5,
+              "variance": 0.0,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_002_obs_01.jsonl"
+        }
+      ],
+      "next_theory": {
+        "description": "Strong Position Bias / Constant Choice: Due to the lack of trial-by-trial feedback and low engagement, subjects adopt a degenerate strategy of always choosing the same option (e.g., always Option A or always Option B) regardless of the cues. This leads to choice probabilities of 1.0 or 0.0 for a given subject across all trials, perfectly explaining the near-zero within-subject variance across trial types and the extreme choice probabilities observed.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    # The subject has a strict preference for either Option A (0) or Option B (1)\n    pref = int(parameters[\"preferred_option\"])\n    \n    if pref == 0:\n        return np.array([1.0, 0.0])\n    else:\n        return np.array([0.0, 1.0])\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+        "parameters": {
+          "preferred_option": "{0, 1}"
+        },
+        "rationale": "The arbiter pointed out that subjects might be completely disengaged and use a constant choice strategy, resulting in extreme probabilities (0 or 1) for a given subject. This perfectly predicts the 0.0 variance across trial types in Experiments 3 and 4, and the 0.5 extremeness in Experiments 5 and 6, while yielding ~0.5 agreements in Experiments 1 and 2."
+      },
+      "next_theory_idx": 1,
+      "next_theory_label": "pi_5"
+    },
+    {
+      "observations": [
+        {
+          "experiment": {
+            "rationale": "To decisively dissociate the Strong Position Bias (Constant Choice) theory from the Weighted Additive (WADD) theory, this design spans extreme variations in evidence for Options A and B. WADD dictates that choices must be driven by the weighted sums of the features; thus, it predicts that subjects will overwhelmingly choose Option A when A dominates, and Option B when B dominates. Crucially, the WADD model provided lacks any position bias parameter. By including trials where Option B completely dominates Option A (e.g., B has all 1s, A has all 0s), WADD is fundamentally incapable of predicting that a subject will still choose Option A with near certainty. The Strong Position Bias theory, however, predicts exactly this: a degenerate strategy where a subject invariably chooses the same option (e.g., Option A) across all trials, completely ignoring the stimulus evidence.",
+            "validities": [
+              0.95,
+              0.85,
+              0.75,
+              0.65,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                0,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                1,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    return float(data.groupby('subject_id')['response'].var(ddof=0).mean())",
+            "rationale": "The Strong Position Bias theory posits that subjects always choose the same option (either A or B) regardless of the stimulus, leading to a within-subject choice variance of exactly 0. The WADD theory predicts that subjects will shift their choices depending on which option has better features, leading to a within-subject variance closer to 0.25 (since half the trials favor A and half favor B). By calculating the mean within-subject variance of choices, we can perfectly distinguish the two models."
+          },
+          "proposer_theory": {
+            "description": "Strong Position Bias / Constant Choice: Due to the lack of trial-by-trial feedback and low engagement, subjects adopt a degenerate strategy of always choosing the same option (e.g., always Option A or always Option B) regardless of the cues. This leads to choice probabilities of 1.0 or 0.0 for a given subject across all trials, perfectly explaining the near-zero within-subject variance across trial types and the extreme choice probabilities observed.",
+            "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    # The subject has a strict preference for either Option A (0) or Option B (1)\n    pref = int(parameters[\"preferred_option\"])\n    \n    if pref == 0:\n        return np.array([1.0, 0.0])\n    else:\n        return np.array([0.0, 1.0])\n",
+            "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+            "parameters": {
+              "preferred_option": "{0, 1}"
+            },
+            "rationale": "The arbiter pointed out that subjects might be completely disengaged and use a constant choice strategy, resulting in extreme probabilities (0 or 1) for a given subject. This perfectly predicts the 0.0 variance across trial types in Experiments 3 and 4, and the 0.5 extremeness in Experiments 5 and 6, while yielding ~0.5 agreements in Experiments 1 and 2."
+          },
+          "proposer_label": "pi_5",
+          "real_value": 0.0,
+          "real_variance": 0.0,
+          "predicted_values": [
+            {
+              "value": 0.0,
+              "variance": 0.0,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.24906032986111115,
+              "variance": 1.1715406253014573e-06,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.24883029513888894,
+              "variance": 2.847501966688373e-06,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.24880859375,
+              "variance": 2.4736616346571617e-06,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.247734375,
+              "variance": 1.229869701244226e-05,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.05254557291666666,
+              "variance": 0.0013609021080864805,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.0,
+              "variance": 0.0,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_003_obs_00.jsonl"
+        },
+        {
+          "experiment": {
+            "rationale": "To dissociate the Weighted Additive (WADD) theory from the Strong Position Bias theory, this design includes trials spanning the full spectrum of evidence disparities. WADD predicts that choice probabilities will track the weighted evidence, shifting dynamically from near 1.0 (when Option A dominates) to near 0.0 (when Option B dominates). In contrast, the Strong Position Bias theory posits that subjects completely ignore the stimulus and consistently choose the same option across all trials, yielding a flat choice probability of 1.0 or 0.0 regardless of whether Option A or Option B is favored by the cues. By including complete dominance trials for both A and B, as well as complex trade-offs, we can clearly distinguish a stimulus-sensitive WADD strategy from a degenerate constant-choice strategy.",
+            "validities": [
+              0.95,
+              0.85,
+              0.75,
+              0.65,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                0,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    sum_a = data['option_a_ratings'].apply(sum)\n    sum_b = data['option_b_ratings'].apply(sum)\n    \n    t1_mask = (sum_a == 5) & (sum_b == 0)\n    t2_mask = (sum_a == 0) & (sum_b == 5)\n    \n    m1 = data[t1_mask].groupby('subject_id')['response'].mean()\n    m2 = data[t2_mask].groupby('subject_id')['response'].mean()\n    \n    diff = m2 - m1\n    return float(diff.mean())",
+            "rationale": "This metric isolates the two complete dominance trials: Trial 1 where Option A has all positive features and Option B has none, and Trial 2 where the reverse is true. It calculates the difference in the proportion of choosing Option B between Trial 2 and Trial 1 for each subject. Under the WADD theory, subjects will strongly prefer Option A in Trial 1 (response near 0) and Option B in Trial 2 (response near 1), yielding a difference near 1.0. Under the Strong Position Bias theory, subjects consistently choose the same option regardless of the stimulus, yielding a difference of exactly 0.0 with zero variance."
+          },
+          "proposer_theory": {
+            "description": "People use a Weighted Additive (WADD) strategy when comparing two options, but they subjectively scale the stated cue validities. By applying a non-linear transformation to the validities (exponentiating them by a parameter gamma), decision-makers can amplify the differences between cues (mimicking Take The Best) or compress them (mimicking Tallying). Expanding the range of gamma allows for extreme weight disparities, accommodating individuals who rely heavily on the most valid cue.",
+            "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"WADD expects a (2, n_features) stimulus.\")\n        \n    a, b = stim[0], stim[1]\n    gamma = float(parameters[\"gamma\"])\n    val = np.asarray(parameters[\"validities\"], dtype=float) ** gamma\n    \n    # Compute the weighted sum of features for each option\n    ev_a = np.sum(val * a)\n    ev_b = np.sum(val * b)\n    scores = np.array([ev_a, ev_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax with max-subtraction for numerical stability\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = len(p_core)\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]",
+              "gamma": "[0.1, 20.0]",
+              "validities": "validities"
+            },
+            "rationale": "Following the critic's feedback, the upper bound of the 'gamma' parameter is significantly widened from 5.0 to 20.0. This allows the model to achieve the extreme weight disparities needed to more closely mimic Take-The-Best behavior for subjects who heavily prioritize the most valid cues, reducing the over-prediction of Tallying and increasing the TTB agreement to better match empirical targets."
+          },
+          "proposer_label": "pi_3",
+          "real_value": 0.0,
+          "real_variance": 0.0,
+          "predicted_values": [
+            {
+              "value": 0.7250000000000001,
+              "variance": 0.05284722222222221,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.0,
+              "variance": 0.0,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.6900000000000002,
+              "variance": 0.06362222222222223,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.7316666666666667,
+              "variance": 0.047302777777777784,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.02333333333333333,
+              "variance": 0.04112222222222222,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.135,
+              "variance": 0.016636111111111112,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.0,
+              "variance": 0.0,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_003_obs_01.jsonl"
+        }
+      ],
+      "next_theory": {
+        "description": "Mixture of Constant Choice and Take-The-Best: Subjects primarily exhibit a degenerate strategy of relying on a fixed position preference (always choosing Option A or always Option B) due to low engagement or lack of trial-by-trial feedback. However, on a small fraction of trials, they lapse into using a single-cue heuristic (Take-The-Best), where they compare the options on the most valid cue. This mixture maintains the near-zero variance in choice proportions across most experiments while capturing the slight preference for TTB over Tallying in disagreement trials.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    a, b = stim[0], stim[1]\n    \n    pref = int(parameters[\"preferred_option\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Constant choice probabilities\n    p_const = np.array([1.0, 0.0]) if pref == 0 else np.array([0.0, 1.0])\n    \n    # Take-The-Best (TTB) prediction\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    order = np.argsort(validities)[::-1]\n    \n    ttb_pred = -1\n    for idx in order:\n        if a[idx] > b[idx]:\n            ttb_pred = 0\n            break\n        elif b[idx] > a[idx]:\n            ttb_pred = 1\n            break\n            \n    if ttb_pred == 0:\n        p_ttb = np.array([1.0, 0.0])\n    elif ttb_pred == 1:\n        p_ttb = np.array([0.0, 1.0])\n    else:\n        p_ttb = np.array([0.5, 0.5])\n        \n    return (1.0 - epsilon) * p_const + epsilon * p_ttb\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+        "parameters": {
+          "preferred_option": "{0, 1}",
+          "epsilon": "[0.0, 0.25]",
+          "validities": "validities"
+        },
+        "rationale": "Following the arbiter's suggestion, this model abandons compensatory cue weighting and builds on the highly successful constant-choice mechanism of Theory 1 (pi_5). By modeling behavior as a mixture of a strict position preference and occasional lapses into a single-cue heuristic (Take-The-Best), the model retains the ability to predict the near-zero variance and extreme choice probabilities seen across most experiments. The small probability of using TTB (governed by epsilon) allows the model to capture the slight deviations from exactly 0.5 observed in experiments that pit heuristics against each other (e.g., pulling the Tallying agreement down to ~0.44 in Experiment 2) without drastically inflating variance."
+      },
+      "next_theory_idx": 2,
+      "next_theory_label": "pi_6"
+    },
+    {
+      "observations": [
+        {
+          "experiment": {
+            "rationale": "To dissociate the pure Strong Position Bias theory from the Mixture of Constant Choice and Take-The-Best (TTB) theory, we systematically vary the option favored by TTB. The pure Position Bias theory predicts that choice probabilities will be strictly 1.0 or 0.0 for a given option across all trials, completely invariant to the stimulus. The Mixture theory, however, predicts a small but systematic deviation (epsilon) toward the TTB prediction. By including trials where TTB strongly favors Option A, trials where TTB strongly favors Option B, and trials where TTB predicts a tie (identical features), we can detect whether the choice probability fluctuates in alignment with the TTB winner.",
+            "validities": [
+              0.95,
+              0.85,
+              0.75,
+              0.65,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    import pandas as pd\n    \n    def get_ttb_pred(row):\n        a = row['option_a_ratings']\n        b = row['option_b_ratings']\n        for i in range(len(a)):\n            if a[i] > b[i]: return 0\n            if b[i] > a[i]: return 1\n        return -1\n        \n    data['ttb'] = data.apply(get_ttb_pred, axis=1)\n    \n    subj_diffs = []\n    for subj, subj_df in data.groupby('subject_id'):\n        b_trials = subj_df[subj_df['ttb'] == 1]\n        a_trials = subj_df[subj_df['ttb'] == 0]\n        \n        if len(b_trials) > 0 and len(a_trials) > 0:\n            diff = b_trials['response'].mean() - a_trials['response'].mean()\n            subj_diffs.append(diff)\n            \n    if not subj_diffs:\n        return 0.0\n        \n    return float(np.mean(subj_diffs))",
+            "rationale": "The metric computes the within-subject difference in the probability of choosing Option B between trials where Take-The-Best (TTB) favors Option B and trials where TTB favors Option A. Under the pure Strong Position Bias theory, this difference will be exactly zero for all subjects, as they completely ignore the stimuli. Under the Mixture theory, subjects will exhibit a slight shift in choice probability aligned with the TTB prediction, resulting in a strictly positive difference (equal to epsilon) on average."
+          },
+          "proposer_theory": {
+            "description": "Strong Position Bias / Constant Choice: Due to the lack of trial-by-trial feedback and low engagement, subjects adopt a degenerate strategy of always choosing the same option (e.g., always Option A or always Option B) regardless of the cues. This leads to choice probabilities of 1.0 or 0.0 for a given subject across all trials, perfectly explaining the near-zero within-subject variance across trial types and the extreme choice probabilities observed.",
+            "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    # The subject has a strict preference for either Option A (0) or Option B (1)\n    pref = int(parameters[\"preferred_option\"])\n    \n    if pref == 0:\n        return np.array([1.0, 0.0])\n    else:\n        return np.array([0.0, 1.0])\n",
+            "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+            "parameters": {
+              "preferred_option": "{0, 1}"
+            },
+            "rationale": "The arbiter pointed out that subjects might be completely disengaged and use a constant choice strategy, resulting in extreme probabilities (0 or 1) for a given subject. This perfectly predicts the 0.0 variance across trial types in Experiments 3 and 4, and the 0.5 extremeness in Experiments 5 and 6, while yielding ~0.5 agreements in Experiments 1 and 2."
+          },
+          "proposer_label": "pi_5",
+          "real_value": 0.0,
+          "real_variance": 0.0,
+          "predicted_values": [
+            {
+              "value": 0.0,
+              "variance": 0.0,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.1338888888888889,
+              "variance": 0.006070679012345679,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.7116666666666666,
+              "variance": 0.04342253086419753,
+              "label": "pi_1"
+            },
+            {
+              "value": -0.748888888888889,
+              "variance": 0.031819753086419746,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.2683333333333333,
+              "variance": 0.08134598765432098,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.0011111111111111083,
+              "variance": 0.013116049382716053,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.0,
+              "variance": 0.0,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_004_obs_00.jsonl"
+        },
+        {
+          "experiment": {
+            "rationale": "To robustly dissociate the Mixture of Constant Choice and Take-The-Best (TTB) theory from the pure Strong Position Bias theory, this design introduces trials where TTB strictly opposes feature-summing strategies (Tallying/WADD), alongside trials where TTB predicts a tie (identical options). The pure Position Bias model predicts rigidly constant choices (100% A or 100% B) across all trials, completely ignoring the stimulus. In contrast, the Mixture theory predicts that choice probabilities will systematically deviate from the preferred option in the exact direction of the TTB prediction. By heavily pitting TTB against Tallying, we ensure that any deviations from pure constant choice are specifically driven by single-cue TTB lapses rather than general evidence-summing lapses.",
+            "validities": [
+              0.95,
+              0.85,
+              0.75,
+              0.65,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                1
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    def subject_score(df):\n        mode = df['response'].mode().iloc[0]\n        score = 0\n        for _, row in df.iterrows():\n            if row['response'] != mode:\n                a = row['option_a_ratings']\n                b = row['option_b_ratings']\n                ttb_pred = -1\n                for i in range(len(a)):\n                    if a[i] > b[i]:\n                        ttb_pred = 0\n                        break\n                    elif b[i] > a[i]:\n                        ttb_pred = 1\n                        break\n                if ttb_pred == row['response']:\n                    score += 1\n        return score / len(df)\n    return float(data.groupby('subject_id').apply(subject_score).mean())",
+            "rationale": "To discriminate between the Mixture of Constant Choice + Take-The-Best (TTB) and the pure Strong Position Bias theory, this metric specifically isolates trials where a subject deviates from their modal (preferred) choice. Under Strong Position Bias, subjects never deviate from their preferred option, so this metric will be exactly 0.0 with zero variance. Under the Mixture theory, subjects occasionally lapse from their preferred option, and these deviations are systematically driven by the TTB heuristic. The metric counts the proportion of trials where a deviation from the subject's mode perfectly aligns with the TTB prediction, yielding a strictly positive value exclusively for the Mixture theory."
+          },
+          "proposer_theory": {
+            "description": "Mixture of Constant Choice and Take-The-Best: Subjects primarily exhibit a degenerate strategy of relying on a fixed position preference (always choosing Option A or always Option B) due to low engagement or lack of trial-by-trial feedback. However, on a small fraction of trials, they lapse into using a single-cue heuristic (Take-The-Best), where they compare the options on the most valid cue. This mixture maintains the near-zero variance in choice proportions across most experiments while capturing the slight preference for TTB over Tallying in disagreement trials.",
+            "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    a, b = stim[0], stim[1]\n    \n    pref = int(parameters[\"preferred_option\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Constant choice probabilities\n    p_const = np.array([1.0, 0.0]) if pref == 0 else np.array([0.0, 1.0])\n    \n    # Take-The-Best (TTB) prediction\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    order = np.argsort(validities)[::-1]\n    \n    ttb_pred = -1\n    for idx in order:\n        if a[idx] > b[idx]:\n            ttb_pred = 0\n            break\n        elif b[idx] > a[idx]:\n            ttb_pred = 1\n            break\n            \n    if ttb_pred == 0:\n        p_ttb = np.array([1.0, 0.0])\n    elif ttb_pred == 1:\n        p_ttb = np.array([0.0, 1.0])\n    else:\n        p_ttb = np.array([0.5, 0.5])\n        \n    return (1.0 - epsilon) * p_const + epsilon * p_ttb\n",
+            "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+            "parameters": {
+              "preferred_option": "{0, 1}",
+              "epsilon": "[0.0, 0.25]",
+              "validities": "validities"
+            },
+            "rationale": "Following the arbiter's suggestion, this model abandons compensatory cue weighting and builds on the highly successful constant-choice mechanism of Theory 1 (pi_5). By modeling behavior as a mixture of a strict position preference and occasional lapses into a single-cue heuristic (Take-The-Best), the model retains the ability to predict the near-zero variance and extreme choice probabilities seen across most experiments. The small probability of using TTB (governed by epsilon) allows the model to capture the slight deviations from exactly 0.5 observed in experiments that pit heuristics against each other (e.g., pulling the Tallying agreement down to ~0.44 in Experiment 2) without drastically inflating variance."
+          },
+          "proposer_label": "pi_6",
+          "real_value": 0.0,
+          "real_variance": 0.0,
+          "predicted_values": [
+            {
+              "value": 0.036041666666666666,
+              "variance": 0.0005868489583333333,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.0,
+              "variance": 0.0,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.2110416666666667,
+              "variance": 0.000606814236111111,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.028125,
+              "variance": 0.00048285590277777774,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.15083333333333332,
+              "variance": 0.003447222222222222,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.11500000000000002,
+              "variance": 0.000503298611111111,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.0,
+              "variance": 0.0,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_004_obs_01.jsonl"
+        }
+      ],
+      "next_theory": {
+        "description": "Biased Constant Choice: Due to low engagement or a lack of trial-by-trial feedback, subjects adopt a degenerate strategy of picking one option and sticking to it for the entire experiment. However, the initial selection of this preferred option is not necessarily a symmetric 50/50 split; subjects exhibit a population-level bias (e.g., a baseline preference for Option B). They make a biased probabilistic choice on their very first trial and then deterministically repeat that exact choice on all subsequent trials, resulting in zero within-subject variance while capturing asymmetric population preferences.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    # If the subject has already made a choice in a previous trial, they stick to it deterministically\n    if len(history[\"response\"]) > 0:\n        first_choice = history[\"response\"][0]\n        if first_choice == 0:\n            return np.array([1.0, 0.0])\n        else:\n            return np.array([0.0, 1.0])\n            \n    # On the very first trial, the subject chooses an option based on a population-level bias\n    p_a = float(parameters[\"p_a\"])\n    return np.array([p_a, 1.0 - p_a])\n",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+        "parameters": {
+          "p_a": "[0.0, 1.0]"
+        },
+        "rationale": "To address the arbiter's feedback, we need a theory that maintains the perfect 0.0000 within-subject variance of Theory 1 (pi_5) while allowing the population-level preference to deviate from a strict 50/50 split. By introducing a continuous parameter 'p_a' that governs the choice probability only on the very first trial, the model can capture population-level biases (e.g., towards Option B in unbalanced designs). By forcing all subsequent trials to deterministically copy the first trial's response via the history object, we guarantee that every simulated subject exhibits exactly zero within-subject variance, perfectly matching the empirical data on variance metrics."
+      },
+      "next_theory_idx": 2,
+      "next_theory_label": "pi_7"
+    }
+  ]
+}

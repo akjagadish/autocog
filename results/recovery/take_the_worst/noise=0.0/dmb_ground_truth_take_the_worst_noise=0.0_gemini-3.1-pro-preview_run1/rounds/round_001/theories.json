@@ -1,0 +1,54 @@
+{
+  "round_idx": 1,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_3",
+      "killed": true,
+      "theory": {
+        "description": "People compare two options by computing a weighted sum of all features for each option, where the weights are directly equal to the feature validities. Because all validities are bounded between 0.5 and 1.0, using them directly restricts the maximum weight ratio between cues, allowing multiple weaker cues to easily outvote a single strong cue. This Weighted Additive (WADD) rule is a fully compensatory strategy that captures the human tendency to integrate all available information while still giving a slight edge to more valid cues. Response noise enters through a softmax over the two options' weighted scores, along with an independent lapse probability.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"WADD expects a (2, n_features) stimulus.\")\n        \n    a, b = stim[0], stim[1]\n    \n    # Retrieve validities and use them directly as weights\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    weights = val\n    \n    # Compute weighted sum for each option\n    score_a = np.sum(weights * a)\n    score_b = np.sum(weights * b)\n    scores = np.array([score_a, score_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax with max-subtraction for numerical stability\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = len(p_core)\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=float)\n    probabilities /= np.sum(probabilities)\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's feedback, the weight calculation is simplified to use the raw validities directly (weights = validities). Subtracting 0.5 in the previous iteration inadvertently exaggerated the relative differences between cue weights (e.g., 0.9 vs 0.6 became a 4:1 ratio instead of 1.5:1), making the model too non-compensatory. Using the raw validities restricts the maximum weight ratio, naturally allowing multiple weaker cues to outvote a single strong cue. This softer weighting scheme better captures the strongly compensatory (Tallying-like) behavior seen in the human data while remaining within the prescribed WADD family."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_2",
+      "killed": false,
+      "theory": {
+        "description": "People compare two options by counting, across all features, how often one option has a higher value than the other. The option that wins on more features is chosen. Tallying discards cardinal magnitudes \u2014 only the sign of each feature-wise comparison matters \u2014 so the heuristic is robust to monotone rescaling of individual features and cannot be swayed by a single large feature difference in the way Equal-Weight can. Ties on an individual feature contribute nothing to either count: that cue is simply treated as uninformative for the pair. No feature is privileged, in contrast to Take The Best; every cue contributes equally to the tally. When the two counts are equal the heuristic has no basis for preference and the learner must guess. Response noise enters through a softmax over the two tallies with inverse temperature beta (interpolating between fully deterministic choice at large beta and uniform guessing at beta = 0), plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+        "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Tallying heuristic (Dawes 1979; Gigerenzer &\n    # Goldstein 1999). Stimulus is the pair of option feature vectors\n    # for the current trial: array-like of shape (2, n_features),\n    # with row 0 = option A, row 1 = option B. History is ignored.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"Tallying expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n\n    a, b = stim[0], stim[1]\n    # Count strict feature-wise wins; ties contribute to neither option.\n    a_wins = float(np.sum(a > b))\n    b_wins = float(np.sum(b > a))\n    scores = np.array([a_wins, b_wins])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. When\n    # a_wins == b_wins the softmax is exactly uniform regardless of\n    # beta, which is the correct behavior for an undiscriminating\n    # tally.\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]"
+        },
+        "rationale": null
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_4",
+    "slot": 1,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "People use a 'Top-K Tallying' strategy. Instead of relying entirely on a single best cue or integrating all available information, individuals save cognitive effort by tallying feature wins only among the top K most valid features. They ignore the least valid cues entirely. This boundedly rational approach captures the robust, compensatory nature of Tallying while acknowledging cognitive limitations in processing many cues.",
+      "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be of shape (2, n_features).\")\n        \n    a, b = stim[0], stim[1]\n    \n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    k = int(round(float(parameters[\"k\"]))) \n    \n    # Ensure k is at least 1 and at most n_features\n    n_features = len(val)\n    k = max(1, min(k, n_features))\n    \n    # Identify the top K most valid cues\n    cue_order = np.argsort(-val, kind=\"stable\")\n    top_k_cues = cue_order[:k]\n    \n    # Tally feature wins only among the top K cues\n    a_wins = 0.0\n    b_wins = 0.0\n    for idx in top_k_cues:\n        if a[idx] > b[idx]:\n            a_wins += 1.0\n        elif b[idx] > a[idx]:\n            b_wins += 1.0\n            \n    scores = np.array([a_wins, b_wins])\n        \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax with max-subtraction for numerical stability\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = len(p_core)\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+      "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=float)\n    probabilities /= np.sum(probabilities)\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+      "parameters": {
+        "beta": "[0.1, 20.0]",
+        "epsilon": "[0.0, 0.5]",
+        "k": "[4.0, 8.0]",
+        "validities": "validities"
+      },
+      "rationale": "Following the critic's advice, I have shifted the parameter range for `k` from [3.0, 6.0] to [4.0, 8.0]. The previous Top-K Tallying model successfully improved the overall loss but still left a gap in capturing the strong human preference for exhaustive Tallying in Experiments 3 and 4. By increasing the average value of `k`, the model will almost always tally at least 4 cues, closely mimicking the overwhelming human preference for exhaustive Tallying in these specific tasks, while still retaining the Top-K cognitive bound."
+    }
+  }
+}

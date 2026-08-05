@@ -1,0 +1,54 @@
+{
+  "round_idx": 0,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_1",
+      "killed": false,
+      "theory": {
+        "description": "People compare two options by consulting cues one at a time in order of validity, stopping at the first cue that discriminates between the two options. That cue alone determines the choice: the option with the higher value on the discriminating cue wins, and no other cue is consulted. Cues with lower validity are never reached when a higher-validity cue already discriminates, so Take The Best is a \"one-reason\" decision rule \u2014 only a single feature is ever used on any given choice. Because only the sign of the comparison on the top discriminating cue matters, TTB ignores both the magnitude of that difference and all information on lower-validity cues, making it maximally frugal in the use of evidence. Cue validities are subjective and can be learned, inferred from instructions, or fixed by task structure. When no cue discriminates (all feature-wise comparisons tie) the learner has no basis for preference and must guess. Response noise enters through a softmax over the binary TTB score (winner = 1, loser = 0) with inverse temperature beta, plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+        "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Take The Best (Gigerenzer & Goldstein 1996).\n    # Stimulus is the pair of option feature vectors for the current\n    # trial: array-like of shape (2, n_features), row 0 = option A,\n    # row 1 = option B. Cue cascade: features are consulted in order\n    # of descending validity; the first discriminating cue (strict\n    # inequality) determines the winner; if no cue discriminates,\n    # the model guesses uniformly. History is ignored.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"TTB expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n    n_features = stim.shape[1]\n\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    if val.shape[0] != n_features:\n        raise ValueError(\n            f\"validities length {val.shape[0]} != n_features {n_features}.\"\n        )\n    # Descending validity; argsort is stable so validity ties break\n    # toward the earlier feature index.\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n\n    a, b = stim[0], stim[1]\n    winner = None\n    for j in cue_order:\n        if a[j] > b[j]:\n            winner = 0\n            break\n        if b[j] > a[j]:\n            winner = 1\n            break\n\n    if winner is None:\n        # No discriminating cue \u2014 pure guess.\n        return np.ones(2) / 2.0\n\n    scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. For the\n    # binary TTB score this collapses to sigmoid(beta) for the winner,\n    # giving a direct mapping from beta onto the paper's flip-noise\n    # levels (beta=0 \u2194 50/50; beta \u226b 1 \u2194 deterministic).\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": null
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_2",
+      "killed": true,
+      "theory": {
+        "description": "People compare two options by counting, across all features, how often one option has a higher value than the other. The option that wins on more features is chosen. Tallying discards cardinal magnitudes \u2014 only the sign of each feature-wise comparison matters \u2014 so the heuristic is robust to monotone rescaling of individual features and cannot be swayed by a single large feature difference in the way Equal-Weight can. Ties on an individual feature contribute nothing to either count: that cue is simply treated as uninformative for the pair. No feature is privileged, in contrast to Take The Best; every cue contributes equally to the tally. When the two counts are equal the heuristic has no basis for preference and the learner must guess. Response noise enters through a softmax over the two tallies with inverse temperature beta (interpolating between fully deterministic choice at large beta and uniform guessing at beta = 0), plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+        "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Tallying heuristic (Dawes 1979; Gigerenzer &\n    # Goldstein 1999). Stimulus is the pair of option feature vectors\n    # for the current trial: array-like of shape (2, n_features),\n    # with row 0 = option A, row 1 = option B. History is ignored.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"Tallying expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n\n    a, b = stim[0], stim[1]\n    # Count strict feature-wise wins; ties contribute to neither option.\n    a_wins = float(np.sum(a > b))\n    b_wins = float(np.sum(b > a))\n    scores = np.array([a_wins, b_wins])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. When\n    # a_wins == b_wins the softmax is exactly uniform regardless of\n    # beta, which is the correct behavior for an undiscriminating\n    # tally.\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]"
+        },
+        "rationale": null
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_3",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Decision-makers use a Weighted Additive (WADD) strategy, integrating all available features weighted by their validities, but they are subject to significant spatial/positional biases (e.g., a baseline preference for Option A over Option B) and high levels of task disengagement (lapse rate). In environments where subjects ignore features, the positional bias and lapse rate dominate the choice, leading to choices that appear completely orthogonal to standard heuristic predictions like TTB or Tallying (yielding exact 0.5 consistency).",
+      "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"WADD expects a (2, n_features) stimulus.\")\n    \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Weighted Additive (WADD) scores\n    score_a = np.sum(val * a)\n    score_b = np.sum(val * b)\n    \n    beta = float(parameters[\"beta\"])\n    bias_a = float(parameters[\"bias_A\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Incorporate spatial/positional bias for Option A\n    logits = np.array([beta * score_a + bias_a, beta * score_b])\n    \n    # Numerically stable softmax\n    logits = logits - np.max(logits)\n    p_core = np.exp(logits) / np.sum(np.exp(logits))\n    \n    # Apply lapse rate\n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])",
+      "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))",
+      "parameters": {
+        "beta": "[0.0, 10.0]",
+        "bias_A": "[-20.0, 20.0]",
+        "epsilon": "[0.0, 1.0]",
+        "validities": "validities"
+      },
+      "rationale": "Following the arbiter's feedback, this theory implements a Weighted Additive (WADD) model that includes a strong spatial/positional bias ('bias_A') and a baseline lapse rate ('epsilon'). The experimental results show exactly 0.5 consistency with both TTB (Experiment 1) and Tallying (Experiment 2) with zero variance. This suggests subjects are either guessing randomly or exhibiting a strict side bias (clicking through), making their choices completely independent of the feature values. The inclusion of a wide-ranging side bias and lapse rate allows the model to capture this feature-ignoring behavior perfectly."
+    }
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "round_idx": 3,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_5",
+      "killed": true,
+      "theory": {
+        "description": "Sequential Cue Accumulation (Take-The-Best with Verification): Decision-makers process cues sequentially in order of validity, accumulating evidence for or against each option. They stop searching when the absolute accumulated evidence reaches a threshold. If the evidence reaches the threshold, a decision is made based on the accumulated evidence. However, if all cues are exhausted and the accumulated evidence fails to reach the threshold (e.g., due to highly contradictory cues), the decision-maker defaults to guessing. This captures the chance-like behavior observed in some compensatory settings while maintaining Take-The-Best behavior when early cues provide overwhelming evidence.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    theta = float(parameters[\"theta\"])\n    gamma = float(parameters[\"gamma\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Scale and normalize weights\n    weights = val ** gamma\n    weights = weights / np.sum(weights)\n    \n    # Search in order of descending validity\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n    \n    E = 0.0\n    threshold_reached = False\n    for j in cue_order:\n        diff = a[j] - b[j]\n        if diff != 0:\n            E += diff * weights[j]\n            # Stop if accumulated evidence reaches the threshold\n            if abs(E) >= theta:\n                threshold_reached = True\n                break\n            \n    if not threshold_reached:\n        p = np.array([0.5, 0.5])\n    else:\n        scores = np.array([E, -E])\n        z = beta * (scores - np.max(scores))\n        e = np.exp(z)\n        p = e / np.sum(e)\n    \n    return (1.0 - epsilon) * p + epsilon * np.array([0.5, 0.5])\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "theta": "[0.0, 1.0]",
+          "gamma": "[0.0, 5.0]",
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Applying the minimal edit suggested by the critic: we modify the accumulation loop so that if all cues are exhausted and the final absolute accumulated evidence is still below the threshold `theta`, the model defaults to a uniform guess rather than applying the softmax. This directly addresses the failure to capture chance-like behavior in Experiment 2 when evidence falls below the threshold, while preserving the Take-The-Best behavior when the threshold is met."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_3",
+      "killed": false,
+      "theory": {
+        "description": "Weighted Additive (WADD) theory with non-linear scaling posits that decision-makers integrate all available information by weighting each feature by its validity, but subjectively scale these validities to adjust the degree of compensation. By exponentiating validities by a parameter gamma and then normalizing them, the model flexibly interpolates between equal weighting (Tallying), proportional weighting, and highly non-compensatory weighting (Take The Best) while keeping the integrated scores on a stable scale. Choices are made probabilistically using a softmax over the options' scores.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"WADD expects a (2, n_features) stimulus.\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    gamma = float(parameters[\"gamma\"])\n    \n    # Non-linear scaling of validities with normalization to prevent score shrinkage\n    weights = val ** gamma\n    weights = weights / np.sum(weights)\n    \n    # Calculate overall scores by weighting features by their scaled validity\n    a_score = np.dot(a, weights)\n    b_score = np.dot(b, weights)\n    scores = np.array([a_score, b_score])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Numerically stable softmax\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "gamma": "[0.1, 30.0]",
+          "validities": "validities"
+        },
+        "rationale": "Addressed the critic's feedback by normalizing the weights after exponentiation (`weights = weights / np.sum(weights)`) and expanding the `gamma` range up to 30.0. This prevents the fractional validities from shrinking to zero when raised to a high power, ensuring the weighted scores remain on a stable scale. This allows the `beta` parameter to properly control the determinism of the choice probabilities and stops them from collapsing to 50/50, letting the model fully express strong non-compensatory (TTB-like) behavior."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_6",
+    "slot": 1,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Tallying with Validity Tie-Breaking: Decision-makers primarily rely on a compensatory but simplified strategy where they count the total number of positive cues for each option (Tallying), ignoring the explicit validities. The option with the higher tally is chosen. Only if both options have an equal number of positive cues does the decision-maker fall back to the provided validities to break the tie, typically by consulting the most valid discriminating cue (Take The Best). This boundedly rational approach explains why options supported by a highly valid cue are often rejected if they have fewer total positive cues.",
+      "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    a, b = stim[0], stim[1]\n    \n    a_wins = np.sum(a)\n    b_wins = np.sum(b)\n    \n    if a_wins > b_wins:\n        scores = np.array([1.0, 0.0])\n    elif b_wins > a_wins:\n        scores = np.array([0.0, 1.0])\n    else:\n        # Tie-breaker using Take The Best\n        val = np.asarray(parameters[\"validities\"], dtype=float)\n        cue_order = np.argsort(-val, kind=\"stable\").tolist()\n        winner = None\n        for j in cue_order:\n            if a[j] > b[j]:\n                winner = 0\n                break\n            if b[j] > a[j]:\n                winner = 1\n                break\n                \n        if winner == 0:\n            scores = np.array([1.0, 0.0])\n        elif winner == 1:\n            scores = np.array([0.0, 1.0])\n        else:\n            scores = np.array([0.5, 0.5])\n            \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p = e / np.sum(e)\n    \n    return (1.0 - epsilon) * p + epsilon * np.array([0.5, 0.5])\n",
+      "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+      "parameters": {
+        "beta": "[0.1, 20.0]",
+        "epsilon": "[0.0, 0.5]",
+        "validities": "validities"
+      },
+      "rationale": "Following the arbiter's guidance, this theory implements Tallying as the primary decision mechanism, completely ignoring cue validities unless there is a tie in the total number of positive cues. When a tie occurs, the model uses Take The Best to break it. This direct Tallying-first approach is designed to capture the chance-like and deterministic behavior seen in settings where the TTB winner has fewer total cues (e.g., Experiments 7 and 8), explaining the divergence from purely non-compensatory models."
+    }
+  }
+}

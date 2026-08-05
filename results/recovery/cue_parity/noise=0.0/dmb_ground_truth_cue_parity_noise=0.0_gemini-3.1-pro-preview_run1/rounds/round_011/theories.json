@@ -1,0 +1,60 @@
+{
+  "round_idx": 11,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_13",
+      "killed": true,
+      "theory": {
+        "description": "Decision-makers use a purely compensatory Weighted Additive Strategy (WADD). Instead of applying early stopping or lexicographic rules, individuals evaluate all available features for both options. Each feature is weighted by a non-linear transformation of its objective validity, capturing varying sensitivities to evidence strength. The overall subjective value of an option is the sum of its weighted features, and choices are made probabilistically based on the difference in these overall values. By allowing for very large scaling parameters, the model can approximate non-compensatory behavior within a purely compensatory framework.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Transformation parameter for validities\n    gamma = float(parameters[\"gamma\"])\n    \n    # Center validities to chance level (0.5), then apply non-linear scaling\n    centered_val = np.clip(val - 0.5, 1e-6, 0.5)\n    weights = centered_val ** gamma\n    \n    # Calculate overall subjective values (weighted sums)\n    scores = np.array([np.sum(a * weights), np.sum(b * weights)])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax choice rule with numerical stability\n    z = beta * scores\n    z -= np.max(z)\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = len(p_core)\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.1, 100.0]",
+          "gamma": "[0.1, 25.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's feedback, we revert to the successful unnormalized chance-centered power-law WADD base from Iteration 1. To improve fit on experiments where human behavior appears lexicographic, we significantly expand the parameter ranges for `gamma` (up to 25.0) and `beta` (up to 100.0). This minimal edit allows the purely compensatory WADD model to naturally approximate non-compensatory behavior by letting the most valid cues dominate the weighted sum when `gamma` is large, without altering the core mechanism."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_9",
+      "killed": false,
+      "theory": {
+        "description": "Decision-makers use a Sequential Evidence Accumulation strategy with a stopping rule. They inspect features one by one in descending order of their validity, maintaining a running sum of the differences between the options. If the absolute accumulated evidence reaches or exceeds a specific threshold, they stop and make a choice based on that evidence. If the threshold is not reached, they evaluate all features and decide based on the final tally. This allows the model to smoothly transition between Take-The-Best (low threshold) and Tallying (high threshold) behaviors.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Order features by validity descending\n    order = np.argsort(val)[::-1]\n    \n    threshold = float(parameters[\"threshold\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    diff = a - b\n    accumulated_evidence = 0.0\n    \n    for idx in order:\n        accumulated_evidence += diff[idx]\n        if abs(accumulated_evidence) >= threshold and abs(accumulated_evidence) > 0:\n            break\n            \n    scores = np.array([accumulated_evidence, -accumulated_evidence])\n    \n    z = beta * scores\n    z -= np.max(z)\n    p_core = np.exp(z) / np.sum(np.exp(z))\n    \n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "threshold": "[0.0, 3.0]",
+          "beta": "[0.1, 15.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's advice, we implement a Sequential Evidence Accumulation model where features are sampled in descending order of validity. By allowing the stopping threshold to range from 0.0 to 3.0, the model can dynamically recover Take-The-Best behavior (when threshold <= 1.0, stopping after the first differentiating feature) or Tallying behavior (when threshold is high, accumulating across all features). This single unified mechanism avoids the scaling issues of the mixture model and naturally explains intermediate choice proportions observed in the experiments."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_14",
+    "slot": 1,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Strategy Mixture Theory (Environment-Adaptive Toolbox with Tallying Blend)",
+      "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Strategy 1: Take-The-Best (TTB)\n    # Inspect features in descending order of validity; stop at the first discriminating feature.\n    order = np.argsort(val)[::-1]\n    ttb_prob = np.array([0.5, 0.5])\n    for idx in order:\n        if a[idx] > b[idx]:\n            ttb_prob = np.array([1.0, 0.0])\n            break\n        elif b[idx] > a[idx]:\n            ttb_prob = np.array([0.0, 1.0])\n            break\n            \n    # Strategy 2: Compensatory (Blend of WADD and Tallying)\n    # Evaluate all features, weighting them by a blend of pure Tallying (equal weights) and WADD.\n    gamma = float(parameters[\"gamma\"])\n    alpha = float(parameters[\"alpha\"])\n    centered_val = np.clip(val - 0.5, 1e-6, 0.5)\n    \n    # Scale validities to [0, 1] based on absolute magnitude, rather than normalizing by max\n    scaled_val = centered_val * 2.0\n        \n    w_wadd = scaled_val ** gamma\n    w = alpha * w_wadd + (1.0 - alpha) * 1.0\n    \n    comp_scores = np.array([np.sum(a * w), np.sum(b * w)])\n    \n    beta = float(parameters[\"beta\"])\n    z = beta * comp_scores\n    z -= np.max(z)  # numerical stability\n    e = np.exp(z)\n    comp_prob = e / np.sum(e)\n    \n    # Strategy Mixture: Probabilistic selection between TTB and Compensatory based on environment\n    # The probability of selecting TTB depends on the dispersion (std dev) of the validities.\n    dispersion = float(np.std(val))\n    theta = float(parameters[\"theta\"])\n    disp_threshold = float(parameters[\"disp_threshold\"])\n    \n    z_disp = theta * (dispersion - disp_threshold)\n    p_ttb = 1.0 / (1.0 + np.exp(-np.clip(z_disp, -20.0, 20.0)))\n    \n    p_core = p_ttb * ttb_prob + (1.0 - p_ttb) * comp_prob\n    \n    # Trembling hand error\n    epsilon = float(parameters[\"epsilon\"])\n    n_opts = len(p_core)\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+      "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+      "parameters": {
+        "theta": "[0.0, 30.0]",
+        "disp_threshold": "[0.0, 0.5]",
+        "gamma": "[0.0, 10.0]",
+        "alpha": "[0.0, 1.0]",
+        "beta": "[0.1, 20.0]",
+        "epsilon": "[0.0, 0.5]",
+        "validities": "validities"
+      },
+      "rationale": "Following the critic's advice, I removed the scale-invariant normalization of WADD weights (which divided by `max_c`). Instead, I scaled the centered validities by a factor of 2.0. This keeps the maximum possible weight at 1.0 (since validities are in [0.5, 1.0]), making it comparable to the pure Tallying weight of 1.0, but importantly preserves the absolute magnitude differences between environments. This will allow the `beta` parameter to scale choice probabilities according to the overall strength of validities, improving fits on compensatory experiments like Exps 4, 20, and 22."
+    }
+  }
+}

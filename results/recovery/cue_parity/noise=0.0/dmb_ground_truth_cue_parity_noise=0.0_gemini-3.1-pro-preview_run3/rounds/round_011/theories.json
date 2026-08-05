@@ -1,0 +1,55 @@
+{
+  "round_idx": 11,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_1",
+      "killed": false,
+      "theory": {
+        "description": "People compare two options by consulting cues one at a time in order of validity, stopping at the first cue that discriminates between the two options. That cue alone determines the choice: the option with the higher value on the discriminating cue wins, and no other cue is consulted. Cues with lower validity are never reached when a higher-validity cue already discriminates, so Take The Best is a \"one-reason\" decision rule \u2014 only a single feature is ever used on any given choice. Because only the sign of the comparison on the top discriminating cue matters, TTB ignores both the magnitude of that difference and all information on lower-validity cues, making it maximally frugal in the use of evidence. Cue validities are subjective and can be learned, inferred from instructions, or fixed by task structure. When no cue discriminates (all feature-wise comparisons tie) the learner has no basis for preference and must guess. Response noise enters through a softmax over the binary TTB score (winner = 1, loser = 0) with inverse temperature beta, plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+        "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Take The Best (Gigerenzer & Goldstein 1996).\n    # Stimulus is the pair of option feature vectors for the current\n    # trial: array-like of shape (2, n_features), row 0 = option A,\n    # row 1 = option B. Cue cascade: features are consulted in order\n    # of descending validity; the first discriminating cue (strict\n    # inequality) determines the winner; if no cue discriminates,\n    # the model guesses uniformly. History is ignored.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"TTB expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n    n_features = stim.shape[1]\n\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    if val.shape[0] != n_features:\n        raise ValueError(\n            f\"validities length {val.shape[0]} != n_features {n_features}.\"\n        )\n    # Descending validity; argsort is stable so validity ties break\n    # toward the earlier feature index.\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n\n    a, b = stim[0], stim[1]\n    winner = None\n    for j in cue_order:\n        if a[j] > b[j]:\n            winner = 0\n            break\n        if b[j] > a[j]:\n            winner = 1\n            break\n\n    if winner is None:\n        # No discriminating cue \u2014 pure guess.\n        return np.ones(2) / 2.0\n\n    scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. For the\n    # binary TTB score this collapses to sigmoid(beta) for the winner,\n    # giving a direct mapping from beta onto the paper's flip-noise\n    # levels (beta=0 \u2194 50/50; beta \u226b 1 \u2194 deterministic).\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": null
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_13",
+      "killed": true,
+      "theory": {
+        "description": "Take The Best with Confirmatory Search: Decision-makers initially anchor their choice on the first discriminating cue (Take The Best). However, rather than stopping search entirely, they perform a confirmatory check of the remaining lower-validity cues. If the subsequent cues present strong contradictory evidence (the net number of opposing cues exceeds a specific threshold), their confidence is slightly undermined, leading to a small reduction in the probability of choosing the TTB winner rather than a complete strategy shift. Otherwise, they stick with the initial TTB choice with high confidence.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    epsilon = float(parameters[\"epsilon\"])\n    threshold = int(float(parameters[\"threshold\"]))\n    contradiction_confidence = float(parameters[\"contradiction_confidence\"])\n    \n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n    \n    ttb_winner = -1\n    ttb_idx = -1\n    for i, j in enumerate(cue_order):\n        if a[j] > b[j]:\n            ttb_winner = 0\n            ttb_idx = i\n            break\n        elif b[j] > a[j]:\n            ttb_winner = 1\n            ttb_idx = i\n            break\n            \n    if ttb_winner == -1:\n        return np.array([0.5, 0.5])\n        \n    # Confirmatory search in the remaining cues\n    net_contradiction = 0\n    for j in cue_order[ttb_idx+1:]:\n        if ttb_winner == 0:\n            if b[j] > a[j]:\n                net_contradiction += 1\n            elif a[j] > b[j]:\n                net_contradiction -= 1\n        else:\n            if a[j] > b[j]:\n                net_contradiction += 1\n            elif b[j] > a[j]:\n                net_contradiction -= 1\n                \n    if net_contradiction >= threshold:\n        p_winner = contradiction_confidence\n    else:\n        p_winner = 1.0 - epsilon\n        \n    p = np.zeros(2)\n    p[ttb_winner] = p_winner\n    p[1 - ttb_winner] = 1.0 - p_winner\n    \n    return p",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))",
+        "parameters": {
+          "epsilon": "[0.0, 0.2]",
+          "threshold": "{2, 3, 4, 5, 6}",
+          "contradiction_confidence": "[0.5, 1.0]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's feedback, the penalty for finding contradictory evidence in the confirmatory search phase has been softened. The parameter `shift_prob` was replaced with `contradiction_confidence` ranging from [0.5, 1.0], and `threshold` was shifted higher to {2, 3, 4, 5, 6}. This ensures that when subjects encounter strong opposing lower-validity cues, they merely experience a minor drop in confidence rather than a hard flip or random guessing. This minimal edit allows the model to capture the overwhelming adherence to TTB observed in the empirical data, while still allowing for slight modulations in confidence."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_14",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Decision-makers rely on a pure Tallying strategy, a non-weighted compensatory heuristic. They evaluate options by simply counting the total number of positive cues for each option, completely ignoring the validities of those cues. Choices are made probabilistically based on the difference in these unweighted tally scores, subject to decision noise (inverse temperature) and random lapses.",
+      "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    a, b = stim[0], stim[1]\n    \n    # Pure tallying: count total positive cues for each option\n    tally_a = float(np.sum(a))\n    tally_b = float(np.sum(b))\n    \n    scores = np.array([tally_a, tally_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax over tally scores\n    z = beta * scores\n    z -= np.max(z)\n    p_core = np.exp(z) / np.sum(np.exp(z))\n    \n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])",
+      "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))",
+      "parameters": {
+        "beta": "[0.1, 10.0]",
+        "epsilon": "[0.0, 0.5]",
+        "validities": "validities"
+      },
+      "rationale": "Following the arbiter's feedback, this proposes a pure Tallying (unit-weight linear) model. By completely ignoring cue validities and simply summing the positive features for each option, it provides a stark, fundamentally different compensatory baseline to contrast with the lexicographic Take-The-Best model. This will help identify variance from subjects using non-weighted, purely compensatory strategies."
+    }
+  }
+}

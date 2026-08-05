@@ -1,0 +1,55 @@
+{
+  "round_idx": 3,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_3",
+      "killed": false,
+      "theory": {
+        "description": "People compare two options using the Take-The-Best (TTB) heuristic. TTB is a fast-and-frugal lexicographic strategy that searches through cues in descending order of their validity. The first cue that discriminates between the two options completely determines the choice, and all remaining lower-validity cues are ignored. If no cue discriminates, the decision maker guesses randomly. Response noise enters through a softmax over the binary TTB outcome with inverse temperature beta, plus an independent lapse rate epsilon.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"TTB expects a (2, n_features) stimulus.\")\n        \n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Sort cues by validity in descending order\n    order = np.argsort(validities)[::-1]\n    \n    scores = np.zeros(2)\n    for idx in order:\n        if stim[0, idx] > stim[1, idx]:\n            scores[0] = 1.0\n            break\n        elif stim[1, idx] > stim[0, idx]:\n            scores[1] = 1.0\n            break\n            \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the arbiter's feedback, this theory implements the Take-The-Best (TTB) heuristic, replacing the Tallying model. TTB is a non-compensatory, lexicographic strategy that checks cues in descending order of their validity and stops at the first discriminating cue. This provides a strong contrast to compensatory models like WADD and equal-weighting models like Tallying, allowing us to evaluate whether participants rely on a single highly valid cue rather than integrating all available information when making choices."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_4",
+      "killed": true,
+      "theory": {
+        "description": "Probabilistic Cue Search (PCS): Decision makers evaluate options by searching through cues sequentially. However, unlike the strict deterministic order of Take-The-Best, the search order is probabilistic. The probability of retrieving and evaluating a cue is proportional to an exponential function of its validity (a Plackett-Luce choice process). Because non-discriminating cues simply prompt the decision maker to continue searching, the probability that the decision is ultimately determined by a specific discriminating cue is exactly proportional to its weight relative to all other discriminating cues. This model elegantly bridges random search (Tallying) and deterministic search (TTB) through a single search-temperature parameter.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be shape (2, n_features).\")\n        \n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    gamma = float(parameters[\"gamma\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Find discriminating cues\n    diff = stim[0] - stim[1]\n    discrim_mask = diff != 0\n    \n    if not np.any(discrim_mask):\n        p_core = np.array([0.5, 0.5])\n    else:\n        # Due to the Plackett-Luce property of sampling without replacement,\n        # the probability that a particular discriminating cue is encountered \n        # before any other discriminating cue is simply its proportional weight\n        # among the set of discriminating cues. Non-discriminating cues drop out.\n        discrim_validities = validities[discrim_mask]\n        max_v = np.max(discrim_validities)\n        \n        # Calculate weights for discriminating cues with numerical stability\n        weights = np.zeros_like(validities)\n        weights[discrim_mask] = np.exp(gamma * (validities[discrim_mask] - max_v))\n        \n        w_A = np.sum(weights[diff > 0])\n        w_B = np.sum(weights[diff < 0])\n        \n        total_w = w_A + w_B\n        if total_w == 0:\n            p_core = np.array([0.5, 0.5])\n        else:\n            p_core = np.array([w_A / total_w, w_B / total_w])\n            \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+        "parameters": {
+          "gamma": "[0.0, 50.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the arbiter's suggestion, this model implements a Probabilistic Cue Search. Instead of relying on a strict deterministic ranking of cues (as in TTB) or a compensatory weighted sum (as in WADD), the model sequentially samples cues with probabilities exponentially related to their validities. Thanks to the properties of the Plackett-Luce sampling process, the probability that any given discriminating cue is the *first* one found (thus terminating the search and deciding the choice) is exactly its proportional weight among the subset of discriminating cues. This analytically tractable form provides a smooth, nuanced alternative to TTB: at high gamma it approximates strict TTB, while at lower gamma it allows lower-validity cues to occasionally preempt higher-validity ones, capturing probabilistic deviations in human sequential search."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_5",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Two-Stage Confidence-Threshold Strategy Selection: Decision-makers default to the fast and frugal Take-The-Best (TTB) heuristic, evaluating options based solely on the most valid discriminating cue. However, if the validity of this top discriminating cue falls below a subjective confidence threshold, the decision-maker deems the single-cue evidence insufficient and falls back to a compensatory Weighted Additive (WADD) strategy that integrates all available cues.",
+      "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be shape (2, n_features).\")\n        \n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    confidence_threshold = float(parameters[\"confidence_threshold\"])\n    \n    diff = stim[0] - stim[1]\n    discrim_mask = diff != 0\n    \n    scores = np.zeros(2)\n    if np.any(discrim_mask):\n        discrim_validities = validities[discrim_mask]\n        max_v = np.max(discrim_validities)\n        \n        if max_v >= confidence_threshold:\n            # Strategy 1: Take-The-Best (TTB)\n            top_idx = np.where((discrim_mask) & (validities == max_v))[0][0]\n            if stim[0, top_idx] > stim[1, top_idx]:\n                scores[0] = 1.0\n            else:\n                scores[1] = 1.0\n        else:\n            # Strategy 2: Weighted Additive (WADD) fallback\n            wadd_scores = stim @ validities\n            if wadd_scores[0] > wadd_scores[1]:\n                scores[0] = 1.0\n            elif wadd_scores[1] > wadd_scores[0]:\n                scores[1] = 1.0\n                \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+      "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+      "parameters": {
+        "confidence_threshold": "[0.5, 0.8]",
+        "beta": "[0.1, 20.0]",
+        "epsilon": "[0.0, 0.5]",
+        "validities": "validities"
+      },
+      "rationale": "Following the critic's advice, I tightened the range of `confidence_threshold` from `[0.5, 1.0]` to `[0.5, 0.8]`. This ensures the model defaults to TTB more frequently and only falls back to WADD when the top discriminating cue is genuinely weak, thereby reducing over-prediction of compensatory choices and improving TTB match rates."
+    }
+  }
+}

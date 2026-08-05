@@ -1,0 +1,2725 @@
+{
+  "rounds": [
+    {
+      "observations": [
+        {
+          "experiment": {
+            "rationale": null,
+            "validities": [
+              0.95,
+              0.82,
+              0.84,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                1,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    ttb_match = 0\n    total = 0\n    for _, row in data.iterrows():\n        a = row['option_a_ratings']\n        b = row['option_b_ratings']\n        \n        # TTB winner\n        val_order = [0, 2, 1, 3] # Indices in descending order of validity\n        ttb_winner = None\n        for j in val_order:\n            if a[j] > b[j]:\n                ttb_winner = 0\n                break\n            elif b[j] > a[j]:\n                ttb_winner = 1\n                break\n                \n        # Tallying winner\n        a_wins = sum(1 for i in range(4) if a[i] > b[i])\n        b_wins = sum(1 for i in range(4) if b[i] > a[i])\n        if a_wins > b_wins:\n            tally_winner = 0\n        elif b_wins > a_wins:\n            tally_winner = 1\n        else:\n            tally_winner = None\n            \n        # Check strict disagreement\n        if ttb_winner is not None and tally_winner is not None and ttb_winner != tally_winner:\n            total += 1\n            if row['response'] == ttb_winner:\n                ttb_match += 1\n                \n    if total == 0:\n        return 0.5\n    return ttb_match / total",
+            "rationale": "This metric calculates the proportion of choices that align with the Take The Best (TTB) model on trials where TTB and Tallying make strictly opposite deterministic predictions. For TTB, this metric will be close to 1.0 (subject to noise), while for Tallying it will be close to 0.0."
+          },
+          "proposer_theory": {
+            "description": "People compare two options by consulting cues one at a time in order of validity, stopping at the first cue that discriminates between the two options. That cue alone determines the choice: the option with the higher value on the discriminating cue wins, and no other cue is consulted. Cues with lower validity are never reached when a higher-validity cue already discriminates, so Take The Best is a \"one-reason\" decision rule \u2014 only a single feature is ever used on any given choice. Because only the sign of the comparison on the top discriminating cue matters, TTB ignores both the magnitude of that difference and all information on lower-validity cues, making it maximally frugal in the use of evidence. Cue validities are subjective and can be learned, inferred from instructions, or fixed by task structure. When no cue discriminates (all feature-wise comparisons tie) the learner has no basis for preference and must guess. Response noise enters through a softmax over the binary TTB score (winner = 1, loser = 0) with inverse temperature beta, plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+            "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Take The Best (Gigerenzer & Goldstein 1996).\n    # Stimulus is the pair of option feature vectors for the current\n    # trial: array-like of shape (2, n_features), row 0 = option A,\n    # row 1 = option B. Cue cascade: features are consulted in order\n    # of descending validity; the first discriminating cue (strict\n    # inequality) determines the winner; if no cue discriminates,\n    # the model guesses uniformly. History is ignored.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"TTB expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n    n_features = stim.shape[1]\n\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    if val.shape[0] != n_features:\n        raise ValueError(\n            f\"validities length {val.shape[0]} != n_features {n_features}.\"\n        )\n    # Descending validity; argsort is stable so validity ties break\n    # toward the earlier feature index.\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n\n    a, b = stim[0], stim[1]\n    winner = None\n    for j in cue_order:\n        if a[j] > b[j]:\n            winner = 0\n            break\n        if b[j] > a[j]:\n            winner = 1\n            break\n\n    if winner is None:\n        # No discriminating cue \u2014 pure guess.\n        return np.ones(2) / 2.0\n\n    scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. For the\n    # binary TTB score this collapses to sigmoid(beta) for the winner,\n    # giving a direct mapping from beta onto the paper's flip-noise\n    # levels (beta=0 \u2194 50/50; beta \u226b 1 \u2194 deterministic).\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]",
+              "validities": "validities"
+            },
+            "rationale": null
+          },
+          "proposer_label": "pi_1",
+          "real_value": 0.4666666666666667,
+          "real_variance": 0.026666666666666665,
+          "predicted_values": [
+            {
+              "value": 0.8855555555555555,
+              "variance": 0.010420987654320984,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.15777777777777777,
+              "variance": 0.01597037037037037,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.6144444444444445,
+              "variance": 0.017581481481481483,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.5211111111111111,
+              "variance": 0.22801111111111116,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.5288888888888889,
+              "variance": 0.1491654320987654,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.39666666666666667,
+              "variance": 0.09740864197530863,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.5288888888888889,
+              "variance": 0.02706666666666667,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_000_obs_00.jsonl"
+        },
+        {
+          "experiment": {
+            "rationale": null,
+            "validities": [
+              0.95,
+              0.78,
+              0.88,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                1,
+                0,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    a_tup = data['option_a_ratings'].apply(tuple)\n    b_tup = data['option_b_ratings'].apply(tuple)\n    mask = (a_tup == (0, 1, 1, 1)) & (b_tup == (1, 0, 1, 0))\n    if not mask.any():\n        return 0.5\n    return float(np.mean(data.loc[mask, 'response'] == 0))",
+            "rationale": "Trial 10 (A=[0, 1, 1, 1], B=[1, 0, 1, 0]) represents a pure conflict between Tallying and Take The Best. Tallying counts 2 wins for A (features 1 and 3) and 1 win for B (feature 0), thus predicting A. Take The Best consults the cues in descending validity order; the most valid cue is feature 0, where B beats A, so it stops immediately and predicts B. Measuring the proportion of times subjects choose A on this specific trial yields ~1.0 for Tallying and ~0.0 for TTB."
+          },
+          "proposer_theory": {
+            "description": "People compare two options by counting, across all features, how often one option has a higher value than the other. The option that wins on more features is chosen. Tallying discards cardinal magnitudes \u2014 only the sign of each feature-wise comparison matters \u2014 so the heuristic is robust to monotone rescaling of individual features and cannot be swayed by a single large feature difference in the way Equal-Weight can. Ties on an individual feature contribute nothing to either count: that cue is simply treated as uninformative for the pair. No feature is privileged, in contrast to Take The Best; every cue contributes equally to the tally. When the two counts are equal the heuristic has no basis for preference and the learner must guess. Response noise enters through a softmax over the two tallies with inverse temperature beta (interpolating between fully deterministic choice at large beta and uniform guessing at beta = 0), plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+            "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Tallying heuristic (Dawes 1979; Gigerenzer &\n    # Goldstein 1999). Stimulus is the pair of option feature vectors\n    # for the current trial: array-like of shape (2, n_features),\n    # with row 0 = option A, row 1 = option B. History is ignored.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"Tallying expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n\n    a, b = stim[0], stim[1]\n    # Count strict feature-wise wins; ties contribute to neither option.\n    a_wins = float(np.sum(a > b))\n    b_wins = float(np.sum(b > a))\n    scores = np.array([a_wins, b_wins])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. When\n    # a_wins == b_wins the softmax is exactly uniform regardless of\n    # beta, which is the correct behavior for an undiscriminating\n    # tally.\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]"
+            },
+            "rationale": null
+          },
+          "proposer_label": "pi_2",
+          "real_value": 0.36,
+          "real_variance": 0.2304,
+          "predicted_values": [
+            {
+              "value": 0.8466666666666667,
+              "variance": 0.03426666666666667,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.14666666666666667,
+              "variance": 0.03515555555555555,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.3566666666666667,
+              "variance": 0.046677777777777776,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.4633333333333333,
+              "variance": 0.22365555555555552,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.5266666666666666,
+              "variance": 0.14706666666666665,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.6,
+              "variance": 0.21555555555555558,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.57,
+              "variance": 0.23676666666666668,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_000_obs_01.jsonl"
+        }
+      ],
+      "next_theory": {
+        "description": "Weighted Additive (WADD) Theory: People evaluate options by computing a weighted sum of their features, where the weights correspond to the cue validities above chance (validity - 0.5). This linear compensatory strategy allows multiple lower-validity cues to outweigh a single high-validity cue without over-privileging the top cue. Choices are made probabilistically using a softmax over the weighted sums, combined with a lapse rate for random guessing.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"WADD expects a (2, n_features) stimulus.\")\n    \n    a, b = stim[0], stim[1]\n    \n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    # Use linear evidence above chance instead of log-odds to prevent over-dominance of the top cue\n    weights = val - 0.5\n    \n    score_a = np.sum(weights * a)\n    score_b = np.sum(weights * b)\n    scores = np.array([score_a, score_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Numerically stable softmax\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's feedback, the weight calculation was changed from log-odds to a linear scaling `val - 0.5`. The log-odds transformation created too large a gap between high and low validity cues, making the model behave too much like Take The Best and over-predicting the dominance of the highest-validity cue. By scaling weights as evidence above chance, the model allows lower-validity cues to better compete, bringing the choice probabilities closer to the observed human indifference levels when cues conflict."
+      },
+      "next_theory_idx": 2,
+      "next_theory_label": "pi_3"
+    },
+    {
+      "observations": [
+        {
+          "experiment": {
+            "rationale": null,
+            "validities": [
+              0.95,
+              0.74,
+              0.81,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    # Identify trial 9, where Option A has ratings [0, 1, 1, 0] and Option B has [1, 0, 0, 0]\n    def is_target(row):\n        a = list(row['option_a_ratings'])\n        b = list(row['option_b_ratings'])\n        return a == [0, 1, 1, 0] and b == [1, 0, 0, 0]\n    \n    mask = data.apply(is_target, axis=1)\n    target_trials = data[mask]\n    \n    if len(target_trials) == 0:\n        return 0.5\n        \n    return float(target_trials['response'].mean())",
+            "rationale": "This metric isolates trial 9, which is uniquely discriminating between Take The Best (TTB) and Weighted Additive (WADD) models in this design. On this trial, Option A has ratings [0, 1, 1, 0] and Option B has [1, 0, 0, 0]. TTB consults the most valid cue first (cue 0, validity 0.95), where B=1 and A=0, so it stops immediately and chooses Option B. In contrast, WADD computes the sum of validities above chance: Option A scores (0.74-0.5) + (0.81-0.5) = 0.24 + 0.31 = 0.55, while Option B scores (0.95-0.5) = 0.45. Since 0.55 > 0.45, WADD strictly prefers Option A. Therefore, the proportion of choosing Option B on this trial will be near 1.0 for TTB and near 0.0 for WADD, cleanly separating the theories."
+          },
+          "proposer_theory": {
+            "description": "People compare two options by consulting cues one at a time in order of validity, stopping at the first cue that discriminates between the two options. That cue alone determines the choice: the option with the higher value on the discriminating cue wins, and no other cue is consulted. Cues with lower validity are never reached when a higher-validity cue already discriminates, so Take The Best is a \"one-reason\" decision rule \u2014 only a single feature is ever used on any given choice. Because only the sign of the comparison on the top discriminating cue matters, TTB ignores both the magnitude of that difference and all information on lower-validity cues, making it maximally frugal in the use of evidence. Cue validities are subjective and can be learned, inferred from instructions, or fixed by task structure. When no cue discriminates (all feature-wise comparisons tie) the learner has no basis for preference and must guess. Response noise enters through a softmax over the binary TTB score (winner = 1, loser = 0) with inverse temperature beta, plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+            "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Take The Best (Gigerenzer & Goldstein 1996).\n    # Stimulus is the pair of option feature vectors for the current\n    # trial: array-like of shape (2, n_features), row 0 = option A,\n    # row 1 = option B. Cue cascade: features are consulted in order\n    # of descending validity; the first discriminating cue (strict\n    # inequality) determines the winner; if no cue discriminates,\n    # the model guesses uniformly. History is ignored.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"TTB expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n    n_features = stim.shape[1]\n\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    if val.shape[0] != n_features:\n        raise ValueError(\n            f\"validities length {val.shape[0]} != n_features {n_features}.\"\n        )\n    # Descending validity; argsort is stable so validity ties break\n    # toward the earlier feature index.\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n\n    a, b = stim[0], stim[1]\n    winner = None\n    for j in cue_order:\n        if a[j] > b[j]:\n            winner = 0\n            break\n        if b[j] > a[j]:\n            winner = 1\n            break\n\n    if winner is None:\n        # No discriminating cue \u2014 pure guess.\n        return np.ones(2) / 2.0\n\n    scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. For the\n    # binary TTB score this collapses to sigmoid(beta) for the winner,\n    # giving a direct mapping from beta onto the paper's flip-noise\n    # levels (beta=0 \u2194 50/50; beta \u226b 1 \u2194 deterministic).\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]",
+              "validities": "validities"
+            },
+            "rationale": null
+          },
+          "proposer_label": "pi_1",
+          "real_value": 0.52,
+          "real_variance": 0.24960000000000004,
+          "predicted_values": [
+            {
+              "value": 0.8166666666666667,
+              "variance": 0.03361111111111112,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.36,
+              "variance": 0.04706666666666668,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.15333333333333332,
+              "variance": 0.03648888888888888,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.5166666666666667,
+              "variance": 0.2247222222222222,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.43333333333333335,
+              "variance": 0.1644444444444444,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.51,
+              "variance": 0.21267777777777774,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.48,
+              "variance": 0.23848888888888886,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_001_obs_00.jsonl"
+        },
+        {
+          "experiment": {
+            "rationale": null,
+            "validities": [
+              0.95,
+              0.77,
+              0.8,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    # Trial 15 is the only trial where WADD and TTB diverge.\n    # A = [0, 1, 1, 0], B = [1, 0, 0, 0]\n    # WADD weights are [0.45, 0.27, 0.3, 0.05].\n    # WADD score for A = 0.27 + 0.3 = 0.57\n    # WADD score for B = 0.45\n    # WADD prefers A (response = 0).\n    # TTB looks at cue 0 first (validity 0.95), which favors B. \n    # TTB prefers B (response = 1).\n    mask = data['option_a_ratings'].apply(lambda x: tuple(x) == (0, 1, 1, 0)) & \\\n           data['option_b_ratings'].apply(lambda x: tuple(x) == (1, 0, 0, 0))\n    if mask.sum() == 0:\n        return 0.5\n    return float(data[mask]['response'].mean())",
+            "rationale": "In this design, Trial 15 is the only choice where the two theories predict opposite preferences. Option A has features [0, 1, 1, 0] and Option B has [1, 0, 0, 0]. TTB relies on the most valid cue (cue 0, validity 0.95), which is present for B but absent for A, leading TTB to strongly predict choosing B. Conversely, WADD integrates all cues. The linear evidence weights (validity - 0.5) are [0.45, 0.27, 0.30, 0.05]. Option A's evidence is 0.27 + 0.30 = 0.57, while Option B's evidence is 0.45. Because 0.57 > 0.45, WADD predicts choosing A. Measuring the average response on this specific trial yields a highly discriminative metric: TTB will produce values near 1 (choosing B), and WADD will produce values near 0 (choosing A)."
+          },
+          "proposer_theory": {
+            "description": "Weighted Additive (WADD) Theory: People evaluate options by computing a weighted sum of their features, where the weights correspond to the cue validities above chance (validity - 0.5). This linear compensatory strategy allows multiple lower-validity cues to outweigh a single high-validity cue without over-privileging the top cue. Choices are made probabilistically using a softmax over the weighted sums, combined with a lapse rate for random guessing.",
+            "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"WADD expects a (2, n_features) stimulus.\")\n    \n    a, b = stim[0], stim[1]\n    \n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    # Use linear evidence above chance instead of log-odds to prevent over-dominance of the top cue\n    weights = val - 0.5\n    \n    score_a = np.sum(weights * a)\n    score_b = np.sum(weights * b)\n    scores = np.array([score_a, score_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Numerically stable softmax\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]",
+              "validities": "validities"
+            },
+            "rationale": "Following the critic's feedback, the weight calculation was changed from log-odds to a linear scaling `val - 0.5`. The log-odds transformation created too large a gap between high and low validity cues, making the model behave too much like Take The Best and over-predicting the dominance of the highest-validity cue. By scaling weights as evidence above chance, the model allows lower-validity cues to better compete, bringing the choice probabilities closer to the observed human indifference levels when cues conflict."
+          },
+          "proposer_label": "pi_3",
+          "real_value": 0.52,
+          "real_variance": 0.24960000000000004,
+          "predicted_values": [
+            {
+              "value": 0.3333333333333333,
+              "variance": 0.03888888888888889,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.8966666666666666,
+              "variance": 0.018766666666666668,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.16,
+              "variance": 0.026622222222222224,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.3933333333333333,
+              "variance": 0.22195555555555557,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.4666666666666667,
+              "variance": 0.14,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.42333333333333334,
+              "variance": 0.18801111111111113,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.44,
+              "variance": 0.24640000000000004,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_001_obs_01.jsonl"
+        }
+      ],
+      "next_theory": {
+        "description": "Strategy Mixture Theory: The population of decision-makers is heterogeneous, consisting of distinct subgroups that rely on fundamentally different decision rules. Rather than every individual using a noisy version of the same heuristic, about half the population employs a non-compensatory, frugal strategy (Take The Best), while the other half employs a compensatory, unweighted strategy (Tallying). This individual difference accounts for both the ~50% aggregate choice proportions on critical divergence trials and the high (~0.25) between-subject variance, which is characteristic of a Bernoulli distribution of highly deterministic strategies.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be a 2xN array.\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    strategy = int(parameters[\"strategy\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    if strategy == 0:\n        # Take The Best (Non-compensatory)\n        cue_order = np.argsort(-val, kind=\"stable\").tolist()\n        winner = None\n        for j in cue_order:\n            if a[j] > b[j]:\n                winner = 0\n                break\n            if b[j] > a[j]:\n                winner = 1\n                break\n                \n        if winner is None:\n            scores = np.array([0.5, 0.5])\n        else:\n            scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])\n            \n    else:\n        # Tallying (Compensatory)\n        a_wins = float(np.sum(a > b))\n        b_wins = float(np.sum(b > a))\n        scores = np.array([a_wins, b_wins])\n        \n    # Numerically stable softmax\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(2) / 2.0)\n",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+        "parameters": {
+          "strategy": "{0, 1}",
+          "beta": "[5.0, 50.0]",
+          "epsilon": "[0.0, 0.1]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's advice, the compensatory strategy is swapped from WADD to Tallying. This directly addresses the mismatch in Experiment 1, which isolates divergence between TTB and Tallying. A 50/50 mixture of TTB and Tallying will naturally predict the ~0.46 match rate observed. Furthermore, the parameter ranges for beta and epsilon are shifted to [5.0, 50.0] and [0.0, 0.1] respectively, making the individual strategies much more deterministic. This reduction in within-subject noise will elevate the between-subject variance on critical divergence trials to match the empirical ~0.25 variance, capturing the signature of a population split between distinct deterministic rules."
+      },
+      "next_theory_idx": 1,
+      "next_theory_label": "pi_4"
+    },
+    {
+      "observations": [
+        {
+          "experiment": {
+            "rationale": null,
+            "validities": [
+              0.95,
+              0.68,
+              0.88,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                0,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    a_str = data['option_a_ratings'].apply(lambda x: ''.join(map(str, x)))\n    b_str = data['option_b_ratings'].apply(lambda x: ''.join(map(str, x)))\n    \n    mask1 = (a_str == '1000') & (b_str == '0101')\n    mask2 = (a_str == '0101') & (b_str == '1000')\n    \n    total = mask1.sum() + mask2.sum()\n    if total == 0:\n        return 0.5\n        \n    choices = 0\n    if mask1.sum() > 0:\n        choices += (data.loc[mask1, 'response'] == 0).sum()\n    if mask2.sum() > 0:\n        choices += (data.loc[mask2, 'response'] == 1).sum()\n        \n    return float(choices / total)",
+            "rationale": "Focuses exclusively on Trial 3 (A=[1,0,0,0] vs B=[0,1,0,1]), the only trial where the two sub-strategies of Strategy Mixture (Take-The-Best and Tallying) have strict, opposing preferences. TTB chooses A (relying on the top cue) while Tallying chooses B (relying on the sheer number of cues). This produces a highly variable bimodal distribution of subject means under Strategy Mixture, averaging around 0.5. In contrast, WADD strongly prefers A across the board because the weight of the top cue (0.45) heavily outweighs the sum of the second and fourth cues (0.18 + 0.05 = 0.23), resulting in a point estimate close to 0.9 with very low between-subject variance."
+          },
+          "proposer_theory": {
+            "description": "Strategy Mixture Theory: The population of decision-makers is heterogeneous, consisting of distinct subgroups that rely on fundamentally different decision rules. Rather than every individual using a noisy version of the same heuristic, about half the population employs a non-compensatory, frugal strategy (Take The Best), while the other half employs a compensatory, unweighted strategy (Tallying). This individual difference accounts for both the ~50% aggregate choice proportions on critical divergence trials and the high (~0.25) between-subject variance, which is characteristic of a Bernoulli distribution of highly deterministic strategies.",
+            "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be a 2xN array.\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    strategy = int(parameters[\"strategy\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    if strategy == 0:\n        # Take The Best (Non-compensatory)\n        cue_order = np.argsort(-val, kind=\"stable\").tolist()\n        winner = None\n        for j in cue_order:\n            if a[j] > b[j]:\n                winner = 0\n                break\n            if b[j] > a[j]:\n                winner = 1\n                break\n                \n        if winner is None:\n            scores = np.array([0.5, 0.5])\n        else:\n            scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])\n            \n    else:\n        # Tallying (Compensatory)\n        a_wins = float(np.sum(a > b))\n        b_wins = float(np.sum(b > a))\n        scores = np.array([a_wins, b_wins])\n        \n    # Numerically stable softmax\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(2) / 2.0)\n",
+            "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+            "parameters": {
+              "strategy": "{0, 1}",
+              "beta": "[5.0, 50.0]",
+              "epsilon": "[0.0, 0.1]",
+              "validities": "validities"
+            },
+            "rationale": "Following the critic's advice, the compensatory strategy is swapped from WADD to Tallying. This directly addresses the mismatch in Experiment 1, which isolates divergence between TTB and Tallying. A 50/50 mixture of TTB and Tallying will naturally predict the ~0.46 match rate observed. Furthermore, the parameter ranges for beta and epsilon are shifted to [5.0, 50.0] and [0.0, 0.1] respectively, making the individual strategies much more deterministic. This reduction in within-subject noise will elevate the between-subject variance on critical divergence trials to match the empirical ~0.25 variance, capturing the signature of a population split between distinct deterministic rules."
+          },
+          "proposer_label": "pi_4",
+          "real_value": 0.48,
+          "real_variance": 0.24960000000000004,
+          "predicted_values": [
+            {
+              "value": 0.5766666666666667,
+              "variance": 0.23023333333333335,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.76,
+              "variance": 0.05351111111111113,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.8533333333333334,
+              "variance": 0.02182222222222222,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.15333333333333332,
+              "variance": 0.029822222222222215,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.58,
+              "variance": 0.1680444444444444,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.5066666666666667,
+              "variance": 0.20995555555555556,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.49,
+              "variance": 0.2360111111111111,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_002_obs_00.jsonl"
+        },
+        {
+          "experiment": {
+            "rationale": null,
+            "validities": [
+              0.95,
+              0.75,
+              0.57,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                1
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    a_match = data['option_a_ratings'].apply(lambda x: tuple(x) == (1, 1, 0, 0))\n    b_match = data['option_b_ratings'].apply(lambda x: tuple(x) == (0, 1, 1, 0))\n    target_trials = data[a_match & b_match]\n    if len(target_trials) == 0:\n        return 0.5\n    return float((target_trials['response'] == 0).mean())",
+            "rationale": "Trial 14 (A=[1, 1, 0, 0] vs B=[0, 1, 1, 0]) is the only trial where the Tallying strategy (used by half the Mixture population) perceives a tie (both options have 2 positive cues) and therefore guesses at random (50%). The other half of the Mixture population uses Take The Best, which strongly prefers A based on the first cue. Thus, the Strategy Mixture theory predicts an aggregate choice proportion for A of roughly 75% on this trial, with very high between-subject variance (bimodal at 50% and 100%). In contrast, the Weighted Additive (WADD) theory assigns a substantially higher weighted sum to A (0.45 + 0.25 = 0.70) than to B (0.25 + 0.07 = 0.32), predicting a consistent preference for A across all subjects (closer to 90-100%, depending on beta). This metric isolates the choice proportion on Trial 14 to capture this stark divergence."
+          },
+          "proposer_theory": {
+            "description": "Weighted Additive (WADD) Theory: People evaluate options by computing a weighted sum of their features, where the weights correspond to the cue validities above chance (validity - 0.5). This linear compensatory strategy allows multiple lower-validity cues to outweigh a single high-validity cue without over-privileging the top cue. Choices are made probabilistically using a softmax over the weighted sums, combined with a lapse rate for random guessing.",
+            "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"WADD expects a (2, n_features) stimulus.\")\n    \n    a, b = stim[0], stim[1]\n    \n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    # Use linear evidence above chance instead of log-odds to prevent over-dominance of the top cue\n    weights = val - 0.5\n    \n    score_a = np.sum(weights * a)\n    score_b = np.sum(weights * b)\n    scores = np.array([score_a, score_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Numerically stable softmax\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]",
+              "validities": "validities"
+            },
+            "rationale": "Following the critic's feedback, the weight calculation was changed from log-odds to a linear scaling `val - 0.5`. The log-odds transformation created too large a gap between high and low validity cues, making the model behave too much like Take The Best and over-predicting the dominance of the highest-validity cue. By scaling weights as evidence above chance, the model allows lower-validity cues to better compete, bringing the choice probabilities closer to the observed human indifference levels when cues conflict."
+          },
+          "proposer_label": "pi_3",
+          "real_value": 0.52,
+          "real_variance": 0.24960000000000004,
+          "predicted_values": [
+            {
+              "value": 0.8333333333333334,
+              "variance": 0.031111111111111117,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.7566666666666667,
+              "variance": 0.0669,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.8133333333333334,
+              "variance": 0.02626666666666667,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.5566666666666666,
+              "variance": 0.05734444444444445,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.6,
+              "variance": 0.18555555555555558,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.5033333333333333,
+              "variance": 0.20054444444444447,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.55,
+              "variance": 0.2236111111111111,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_002_obs_01.jsonl"
+        }
+      ],
+      "next_theory": {
+        "description": "Heterogeneous Cue Hierarchies: Individuals all employ a lexicographic, non-compensatory decision strategy (Take-The-Best), but they differ in how they construct their cue hierarchies. Rather than perfectly internalizing the objective cue validities provided in instructions, subjects form subjective cue validities by combining the objective validities with idiosyncratic, subjective weights. The degree to which a subject relies on their idiosyncratic weights versus objective validities varies across the population. This results in some subjects strictly following the objective hierarchy, while others use idiosyncratic hierarchies (e.g., heavily overweighting a specific cue). This heterogeneity explains the high between-subject variance and why objectively dominant options in aggregate only receive partial choice shares.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be a 2xN array.\")\n        \n    a, b = stim[0], stim[1]\n    \n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    subjective_weights = np.asarray(parameters[\"subjective_weights\"], dtype=float)\n    noise_level = float(parameters[\"noise_level\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Construct subjective validities by adding individual-specific noise/preferences to objective validities\n    # subjective_weights are in [0, 1], so we center them around 0\n    subj_val = validities + noise_level * (subjective_weights - 0.5)\n    \n    # Lexicographic strategy based on subjective hierarchy\n    cue_order = np.argsort(-subj_val, kind=\"stable\").tolist()\n    \n    winner = None\n    for j in cue_order:\n        if a[j] > b[j]:\n            winner = 0\n            break\n        elif b[j] > a[j]:\n            winner = 1\n            break\n            \n    if winner is None:\n        p_core = np.array([0.5, 0.5])\n    else:\n        p_core = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])\n        \n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))",
+        "parameters": {
+          "noise_level": "[0.0, 10.0]",
+          "subjective_weights": "[(0.0, 1.0)] * n_features",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's advice, the parameter ranges for `noise_level` and `epsilon` have been expanded. `noise_level` is increased to [0.0, 10.0] to allow for even stronger idiosyncratic overrides of the objective validities, which should further disrupt aggregate preference for objectively dominant cues. `epsilon` is increased to [0.0, 0.5] to allow a higher base rate of guessing, which will help pull extreme choice proportions (like the 0.75 in Experiment 6 and 0.35 in Experiment 4) closer to the observed ~0.50 mark."
+      },
+      "next_theory_idx": 2,
+      "next_theory_label": "pi_5"
+    },
+    {
+      "observations": [
+        {
+          "experiment": {
+            "rationale": null,
+            "validities": [
+              0.95,
+              0.74,
+              0.81,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                1
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                1,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import pandas as pd\n    \n    # Calculate the sum of positive cues for each option to find Tally-tie trials\n    a_sums = data['option_a_ratings'].apply(lambda x: sum(x))\n    b_sums = data['option_b_ratings'].apply(lambda x: sum(x))\n    tally_tie_mask = (a_sums == b_sums)\n    \n    if not tally_tie_mask.any():\n        return 0.5\n        \n    tie_data = data[tally_tie_mask].copy()\n    \n    # Determine the objective Take-The-Best (TTB) choice\n    # Objective validities are [0.95, 0.74, 0.81, 0.55], so cue order is 0, 2, 1, 3\n    def get_ttb_choice(row):\n        a = row['option_a_ratings']\n        b = row['option_b_ratings']\n        for cue in [0, 2, 1, 3]:\n            if a[cue] > b[cue]:\n                return 0\n            elif b[cue] > a[cue]:\n                return 1\n        return -1\n        \n    tie_data['ttb_choice'] = tie_data.apply(get_ttb_choice, axis=1)\n    \n    valid_mask = tie_data['ttb_choice'] != -1\n    if not valid_mask.any():\n        return 0.5\n        \n    valid_tie_data = tie_data[valid_mask]\n    matches = (valid_tie_data['response'] == valid_tie_data['ttb_choice']).astype(float)\n    \n    return float(matches.mean())",
+            "rationale": "We isolate trials where the Tallying strategy predicts a tie (the sum of positive cues is equal for options A and B). On these trials, Tallying users (half the population in SMT) will guess randomly, yielding a ~50% match rate with the objective Take-The-Best (TTB) prediction. TTB users (the other half in SMT) will match the objective TTB prediction ~100% of the time. Thus, SMT predicts an aggregate match rate of ~75% on these trials. In contrast, HCH posits that all users employ TTB but with idiosyncratic, noisy cue hierarchies. Because the Tally-tie trials in this design perfectly balance the number of cues favoring each option, a noisy cue hierarchy will favor the objective TTB choice only ~50% of the time. Thus, HCH predicts an aggregate match rate of ~50%. This metric computes the proportion of choices on Tally-tie trials that align with the objective TTB prediction, creating a robust 75% vs 50% contrast."
+          },
+          "proposer_theory": {
+            "description": "Strategy Mixture Theory: The population of decision-makers is heterogeneous, consisting of distinct subgroups that rely on fundamentally different decision rules. Rather than every individual using a noisy version of the same heuristic, about half the population employs a non-compensatory, frugal strategy (Take The Best), while the other half employs a compensatory, unweighted strategy (Tallying). This individual difference accounts for both the ~50% aggregate choice proportions on critical divergence trials and the high (~0.25) between-subject variance, which is characteristic of a Bernoulli distribution of highly deterministic strategies.",
+            "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be a 2xN array.\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    strategy = int(parameters[\"strategy\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    if strategy == 0:\n        # Take The Best (Non-compensatory)\n        cue_order = np.argsort(-val, kind=\"stable\").tolist()\n        winner = None\n        for j in cue_order:\n            if a[j] > b[j]:\n                winner = 0\n                break\n            if b[j] > a[j]:\n                winner = 1\n                break\n                \n        if winner is None:\n            scores = np.array([0.5, 0.5])\n        else:\n            scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])\n            \n    else:\n        # Tallying (Compensatory)\n        a_wins = float(np.sum(a > b))\n        b_wins = float(np.sum(b > a))\n        scores = np.array([a_wins, b_wins])\n        \n    # Numerically stable softmax\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(2) / 2.0)\n",
+            "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+            "parameters": {
+              "strategy": "{0, 1}",
+              "beta": "[5.0, 50.0]",
+              "epsilon": "[0.0, 0.1]",
+              "validities": "validities"
+            },
+            "rationale": "Following the critic's advice, the compensatory strategy is swapped from WADD to Tallying. This directly addresses the mismatch in Experiment 1, which isolates divergence between TTB and Tallying. A 50/50 mixture of TTB and Tallying will naturally predict the ~0.46 match rate observed. Furthermore, the parameter ranges for beta and epsilon are shifted to [5.0, 50.0] and [0.0, 0.1] respectively, making the individual strategies much more deterministic. This reduction in within-subject noise will elevate the between-subject variance on critical divergence trials to match the empirical ~0.25 variance, capturing the signature of a population split between distinct deterministic rules."
+          },
+          "proposer_label": "pi_4",
+          "real_value": 0.608,
+          "real_variance": 0.078336,
+          "predicted_values": [
+            {
+              "value": 0.7353333333333333,
+              "variance": 0.06259600000000001,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.5626666666666666,
+              "variance": 0.10096177777777779,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.8506666666666667,
+              "variance": 0.010988444444444447,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.502,
+              "variance": 0.006507111111111111,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.79,
+              "variance": 0.01667777777777778,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.4706666666666667,
+              "variance": 0.08038400000000001,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.548,
+              "variance": 0.08556266666666669,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_003_obs_00.jsonl"
+        },
+        {
+          "experiment": {
+            "rationale": null,
+            "validities": [
+              0.95,
+              0.8,
+              0.74,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    import pandas as pd\n    \n    validities = np.array([0.95, 0.8, 0.74, 0.55])\n    cue_order = np.argsort(-validities)\n    \n    def get_ttb_pred(a, b):\n        for j in cue_order:\n            if a[j] > b[j]: return 0\n            if b[j] > a[j]: return 1\n        return 0.5\n        \n    def is_agreement_trial(row):\n        a = row['option_a_ratings']\n        b = row['option_b_ratings']\n        sum_a = sum(a)\n        sum_b = sum(b)\n        \n        if sum_a == sum_b:\n            return False\n            \n        tally_pred = 0 if sum_a > sum_b else 1\n        ttb_pred = get_ttb_pred(a, b)\n        \n        return tally_pred == ttb_pred\n\n    # Calculate predictions and identify agreement trials\n    data['ttb_pred'] = data.apply(lambda row: get_ttb_pred(row['option_a_ratings'], row['option_b_ratings']), axis=1)\n    data['is_agreement'] = data.apply(is_agreement_trial, axis=1)\n    \n    agreement_data = data[data['is_agreement']].copy()\n    \n    if len(agreement_data) == 0:\n        return 0.0\n        \n    # Calculate match with the consensus prediction\n    agreement_data['match'] = (agreement_data['response'] == agreement_data['ttb_pred']).astype(float)\n    \n    # Return the mean match proportion\n    return float(agreement_data['match'].mean())",
+            "rationale": "We focus on 'Agreement Trials' where both Take-The-Best (with objective validities) and Tallying predict the exact same choice. Under Strategy Mixture Theory, all subjects (whether they use TTB or Tallying) will consistently choose this consensus option, leading to a very high match proportion (~97%) and extremely low between-subject variance. In contrast, under Heterogeneous Cue Hierarchies, subjects use idiosyncratic subjective validities. Because some of these Agreement Trials contain conflicting minor cues, subjects who heavily overweight a minor cue will reliably deviate from the consensus. This results in a structurally lower mean match proportion and a higher between-subject variance for HCH. The combination of a clear mean difference and near-zero variance in the Strategy Mixture group ensures a highly significant discrimination."
+          },
+          "proposer_theory": {
+            "description": "Heterogeneous Cue Hierarchies: Individuals all employ a lexicographic, non-compensatory decision strategy (Take-The-Best), but they differ in how they construct their cue hierarchies. Rather than perfectly internalizing the objective cue validities provided in instructions, subjects form subjective cue validities by combining the objective validities with idiosyncratic, subjective weights. The degree to which a subject relies on their idiosyncratic weights versus objective validities varies across the population. This results in some subjects strictly following the objective hierarchy, while others use idiosyncratic hierarchies (e.g., heavily overweighting a specific cue). This heterogeneity explains the high between-subject variance and why objectively dominant options in aggregate only receive partial choice shares.",
+            "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be a 2xN array.\")\n        \n    a, b = stim[0], stim[1]\n    \n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    subjective_weights = np.asarray(parameters[\"subjective_weights\"], dtype=float)\n    noise_level = float(parameters[\"noise_level\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Construct subjective validities by adding individual-specific noise/preferences to objective validities\n    # subjective_weights are in [0, 1], so we center them around 0\n    subj_val = validities + noise_level * (subjective_weights - 0.5)\n    \n    # Lexicographic strategy based on subjective hierarchy\n    cue_order = np.argsort(-subj_val, kind=\"stable\").tolist()\n    \n    winner = None\n    for j in cue_order:\n        if a[j] > b[j]:\n            winner = 0\n            break\n        elif b[j] > a[j]:\n            winner = 1\n            break\n            \n    if winner is None:\n        p_core = np.array([0.5, 0.5])\n    else:\n        p_core = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])\n        \n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])",
+            "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))",
+            "parameters": {
+              "noise_level": "[0.0, 10.0]",
+              "subjective_weights": "[(0.0, 1.0)] * n_features",
+              "epsilon": "[0.0, 0.5]",
+              "validities": "validities"
+            },
+            "rationale": "Following the critic's advice, the parameter ranges for `noise_level` and `epsilon` have been expanded. `noise_level` is increased to [0.0, 10.0] to allow for even stronger idiosyncratic overrides of the objective validities, which should further disrupt aggregate preference for objectively dominant cues. `epsilon` is increased to [0.0, 0.5] to allow a higher base rate of guessing, which will help pull extreme choice proportions (like the 0.75 in Experiment 6 and 0.35 in Experiment 4) closer to the observed ~0.50 mark."
+          },
+          "proposer_label": "pi_5",
+          "real_value": 0.504,
+          "real_variance": 0.009983999999999995,
+          "predicted_values": [
+            {
+              "value": 0.829,
+              "variance": 0.011264555555555554,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.98,
+              "variance": 0.0005777777777777779,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.859,
+              "variance": 0.010035666666666665,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.8546666666666667,
+              "variance": 0.009511555555555554,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.722,
+              "variance": 0.010327111111111112,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.585,
+              "variance": 0.011913888888888884,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.48833333333333334,
+              "variance": 0.009202777777777775,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_003_obs_01.jsonl"
+        }
+      ],
+      "next_theory": {
+        "description": "Subject-Specific Single-Cue Heuristic and Strong Spatial Bias: Subjects largely ignore the objective validities provided in the instructions. Instead of engaging in complex compensatory or non-compensatory integration of multiple cues, individuals adopt highly simplified, deterministic strategies. The population is split: some subjects rely on a strong spatial bias (e.g., always choosing the left or right option), while others adopt a single-cue heuristic, randomly selecting one feature to follow deterministically and ignoring all others. This extreme simplification explains the ~50% aggregate choice proportions on critical divergence trials, the failure to align with objective-consensus trials, and the extremely high between-subject variance, as choices are driven by idiosyncratic, deterministic biases rather than shared objective validities.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be a 2xN array.\")\n        \n    a, b = stim[0], stim[1]\n    \n    strategy_class = int(parameters[\"strategy_class\"])\n    spatial_dir = int(parameters[\"spatial_dir\"])\n    cue_weights = np.asarray(parameters[\"cue_weights\"], dtype=float)\n    epsilon = float(parameters[\"epsilon\"])\n    \n    if strategy_class == 0:\n        # Spatial Bias: deterministically choose Left (0) or Right (1)\n        p_core = np.array([1.0, 0.0]) if spatial_dir == 0 else np.array([0.0, 1.0])\n    else:\n        # Single-Cue Heuristic: follow a single randomly preferred cue\n        k = int(np.argmax(cue_weights))\n        if a[k] > b[k]:\n            p_core = np.array([1.0, 0.0])\n        elif b[k] > a[k]:\n            p_core = np.array([0.0, 1.0])\n        else:\n            # If the chosen cue is tied, guess randomly\n            p_core = np.array([0.5, 0.5])\n            \n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+        "parameters": {
+          "strategy_class": "{0, 1}",
+          "spatial_dir": "{0, 1}",
+          "cue_weights": "[(0.0, 1.0)] * n_features",
+          "epsilon": "[0.0, 0.1]"
+        },
+        "rationale": "Following the arbiter's feedback, this theory abandons the assumption that subjects internalize the objective cue validities. Instead, it models the population as a mix of individuals who either adopt a strict spatial bias (always picking Option A or Option B) or a single-cue heuristic (picking one random cue to follow deterministically). This naturally accounts for the chance-level (~50%) aggregate means across most experiments, including the consensus trials in Experiment 8 where normative theories predict high agreement. It also inherently produces the extremely high single-trial variance (~0.25) observed in the data, as half the population deterministically picks A and the other half deterministically picks B based on their idiosyncratic bias or chosen cue."
+      },
+      "next_theory_idx": 1,
+      "next_theory_label": "pi_6"
+    },
+    {
+      "observations": [
+        {
+          "experiment": {
+            "rationale": null,
+            "validities": [
+              0.95,
+              0.73,
+              0.56,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                1
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    import pandas as pd\n    subj_means = data.groupby('subject_id')['response'].mean()\n    return float(np.mean(np.abs(subj_means - 0.5)))",
+            "rationale": "Under the Advocated Theory, a significant portion of the population (those with a strategy_class of 0) adopts a strong spatial bias, meaning they will choose the same side (response = 0 or 1) on almost every single trial. This yields a subject-level mean response near 0.0 or 1.0, making their absolute deviation from 0.5 close to 0.5. The Competing Theory assumes all subjects use a lexicographic strategy based on subjective weights, which, given the balanced nature of the trial pairs, will result in an aggregate choice proportion closer to 0.5 for each subject. By computing the mean absolute deviation of each subject's overall response rate from 0.5, we expect a large, structural gap between the two theories."
+          },
+          "proposer_theory": {
+            "description": "Subject-Specific Single-Cue Heuristic and Strong Spatial Bias: Subjects largely ignore the objective validities provided in the instructions. Instead of engaging in complex compensatory or non-compensatory integration of multiple cues, individuals adopt highly simplified, deterministic strategies. The population is split: some subjects rely on a strong spatial bias (e.g., always choosing the left or right option), while others adopt a single-cue heuristic, randomly selecting one feature to follow deterministically and ignoring all others. This extreme simplification explains the ~50% aggregate choice proportions on critical divergence trials, the failure to align with objective-consensus trials, and the extremely high between-subject variance, as choices are driven by idiosyncratic, deterministic biases rather than shared objective validities.",
+            "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be a 2xN array.\")\n        \n    a, b = stim[0], stim[1]\n    \n    strategy_class = int(parameters[\"strategy_class\"])\n    spatial_dir = int(parameters[\"spatial_dir\"])\n    cue_weights = np.asarray(parameters[\"cue_weights\"], dtype=float)\n    epsilon = float(parameters[\"epsilon\"])\n    \n    if strategy_class == 0:\n        # Spatial Bias: deterministically choose Left (0) or Right (1)\n        p_core = np.array([1.0, 0.0]) if spatial_dir == 0 else np.array([0.0, 1.0])\n    else:\n        # Single-Cue Heuristic: follow a single randomly preferred cue\n        k = int(np.argmax(cue_weights))\n        if a[k] > b[k]:\n            p_core = np.array([1.0, 0.0])\n        elif b[k] > a[k]:\n            p_core = np.array([0.0, 1.0])\n        else:\n            # If the chosen cue is tied, guess randomly\n            p_core = np.array([0.5, 0.5])\n            \n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n",
+            "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+            "parameters": {
+              "strategy_class": "{0, 1}",
+              "spatial_dir": "{0, 1}",
+              "cue_weights": "[(0.0, 1.0)] * n_features",
+              "epsilon": "[0.0, 0.1]"
+            },
+            "rationale": "Following the arbiter's feedback, this theory abandons the assumption that subjects internalize the objective cue validities. Instead, it models the population as a mix of individuals who either adopt a strict spatial bias (always picking Option A or Option B) or a single-cue heuristic (picking one random cue to follow deterministically). This naturally accounts for the chance-level (~50%) aggregate means across most experiments, including the consensus trials in Experiment 8 where normative theories predict high agreement. It also inherently produces the extremely high single-trial variance (~0.25) observed in the data, as half the population deterministically picks A and the other half deterministically picks B based on their idiosyncratic bias or chosen cue."
+          },
+          "proposer_label": "pi_6",
+          "real_value": 0.5,
+          "real_variance": 0.0,
+          "predicted_values": [
+            {
+              "value": 0.31875,
+              "variance": 0.04060329861111111,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.07041666666666666,
+              "variance": 0.0023071180555555557,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.050625,
+              "variance": 0.0008029947916666669,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.03541666666666666,
+              "variance": 0.0005295138888888888,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.038541666666666675,
+              "variance": 0.0013118489583333335,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.04312499999999999,
+              "variance": 0.0005512586805555556,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.48291666666666666,
+              "variance": 0.00032013888888888896,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_004_obs_00.jsonl"
+        },
+        {
+          "experiment": {
+            "rationale": null,
+            "validities": [
+              0.95,
+              0.87,
+              0.82,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import pandas as pd\n    import numpy as np\n    \n    sum_a = data['option_a_ratings'].apply(sum)\n    sum_b = data['option_b_ratings'].apply(sum)\n    \n    diff_mask = sum_a != sum_b\n    if not diff_mask.any():\n        return 0.5\n        \n    resp = data.loc[diff_mask, 'response']\n    sum_choice = (sum_b[diff_mask] > sum_a[diff_mask]).astype(int)\n    \n    match = (resp == sum_choice).mean()\n    return float(match)",
+            "rationale": "Measures the proportion of choices that align with the simple sum of features (Dawes' rule) on trials where one option has more positive features than the other. Under the Advocated Theory (Take-The-Best), choices will often align with the sum because the hierarchical non-compensatory strategy naturally correlates with the total number of positive cues. Under the Competing Theory, a large portion of subjects use a spatial bias (which matches the sum only 50% of the time) or a single-cue heuristic (which ignores the rest of the cues, reducing the overall alignment with the sum). Thus, the metric should be significantly higher for the Advocated Theory."
+          },
+          "proposer_theory": {
+            "description": "Heterogeneous Cue Hierarchies: Individuals all employ a lexicographic, non-compensatory decision strategy (Take-The-Best), but they differ in how they construct their cue hierarchies. Rather than perfectly internalizing the objective cue validities provided in instructions, subjects form subjective cue validities by combining the objective validities with idiosyncratic, subjective weights. The degree to which a subject relies on their idiosyncratic weights versus objective validities varies across the population. This results in some subjects strictly following the objective hierarchy, while others use idiosyncratic hierarchies (e.g., heavily overweighting a specific cue). This heterogeneity explains the high between-subject variance and why objectively dominant options in aggregate only receive partial choice shares.",
+            "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be a 2xN array.\")\n        \n    a, b = stim[0], stim[1]\n    \n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    subjective_weights = np.asarray(parameters[\"subjective_weights\"], dtype=float)\n    noise_level = float(parameters[\"noise_level\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Construct subjective validities by adding individual-specific noise/preferences to objective validities\n    # subjective_weights are in [0, 1], so we center them around 0\n    subj_val = validities + noise_level * (subjective_weights - 0.5)\n    \n    # Lexicographic strategy based on subjective hierarchy\n    cue_order = np.argsort(-subj_val, kind=\"stable\").tolist()\n    \n    winner = None\n    for j in cue_order:\n        if a[j] > b[j]:\n            winner = 0\n            break\n        elif b[j] > a[j]:\n            winner = 1\n            break\n            \n    if winner is None:\n        p_core = np.array([0.5, 0.5])\n    else:\n        p_core = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])\n        \n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])",
+            "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))",
+            "parameters": {
+              "noise_level": "[0.0, 10.0]",
+              "subjective_weights": "[(0.0, 1.0)] * n_features",
+              "epsilon": "[0.0, 0.5]",
+              "validities": "validities"
+            },
+            "rationale": "Following the critic's advice, the parameter ranges for `noise_level` and `epsilon` have been expanded. `noise_level` is increased to [0.0, 10.0] to allow for even stronger idiosyncratic overrides of the objective validities, which should further disrupt aggregate preference for objectively dominant cues. `epsilon` is increased to [0.0, 0.5] to allow a higher base rate of guessing, which will help pull extreme choice proportions (like the 0.75 in Experiment 6 and 0.35 in Experiment 4) closer to the observed ~0.50 mark."
+          },
+          "proposer_label": "pi_5",
+          "real_value": 0.49818181818181817,
+          "real_variance": 0.0020628099173553706,
+          "predicted_values": [
+            {
+              "value": 0.7878787878787878,
+              "variance": 0.013131313131313131,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.6321212121212121,
+              "variance": 0.02639155188246098,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.6596969696969697,
+              "variance": 0.003757667584940313,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.8312121212121212,
+              "variance": 0.015270982552800733,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.8142424242424242,
+              "variance": 0.01593030303030303,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.8560606060606061,
+              "variance": 0.01811065197428834,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.5124242424242424,
+              "variance": 0.0017969696969696953,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_004_obs_01.jsonl"
+        }
+      ],
+      "next_theory": {
+        "description": "Pure Spatial Bias: Subjects completely ignore the objective validities and the feature values of the options. Instead, 100% of the subjects adopt a deterministic spatial bias, choosing either exclusively Option A (Left) or exclusively Option B (Right) across all trials. This lack of engagement with the task features accounts for the ~0.50 baseline match rates for any feature-based rules across experiments, and perfectly explains the 0.500 mean absolute deviation in subject choice proportions.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    spatial_dir = int(parameters[\"spatial_dir\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    p_core = np.zeros(2)\n    p_core[spatial_dir] = 1.0\n    \n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))",
+        "parameters": {
+          "spatial_dir": "{0, 1}",
+          "epsilon": "[0.0, 0.05]"
+        },
+        "rationale": "The arbiter analysis correctly points out that in Experiment 9, the mean absolute deviation of subject choice proportions from 0.5 is exactly 0.5000 with 0 variance. This means every single subject had a mean choice proportion of 0.0 or 1.0, indicating they deterministically chose either Option A or Option B on every trial. Implementing a pure spatial bias model with minimal noise perfectly captures this phenomenon and explains why feature-based rule predictions hover around chance (0.50) across all other experiments."
+      },
+      "next_theory_idx": 2,
+      "next_theory_label": "pi_7"
+    }
+  ]
+}

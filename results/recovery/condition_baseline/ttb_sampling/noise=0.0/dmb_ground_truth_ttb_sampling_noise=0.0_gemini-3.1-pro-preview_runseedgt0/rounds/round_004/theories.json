@@ -1,0 +1,56 @@
+{
+  "round_idx": 4,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_1",
+      "killed": false,
+      "theory": {
+        "description": "People compare two options by consulting cues one at a time in order of validity, stopping at the first cue that discriminates between the two options. That cue alone determines the choice: the option with the higher value on the discriminating cue wins, and no other cue is consulted. Cues with lower validity are never reached when a higher-validity cue already discriminates, so Take The Best is a \"one-reason\" decision rule \u2014 only a single feature is ever used on any given choice. Because only the sign of the comparison on the top discriminating cue matters, TTB ignores both the magnitude of that difference and all information on lower-validity cues, making it maximally frugal in the use of evidence. Cue validities are subjective and can be learned, inferred from instructions, or fixed by task structure. When no cue discriminates (all feature-wise comparisons tie) the learner has no basis for preference and must guess. Response noise enters through a softmax over the binary TTB score (winner = 1, loser = 0) with inverse temperature beta, plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+        "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Take The Best (Gigerenzer & Goldstein 1996).\n    # Stimulus is the pair of option feature vectors for the current\n    # trial: array-like of shape (2, n_features), row 0 = option A,\n    # row 1 = option B. Cue cascade: features are consulted in order\n    # of descending validity; the first discriminating cue (strict\n    # inequality) determines the winner; if no cue discriminates,\n    # the model guesses uniformly. History is ignored.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"TTB expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n    n_features = stim.shape[1]\n\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    if val.shape[0] != n_features:\n        raise ValueError(\n            f\"validities length {val.shape[0]} != n_features {n_features}.\"\n        )\n    # Descending validity; argsort is stable so validity ties break\n    # toward the earlier feature index.\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n\n    a, b = stim[0], stim[1]\n    winner = None\n    for j in cue_order:\n        if a[j] > b[j]:\n            winner = 0\n            break\n        if b[j] > a[j]:\n            winner = 1\n            break\n\n    if winner is None:\n        # No discriminating cue \u2014 pure guess.\n        return np.ones(2) / 2.0\n\n    scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. For the\n    # binary TTB score this collapses to sigmoid(beta) for the winner,\n    # giving a direct mapping from beta onto the paper's flip-noise\n    # levels (beta=0 \u2194 50/50; beta \u226b 1 \u2194 deterministic).\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": null
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_6",
+      "killed": true,
+      "theory": {
+        "description": "Strategy Mixture Theory: The population is heterogeneous in its decision-making strategies. A large majority of individuals (around 90%) rely on the strict, non-compensatory Take The Best (TTB) heuristic, which explains the dominant lexicographic patterns in most experiments. However, a smaller proportion of the population (around 10%) uses a compensatory Weighted Additive (WADD) strategy, integrating all available cues weighted by their validities. This mixture preserves the high accuracy of TTB on benchmark tasks while successfully capturing the right-tail sensitivity to opposing cues observed in certain experiments.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    wadd_prop = float(parameters[\"wadd_prop\"])\n    \n    # Between-subject mixture: 10% of the population uses WADD, 90% uses TTB\n    is_wadd = (wadd_prop < 0.10)\n    \n    if is_wadd:\n        # Weighted Additive (WADD) strategy\n        val_clip = np.clip(val, 0.001, 0.999)\n        log_odds = np.log(val_clip / (1.0 - val_clip))\n        ev = np.sum(log_odds * (a - b))\n        if ev > 1e-5:\n            scores = np.array([1.0, 0.0])\n        elif ev < -1e-5:\n            scores = np.array([0.0, 1.0])\n        else:\n            scores = np.array([0.5, 0.5])\n    else:\n        # Take The Best (TTB) strategy\n        cue_order = np.argsort(-val, kind=\"stable\").tolist()\n        winner = None\n        for j in cue_order:\n            if a[j] > b[j]:\n                winner = 0\n                break\n            if b[j] > a[j]:\n                winner = 1\n                break\n                \n        if winner == 0:\n            scores = np.array([1.0, 0.0])\n        elif winner == 1:\n            scores = np.array([0.0, 1.0])\n        else:\n            scores = np.array([0.5, 0.5])\n            \n    # Apply softmax response noise and lapse rate\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "wadd_prop": "[0.0, 1.0]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's advice, we build on the accepted Iteration 1 base but reduce the hardcoded WADD proportion from 25% to 10% (`wadd_prop < 0.10`). Because `wadd_prop` is drawn uniformly from `[0.0, 1.0]` per subject, this ensures only ~10% of the simulated population acts in a compensatory manner. This smaller minority is sufficient to capture the right-tail sensitivity in Experiment 5 while preventing the aggregate predictions from drifting too far from the dominant strict lexicographic baseline seen in Experiments 3, 4, 6, and 8."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_7",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Sequential Evidence Accumulation with Confidence Threshold: Decision-makers evaluate cues sequentially in descending order of validity, accumulating log-odds evidence for each option. The search terminates as soon as the evidence difference exceeds a subject-specific confidence threshold. A low threshold results in pure Take-The-Best (lexicographic) behavior, while a high threshold allows for compensatory integration of multiple cues, naturally capturing both dominant one-reason decision making and occasional compensatory behavior without relying on a discrete mixture of strategies.",
+      "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    theta = float(parameters[\"theta\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Calculate log-odds evidence for each cue\n    val_clip = np.clip(val, 0.5001, 0.9999)\n    w = np.log(val_clip / (1.0 - val_clip))\n    \n    # Sort cues in descending order of validity\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n    \n    delta = 0.0\n    winner = None\n    \n    for j in cue_order:\n        delta += w[j] * (a[j] - b[j])\n        if delta >= theta:\n            winner = 0\n            break\n        elif delta <= -theta:\n            winner = 1\n            break\n            \n    if winner is None:\n        # If all cues are exhausted without crossing the threshold, pick the one with more evidence\n        if delta > 1e-5:\n            winner = 0\n        elif delta < -1e-5:\n            winner = 1\n            \n    if winner == 0:\n        scores = np.array([1.0, 0.0])\n    elif winner == 1:\n        scores = np.array([0.0, 1.0])\n    else:\n        scores = np.array([0.5, 0.5])\n        \n    z = beta * scores\n    z = z - np.max(z)\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n",
+      "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+      "parameters": {
+        "theta": "[0.0, 1.5]",
+        "beta": "[0.1, 20.0]",
+        "epsilon": "[0.0, 0.5]",
+        "validities": "validities"
+      },
+      "rationale": "To correct the model's overestimation of compensatory (WADD) behavior, we tightened the parameter range for the confidence threshold `theta` from `[0.0, 3.0]` to `[0.0, 1.5]`. Since typical validities (e.g., 0.8) have log-odds around 1.38, a lower upper bound ensures that the first discriminating cue is usually sufficient to cross the threshold, preserving predominantly lexicographic behavior across experiments while still allowing occasional compensatory effects when cues are weaker."
+    }
+  }
+}

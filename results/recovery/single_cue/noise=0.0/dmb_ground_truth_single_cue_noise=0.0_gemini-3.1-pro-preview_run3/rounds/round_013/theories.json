@@ -1,0 +1,56 @@
+{
+  "round_idx": 13,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_5",
+      "killed": true,
+      "theory": {
+        "description": "Tally-then-TTB (Tally with Validity Tie-Breaker): Decision-makers first compare options by tallying the total number of winning features for each option, ignoring cue validities. If one option has strictly more wins, it is chosen. This captures the compensatory nature of decision-making when there is a clear majority of supporting cues. However, if the tally results in a tie, the decision-maker falls back to a non-compensatory 'Take-The-Best' strategy to break the tie, choosing the option that wins on the single most valid cue. This hybrid model preserves robust Tallying performance on unequal-tally trials while capturing deterministic validity-based tie-breaking on ambiguous trials.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Tallying phase: count strict feature-wise wins\n    a_wins = float(np.sum(a > b))\n    b_wins = float(np.sum(b > a))\n    \n    score_a = a_wins\n    score_b = b_wins\n    \n    # Tie-breaking phase: if tallies are equal, use TTB\n    if a_wins == b_wins:\n        cue_order = np.argsort(-val, kind=\"stable\")\n        for idx in cue_order:\n            if a[idx] > b[idx]:\n                score_a += 1.0\n                break\n            elif b[idx] > a[idx]:\n                score_b += 1.0\n                break\n                \n    scores = np.array([score_a, score_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax choice rule with max-subtraction for numerical stability\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the arbiter's feedback, this theory implements a 'Tally-then-TTB' mechanism. It evaluates options primarily by Tallying, which correctly captures human behavior on unequal-tally trials where subjects tend to prefer the option with more winning cues regardless of their validity. When Tallying results in a tie, rather than guessing randomly (which fails to capture deterministic behavior on tied trials), the model breaks the tie by defaulting to Take-The-Best, selecting the option that wins on the highest-validity cue. This directly addresses the mechanistic failures of pure Tallying and pure TTB by combining their strengths in a sequential heuristic framework."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_15",
+      "killed": false,
+      "theory": {
+        "description": "Feature Cancellation then Tally/TTB with Cancellation-Scaled Determinism",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Feature cancellation: identify surviving distinct features\n    mask = a != b\n    \n    # Tallying on distinct features\n    a_wins = (a > b).astype(float)\n    b_wins = (b > a).astype(float)\n    \n    tally_a = np.sum(a_wins)\n    tally_b = np.sum(b_wins)\n    \n    score_a = tally_a\n    score_b = tally_b\n    \n    # If tallies are tied, break the tie using TTB on surviving features\n    if tally_a == tally_b and np.sum(mask) > 0:\n        order = np.argsort(val)[::-1]\n        for idx in order:\n            if mask[idx]:\n                if a[idx] > b[idx]:\n                    score_a += 1.0\n                elif b[idx] > a[idx]:\n                    score_b += 1.0\n                break\n            \n    scores = np.array([score_a, score_b])\n    \n    # Softmax choice rule with cancellation-scaled determinism\n    n_surviving = np.sum(mask)\n    effective_beta = beta / n_surviving if n_surviving > 0 else beta\n    \n    z = effective_beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's advice, we built on the successful Feature Cancellation -> Tally -> TTB model and addressed the failures on experiments measuring choice determinism shifts (e.g., Exps 22 and 25). We achieved this by scaling the overall softmax determinism by the number of surviving features, computing the effective beta as `beta / np.sum(mask)`. This elegantly captures the relative weight shift described by the arbiter: when shared cues are canceled, there are fewer surviving distinct features, so the effective beta increases. This produces stronger deterministic preferences on trials with shared cues canceled, without adding any new parameters to the model."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_16",
+    "slot": 1,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Similarity-Scaled Weighted Additive (WADD) Theory: Decision-makers evaluate options using a fully compensatory weighted additive process, where cue weights are derived from a non-linear transformation of their stated validities (parameterized log-odds). Crucially, the choice determinism is not constant; it scales inversely with stimulus complexity (the number of differing features between the options). When options differ on many features, cognitive load increases and preferences become noisier. This complexity-penalized determinism explains variance in choice consistency and nuanced preference reversals across experiments. Normalizing the weights to sum to 1 ensures that the WADD scores remain on a consistent, bounded scale regardless of theta or the number of features, allowing the beta parameter to apply a stable level of determinism across all experiments before the complexity penalty is applied.",
+      "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    beta = float(parameters[\"beta\"])\n    gamma = float(parameters[\"gamma\"])\n    theta = float(parameters[\"theta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Non-linear transformation of validities (log-odds raised to theta)\n    # Clipped to avoid log(0) or division by zero\n    v_clipped = np.clip(val, 0.5001, 0.9999)\n    log_odds = np.log(v_clipped / (1.0 - v_clipped))\n    \n    # Apply non-linear scaling\n    w = log_odds ** theta\n    \n    # Normalize weights so the sum of weights is 1.0\n    # This keeps the scores on a predictable bounded scale for beta across different n_features\n    if np.sum(w) > 0:\n        w = w / np.sum(w)\n        \n    # Compensatory WADD score calculation\n    score_a = np.sum(w * a)\n    score_b = np.sum(w * b)\n    scores = np.array([score_a, score_b])\n    \n    # Similarity-scaled determinism: penalize beta based on number of differing features\n    n_diff = np.sum(a != b)\n    if n_diff > 0:\n        effective_beta = beta / (n_diff ** gamma)\n    else:\n        effective_beta = beta\n        \n    # Softmax choice rule with numerical stability\n    z = effective_beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+      "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+      "parameters": {
+        "beta": "[0.1, 20.0]",
+        "gamma": "[0.0, 3.0]",
+        "theta": "[0.0, 10.0]",
+        "epsilon": "[0.0, 0.5]",
+        "validities": "validities"
+      },
+      "rationale": "Following the latest critic feedback, we build on the accepted base iteration but change the weight normalization scheme. Instead of dividing by the maximum weight, we divide by the sum of the weights (`w = w / np.sum(w)`). This ensures the total possible WADD score difference is bounded, meaning the `beta` parameter doesn't have to compensate for wild fluctuations in score scale across different experiments with different `n_features` or `theta` values. We retain the original `beta / (n_diff ** gamma)` complexity penalty and the wide parameter bounds for `theta` and `gamma` to preserve the model's flexibility."
+    }
+  }
+}

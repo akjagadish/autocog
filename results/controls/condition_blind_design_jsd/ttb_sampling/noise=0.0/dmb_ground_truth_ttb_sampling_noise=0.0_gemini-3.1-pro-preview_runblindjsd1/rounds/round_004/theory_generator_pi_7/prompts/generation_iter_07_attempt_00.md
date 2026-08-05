@@ -1,0 +1,1158 @@
+# generation_iter_07_attempt_00
+
+## System Prompt
+
+You are a renowned cognitive scientist and an expert Python programmer.
+
+Your job is to propose a new theory and its model instantiation in the Decision Making (Binary Features) domain based on the feedback provided by an arbiter. The feedback contains diagnoses of mechanistic failures of the previous theory along with suggestions for a new theory family that overcomes those failures. The newly proposed theory and model should display human-like behavior when simulated on experiment(s). 
+The goal of the theory generation process is to SURFACE theories that are EXPERIMENT-INVARIANT: that is,theories that explain data across the majority of experiments. 
+You will see a list of theories that have been proposed in the past but you should only use them as inspiration and not to choose from them. Propose a new theory that is different. 
+If they fail to do so, you will receive feedback on their performance on the same experiment(s) and you will have to propose another new theory and model that meet the requirements, iterating until you succeed.
+
+If you think the failure to capture human behavior is due to arbiter feedback that is inaccurate or unhelpful, you can propose a new theory and model that ignore the feedback, but you must provide rationale for why you are ignoring it and how your proposal overcomes the identified mechanistic failures.
+
+## ACCEPT GATE & LOSS TRAJECTORY — HOW THE LOOP HANDLES YOUR EDITS
+This propose-loop has a programmatic accept gate: after every iteration the candidate's `aggregate_loss` is compared against the running-best loss; strict improvement -> ACCEPTED (the candidate becomes the new running-best base); otherwise -> REJECTED (the candidate is discarded and the base is unchanged). You do NOT need to manually "revert" a regressed edit — the gate already does that for you.
+
+The block rendered below as `## PREVIOUS CANDIDATE (this loop)` is ALWAYS the running-best (last ACCEPTED) candidate, NEVER your most recent attempt if it was rejected. So:
+  * Treat `## PREVIOUS CANDIDATE` as a known-good base. Build on it.
+  * The `## LOSS TRAJECTORY` block tags every iteration ACCEPTED or REJECTED. Use this as ground truth on which past critic advice actually moved the loop forward and which didn't.
+  * The `## PRIOR FEEDBACK ITERATIONS` block annotates each prior critique with the same ACCEPTED/REJECTED tag of the candidate it elicited. Down-weight critic advice whose previous candidates were REJECTED, and reinforce / extend advice whose candidates were ACCEPTED.
+  * Treat the best ACCEPTED iteration's loss as a soft floor — the next edit should plausibly land at-or-below it, otherwise the gate will reject your attempt and the base stays put.
+
+Each metric value below is shown as `point_estimate (var=X)`, where `point_estimate` is `metric(data)` evaluated on the full pooled dataset and `var` is the population (between-subject) variance of the same metric re-applied per `subject_id`. The point estimate is the canonical scalar; `var` reports how consistent that estimate is across subjects (lower = more consistent). `var=n/a` means the metric could not be applied to a single-subject slice.
+
+## PARAMETER NOTATION
+`parameters` is a JSON object mapping each parameter name (snake_case string) to a *string* value that specifies its domain. Every value MUST be a string — never a bare list, number, tuple, or expression. Use exactly one of these notations per parameter:
+
+1. Continuous interval — square brackets, two numeric bounds:
+   "[min, max]"
+   Examples: "[0, 1]", "[1.0, 10.0]", "[10, 1000]"
+
+2. Discrete set — curly braces, comma-separated values:
+   "{v1, v2, ...}"
+   Example: "{1, 2}"
+
+3. Vector of intervals whose length is set by the experiment — a bracketed tuple repeated by a symbolic length variable:
+   "[(min, max)] * length_var"
+   Example: "[(0, 1)] * n_features"
+
+4. Symbolic reference — a bare variable name (no brackets, no angle brackets), used when the parameter takes its value from an experiment-defined constant rather than a range:
+   "variable_name"
+   Example: "n_features"
+
+Rules:
+- Do not use parentheses for intervals; square brackets only. Tuples `(a, b)` are reserved for the vector-of-intervals notation in (3).
+- Do not mix notations within a single value (e.g., no "[0, 1] or {2, 3}").
+- Do not quote numbers inside the notation (write "[0, 1]", not "['0', '1']").
+- Every parameter referenced by `predict` or `policy` must appear as a key in `parameters`, and vice versa.
+- Notations 3 and 4 may ONLY reference the experiment-defined symbolic identifiers listed under "ALLOWED SYMBOLIC IDENTIFIERS" below. Do not invent new identifier names. If a parameter's shape doesn't fit any of those variables, fall back to a literal interval (notation 1) or discrete set (notation 2). Use these names so the model adapts to any experiment in this domain instead of hardcoding shapes.
+
+## ALLOWED SYMBOLIC IDENTIFIERS (for notations 3 and 4 above)
+- n_features: Number of expert ratings per option (LLM-proposed via `validities` length).
+- validities: Per-expert validities (LLM-proposed; each in [0.5, 1.0]); fixed across all trials.
+
+## AVAILABLE IMPORTS inside `predict` and `policy`
+- numpy as np
+- pandas as pd
+- scipy and its submodules
+- torch and torch.nn.functional as F
+- sklearn and its submodules
+- math, random, and other standard Python libraries
+
+## RUNTIME CONTRACT (function signatures and argument shapes)
+`predict(parameters, state, history) -> np.ndarray`:
+- `parameters`: dict[str, value]. One sample drawn from your declared `parameters` ranges, applied for the entire subject run.
+- `state`: the per-trial input delivered by the experiment (shape is domain-specific — see the experiment description above and the `history` key list below, which mirrors the per-trial variables carried in `state`). Convert to an array with `np.asarray(state)` if you need array ops.
+- `history`: dict-of-lists for past trials in this subject's run, NOT a list-of-dicts. The per-trial keys are:
+  Each value below is a Python list in trial order; entry `i` is the value for trial `i`. On the first trial all lists are empty.
+  - `"option_a_ratings"`: List of n_features binary expert ratings (each 0 or 1) for option A on this trial.
+  - `"option_b_ratings"`: List of n_features binary expert ratings (each 0 or 1) for option B on this trial.
+  - `"response"`: 0 if subject chose A, 1 if subject chose B.
+Iterating `for x in history:` iterates the dict KEYS (strings); to walk trials index the lists in lock-step, e.g. `for i in range(len(next(iter(history.values())))): ...`.
+- Returns: 1-D `np.ndarray` of choice probabilities over the experiment's discrete action set, summing to 1.
+
+`policy(probs) -> int`:
+- Receives the probability vector produced by `predict`.
+- Returns: integer index in `[0, len(probs))` identifying the chosen action. If you sample with `np.random.choice(..., p=probs)`, normalise first (`probs = np.asarray(probs, dtype=np.float64); probs /= probs.sum()`) to avoid the "probabilities do not sum to 1" ValueError from float drift.
+
+
+## User Prompt
+
+## EXPERIMENTAL DOMAIN
+Subjects repeatedly choose between two fictitious products, A and B. Each option is described by a vector of binary expert ratings (each 0 or 1). Every experiment fixes its own feature count (via `validities` length) and per-expert validities; both are LLM-proposed. The validities are communicated to the subject in the instructions. Subjects pick whichever product they believe is of higher quality. There is no trial-by-trial correctness feedback.
+
+Each subject completes ~96 trials in a single block, with order randomized independently per subject. On every trial the subject sees two options A and B, each described by `n_features` binary expert ratings (each 0 or 1). The per-feature validities and n_features are fixed per experiment (design-time choices). Validities are communicated to the subject in the instructions. Both `n_features` and `validities` are exposed to your `predict` via the `parameters` dict. The subject chooses A or B; no correctness feedback is provided after the choice.
+
+## ARBITER GUIDE
+The arbiter labelled this round's two theories in its recommendation as follows:
+- THEORY 1 = `pi_6`
+- THEORY 2 = `pi_4`
+- The recommendation below acts on THEORY 1 (= `pi_6`).
+
+Theory 1 is degenerate as it fails dramatically on its own proposed experiment and generally underperforms Theory 2. Propose a brand-new theory that provides a strong alternative to the deterministic fallback of Theory 2. For instance, consider a Probabilistic Strategy Selection model where individuals do not blend strategies within a trial, but rather probabilistically choose between a purely compensatory strategy (like weighted additive or tallying) and a purely non-compensatory strategy (like Take-The-Best) on each trial, with the probability depending on the dispersion of cue validities or task complexity. Another alternative could be a noisy evidence accumulation model (e.g., a simplified Drift Diffusion Model for binary cues) where cues are sampled sequentially with probability proportional to their validities until a decision threshold is reached.
+
+## THEORY LEADERBOARD
+A small set of prior picked theories shown for reference. Overall score is in `[0, 1]`, higher = better, computed as `1 - L2_norm(normalized_per_experiment_distances) / max_L2_norm`. 1.0 means closest to the real value on every experiment+metric pair; 0.0 means farthest. Each entry below carries the same depth of detail as the PREVIOUS MODEL INSTANCE above so you can borrow concrete mechanisms when useful.
+
+### `pi_4` (overall score: 0.863)
+
+**Description**
+Two-Stage Heuristic (Hybrid TTB-Tallying over Remaining Cues): Decision makers use a bounded sequential search, initially relying on the most valid cues to discriminate between options (Take-The-Best). If the top 'k' cues fail to discriminate (i.e., they are tied), the decision maker falls back to a computationally simpler 'Tallying' strategy. However, instead of tallying all cues, they only tally the remaining unexamined cues, avoiding double-counting the cues that already tied. This provides a psychologically plausible sequential search process that blends lexicographic and tallying strategies.
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, stimulus, history):
+    import numpy as np
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(f"Expected a (2, n_features) stimulus; got shape {stim.shape}.")
+    
+    a, b = stim[0], stim[1]
+    validities = np.asarray(parameters["validities"], dtype=float)
+    
+    # Rank features by validity in descending order
+    order = np.argsort(validities)[::-1]
+    
+    k = int(parameters["max_cues"])
+    
+    decided = False
+    p_core = np.array([0.5, 0.5])
+    
+    # Stage 1: Take-The-Best on the top k cues
+    for idx in order[:k]:
+        if a[idx] > b[idx]:
+            p_core = np.array([1.0, 0.0])
+            decided = True
+            break
+        elif b[idx] > a[idx]:
+            p_core = np.array([0.0, 1.0])
+            decided = True
+            break
+            
+    # Stage 2: Fallback to Tallying on remaining unexamined cues if top cues tie
+    if not decided:
+        remaining_order = order[k:]
+        if len(remaining_order) > 0:
+            a_rem = a[remaining_order]
+            b_rem = b[remaining_order]
+            a_wins = float(np.sum(a_rem > b_rem))
+            b_wins = float(np.sum(b_rem > a_rem))
+            if a_wins > b_wins:
+                p_core = np.array([1.0, 0.0])
+            elif b_wins > a_wins:
+                p_core = np.array([0.0, 1.0])
+            else:
+                p_core = np.array([0.5, 0.5])
+        else:
+            p_core = np.array([0.5, 0.5])
+            
+    epsilon = float(parameters["epsilon"])
+    n_opts = p_core.shape[0]
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+
+
+`policy(probs) -> int`:
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities /= probabilities.sum()
+    return int(np.random.choice(len(probabilities), p=probabilities))
+
+
+`parameters`:
+- epsilon: [0.0, 0.5]
+- validities: validities
+- max_cues: {1, 2, 3, 4}
+
+**Per-experiment fit (real vs this theory's metric value):**
+- Experiment 1: real=0.0205 (var=0.0002) vs this=0.0158 (var=0.0002)
+- Experiment 2: real=0.0172 (var=0.0002) vs this=0.0175 (var=0.0002)
+- Experiment 3: real=0.0038 (var=0.0001) vs this=0.0020 (var=0.0001)
+- Experiment 4: real=0.0335 (var=0.0005) vs this=0.0304 (var=0.0003)
+- Experiment 5: real=0.0021 (var=0.0001) vs this=0.0029 (var=0.0002)
+- Experiment 6: real=0.0031 (var=0.0001) vs this=0.0014 (var=0.0001)
+- Experiment 7: real=0.0033 (var=0.0003) vs this=0.0019 (var=0.0001)
+- Experiment 8: real=0.0029 (var=0.0002) vs this=0.0009 (var=0.0001)
+- Experiment 9: real=0.0293 (var=0.0001) vs this=0.0121 (var=0.0001)
+- Experiment 10: real=0.0017 (var=0.0001) vs this=0.0016 (var=0.0001)
+
+
+---
+
+### `pi_5` (overall score: 0.823)
+
+**Description**
+Weighted Additive (WADD) Strategy with log-odds cue integration.
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, stimulus, history):
+    import numpy as np
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(f"Expected a (2, n_features) stimulus; got shape {stim.shape}.")
+    
+    a, b = stim[0], stim[1]
+    validities = np.asarray(parameters["validities"], dtype=float)
+    
+    clipped_vals = np.clip(validities, 1e-4, 1.0 - 1e-4)
+    weights = np.log(clipped_vals / (1.0 - clipped_vals))
+    
+    val_a = np.sum(weights * a)
+    val_b = np.sum(weights * b)
+    
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+    
+    scores = np.array([val_a, val_b])
+    
+    z = beta * (scores - np.max(scores))
+    e = np.exp(z)
+    p_core = e / np.sum(e)
+    
+    n_opts = len(p_core)
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+
+`policy(probs) -> int`:
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities /= probabilities.sum()
+    return int(np.random.choice(len(probabilities), p=probabilities))
+
+`parameters`:
+- beta: [0.1, 20.0]
+- epsilon: [0.0, 0.5]
+- validities: validities
+
+**Per-experiment fit (real vs this theory's metric value):**
+- Experiment 1: real=0.0205 (var=0.0002) vs this=0.0175 (var=0.0001)
+- Experiment 2: real=0.0172 (var=0.0002) vs this=0.0184 (var=0.0002)
+- Experiment 3: real=0.0038 (var=0.0001) vs this=0.0053 (var=0.0003)
+- Experiment 4: real=0.0335 (var=0.0005) vs this=0.0202 (var=0.0003)
+- Experiment 5: real=0.0021 (var=0.0001) vs this=0.0035 (var=0.0002)
+- Experiment 6: real=0.0031 (var=0.0001) vs this=0.0015 (var=0.0001)
+- Experiment 7: real=0.0033 (var=0.0003) vs this=0.0015 (var=0.0002)
+- Experiment 8: real=0.0029 (var=0.0002) vs this=0.0041 (var=0.0001)
+- Experiment 9: real=0.0293 (var=0.0001) vs this=0.0129 (var=0.0001)
+- Experiment 10: real=0.0017 (var=0.0001) vs this=0.0011 (var=0.0001)
+
+
+---
+
+### `pi_3` (overall score: 0.791)
+
+**Description**
+Take-The-Best (TTB) is a non-compensatory fast-and-frugal heuristic. People rank features by their subjective validity and compare options sequentially. The decision is based entirely on the first feature that discriminates between the options, ignoring all remaining features. If all features tie, the decision maker guesses randomly. Response noise is captured by a uniform lapse rate.
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, stimulus, history):
+    import numpy as np
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(f"TTB expects a (2, n_features) stimulus; got shape {stim.shape}.")
+    
+    a, b = stim[0], stim[1]
+    validities = np.asarray(parameters["validities"], dtype=float)
+    
+    # Rank features by validity in descending order
+    order = np.argsort(validities)[::-1]
+    
+    p_core = np.array([0.5, 0.5])
+    for idx in order:
+        if a[idx] > b[idx]:
+            p_core = np.array([1.0, 0.0])
+            break
+        elif b[idx] > a[idx]:
+            p_core = np.array([0.0, 1.0])
+            break
+            
+    epsilon = float(parameters["epsilon"])
+    n_opts = p_core.shape[0]
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+
+`policy(probs) -> int`:
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities /= probabilities.sum()
+    return int(np.random.choice(len(probabilities), p=probabilities))
+
+`parameters`:
+- epsilon: [0.0, 0.5]
+- validities: validities
+
+**Per-experiment fit (real vs this theory's metric value):**
+- Experiment 1: real=0.0205 (var=0.0002) vs this=0.0249 (var=0.0002)
+- Experiment 2: real=0.0172 (var=0.0002) vs this=0.0258 (var=0.0002)
+- Experiment 3: real=0.0038 (var=0.0001) vs this=0.0011 (var=0.0001)
+- Experiment 4: real=0.0335 (var=0.0005) vs this=0.0278 (var=0.0004)
+- Experiment 5: real=0.0021 (var=0.0001) vs this=0.0014 (var=0.0001)
+- Experiment 6: real=0.0031 (var=0.0001) vs this=0.0028 (var=0.0001)
+- Experiment 7: real=0.0033 (var=0.0003) vs this=0.0029 (var=0.0001)
+- Experiment 8: real=0.0029 (var=0.0002) vs this=0.0013 (var=0.0001)
+- Experiment 9: real=0.0293 (var=0.0001) vs this=0.0159 (var=0.0001)
+- Experiment 10: real=0.0017 (var=0.0001) vs this=0.0021 (var=0.0001)
+
+
+## LOSS TRAJECTORY (this propose-loop)
+Aggregate loss across iterations of THIS propose-loop (lower = better, 0 = perfect, `+inf` = unscorable). The ACCEPTED / REJECTED tag is the loop's programmatic accept-gate decision — only ACCEPTED candidates have ever been used as the base for a subsequent iteration. Use this together with PRIOR FEEDBACK ITERATIONS below to grade which past critic advice actually paid off.
+
+- iter 1: loss=0.1433 -> ACCEPTED
+- iter 2: loss=0.3397 -> REJECTED
+- iter 3: loss=0.1991 -> REJECTED
+- iter 4: loss=0.3552 -> REJECTED
+- iter 5: loss=0.1529 -> REJECTED
+- iter 6: loss=0.1537 -> REJECTED
+- iter 7: loss=0.1820 -> REJECTED
+Running-best (last ACCEPTED) base: iter 1 at loss=0.1433 — this is the source shown verbatim below under `## PREVIOUS CANDIDATE (this loop)`. Push the next edit's loss strictly below that floor or the gate will reject it.
+
+## EXPERIMENTAL RESULTS
+### Experiment 1
+**Design**
+  A=[1, 0, 1, 0]  B=[0, 0, 0, 0]
+  A=[1, 1, 1, 1]  B=[0, 0, 1, 0]
+  A=[0, 1, 0, 1]  B=[1, 1, 0, 0]
+  A=[1, 1, 1, 1]  B=[0, 0, 0, 1]
+  A=[0, 1, 0, 0]  B=[0, 1, 1, 0]
+  A=[0, 0, 0, 1]  B=[1, 1, 0, 0]
+  A=[0, 0, 1, 0]  B=[0, 1, 1, 1]
+  A=[1, 0, 0, 1]  B=[0, 0, 1, 0]
+  A=[1, 0, 1, 1]  B=[1, 1, 1, 0]
+  A=[0, 0, 0, 0]  B=[1, 1, 0, 0]
+  A=[1, 1, 1, 0]  B=[0, 1, 1, 1]
+  A=[1, 1, 1, 1]  B=[0, 0, 0, 0]
+  A=[1, 0, 0, 1]  B=[1, 0, 0, 0]
+  A=[1, 1, 0, 1]  B=[1, 1, 1, 0]
+  A=[0, 0, 1, 1]  B=[1, 0, 1, 1]
+  A=[1, 1, 0, 1]  B=[0, 1, 1, 0]
+
+**Metric**
+```python
+P_REF = {'((0, 1, 0, 0), (0, 1, 1, 0))|0': 0.8471337579617835, '((0, 1, 0, 0), (0, 1, 1, 0))|1': 0.8368298368298368, '((1, 1, 0, 1), (0, 1, 1, 0))|0': 0.17772215269086358, '((1, 1, 0, 1), (0, 1, 1, 0))|1': 0.16583416583416583, '((1, 0, 0, 1), (0, 0, 1, 0))|0': 0.15309734513274337, '((1, 0, 0, 1), (0, 0, 1, 0))|1': 0.1537313432835821, '((0, 0, 0, 1), (1, 1, 0, 0))|0': 0.8552522746071133, '((0, 0, 0, 1), (1, 1, 0, 0))|1': 0.8324873096446701, '((1, 0, 1, 0), (0, 0, 0, 0))|0': 0.16329479768786126, '((1, 0, 1, 0), (0, 0, 0, 0))|1': 0.1299638989169675, '((0, 0, 1, 0), (0, 1, 1, 1))|0': 0.8578052550231839, '((0, 0, 1, 0), (0, 1, 1, 1))|1': 0.8640093786635404, '((0, 0, 0, 0), (1, 1, 0, 0))|0': 0.8636779505946935, '((0, 0, 0, 0), (1, 1, 0, 0))|1': 0.8458274398868458, '((1, 1, 1, 1), (0, 0, 1, 0))|0': 0.11648568608094768, '((1, 1, 1, 1), (0, 0, 1, 0))|1': 0.16010165184243966, '((1, 1, 0, 1), (1, 1, 1, 0))|0': 0.49140271493212667, '((1, 1, 0, 1), (1, 1, 1, 0))|1': 0.5179856115107914, '((1, 1, 1, 0), (0, 1, 1, 1))|0': 0.5100502512562815, '((1, 1, 1, 0), (0, 1, 1, 1))|1': 0.49302788844621515, '((1, 1, 1, 1), (0, 0, 0, 1))|0': 0.10619469026548672, '((1, 1, 1, 1), (0, 0, 0, 1))|1': 0.11892963330029732, '((0, 1, 0, 1), (1, 1, 0, 0))|0': 0.512781954887218, '((0, 1, 0, 1), (1, 1, 0, 0))|1': 0.474468085106383, '((1, 1, 1, 1), (0, 0, 0, 0))|0': 0.12003311258278146, '((1, 1, 1, 1), (0, 0, 0, 0))|1': 0.13175675675675674, '((1, 0, 0, 1), (1, 0, 0, 0))|0': 0.14905814905814907, '((1, 0, 0, 1), (1, 0, 0, 0))|1': 0.15889464594127806, '((1, 0, 1, 1), (1, 1, 1, 0))|0': 0.508296943231441, '((1, 0, 1, 1), (1, 1, 1, 0))|1': 0.4900763358778626, '((0, 0, 1, 1), (1, 0, 1, 1))|0': 0.8048780487804879, '((0, 0, 1, 1), (1, 0, 1, 1))|1': 0.8489451476793249}
+def metric(data):
+    import numpy as np
+    def jsd2(p, q):
+        # Jensen-Shannon divergence (nats) between Bernoulli(p), Bernoulli(q)
+        v = 0.0
+        for x, y in ((1.0 - p, 1.0 - q), (p, q)):
+            m = 0.5 * (x + y)
+            if x > 0:
+                v += 0.5 * x * np.log(x / m)
+            if y > 0:
+                v += 0.5 * y * np.log(y / m)
+        return float(v)
+    sums, counts = {}, {}
+    for _, subj in data.groupby('subject_id', sort=False):
+        a = list(subj['option_a_ratings'])
+        b = list(subj['option_b_ratings'])
+        r = subj['response'].to_numpy(dtype=int)
+        for t in range(1, len(r)):
+            key = str((tuple(a[t]), tuple(b[t]))) + '|' + str(int(r[t-1]))
+            sums[key] = sums.get(key, 0) + int(r[t])
+            counts[key] = counts.get(key, 0) + 1
+    num = den = 0.0
+    for k, n in counts.items():
+        num += n * jsd2(sums[k] / n, P_REF.get(k, 0.5))
+        den += n
+    return float(num / den) if den else 0.0
+
+```
+
+**Observed (real) value:** 0.0205 (var=0.0002)
+**Previous candidate values (this loop):**
+  - iter 1: 0.0245 (var=0.0001) (Δ vs real +0.0039)
+  - iter 2: 0.0128 (var=0.0002) (Δ vs real -0.0078)
+  - iter 3: 0.0267 (var=0.0002) (Δ vs real +0.0062)
+  - iter 4: 0.0078 (var=0.0002) (Δ vs real -0.0127)
+  - iter 5: 0.0256 (var=0.0001) (Δ vs real +0.0051)
+  - iter 6: 0.0219 (var=0.0002) (Δ vs real +0.0014)
+  - iter 7 (most recent): 0.0155 (var=0.0001) (Δ vs real -0.0051)
+**Other theories' values on this metric (for reference):**
+- pi_1: 0.0007 (var=0.0001)
+- pi_2: 0.0071 (var=0.0004)
+- pi_3: 0.0249 (var=0.0002)
+- pi_4: 0.0158 (var=0.0002)
+- pi_5: 0.0175 (var=0.0001)
+- pi_6: 0.0161 (var=0.0003)
+
+### Experiment 2
+**Design**
+  A=[1, 1, 0, 1]  B=[0, 1, 1, 1]
+  A=[0, 1, 1, 0]  B=[1, 0, 1, 0]
+  A=[1, 0, 1, 1]  B=[0, 1, 0, 1]
+  A=[0, 0, 1, 1]  B=[1, 1, 0, 1]
+  A=[0, 0, 0, 0]  B=[1, 0, 1, 1]
+  A=[0, 1, 0, 0]  B=[0, 1, 1, 0]
+  A=[1, 0, 1, 1]  B=[1, 0, 0, 0]
+  A=[1, 0, 0, 1]  B=[0, 1, 0, 0]
+  A=[0, 1, 0, 1]  B=[0, 0, 1, 0]
+  A=[0, 0, 0, 1]  B=[0, 0, 1, 1]
+  A=[0, 1, 1, 0]  B=[0, 0, 0, 0]
+  A=[0, 0, 0, 0]  B=[0, 1, 1, 0]
+  A=[0, 0, 0, 1]  B=[0, 1, 1, 1]
+  A=[0, 1, 0, 1]  B=[0, 0, 0, 1]
+  A=[0, 1, 0, 1]  B=[1, 1, 1, 1]
+  A=[1, 1, 1, 0]  B=[1, 0, 1, 0]
+
+**Metric**
+```python
+P_REF = {'((0, 0, 0, 1), (0, 0, 1, 1))|0': 0.7913950456323338, '((0, 0, 0, 1), (0, 0, 1, 1))|1': 0.7831558567279767, '((1, 0, 1, 1), (1, 0, 0, 0))|0': 0.2125, '((1, 0, 1, 1), (1, 0, 0, 0))|1': 0.17314814814814813, '((0, 1, 0, 1), (0, 0, 1, 0))|0': 0.3384201077199282, '((0, 1, 0, 1), (0, 0, 1, 0))|1': 0.35276967930029157, '((0, 0, 0, 0), (0, 1, 1, 0))|0': 0.8560700876095119, '((0, 0, 0, 0), (0, 1, 1, 0))|1': 0.8271728271728271, '((1, 1, 1, 0), (1, 0, 1, 0))|0': 0.22364217252396165, '((1, 1, 1, 0), (1, 0, 1, 0))|1': 0.206984667802385, '((0, 1, 0, 1), (0, 0, 0, 1))|0': 0.2425249169435216, '((0, 1, 0, 1), (0, 0, 0, 1))|1': 0.21962095875139354, '((0, 0, 1, 1), (1, 1, 0, 1))|0': 0.7389858686616791, '((0, 0, 1, 1), (1, 1, 0, 1))|1': 0.6549413735343383, '((1, 0, 0, 1), (0, 1, 0, 0))|0': 0.2998805256869773, '((1, 0, 0, 1), (0, 1, 0, 0))|1': 0.3052959501557632, '((1, 1, 0, 1), (0, 1, 1, 1))|0': 0.45555555555555555, '((1, 1, 0, 1), (0, 1, 1, 1))|1': 0.45308641975308644, '((0, 0, 0, 0), (1, 0, 1, 1))|0': 0.8474387527839644, '((0, 0, 0, 0), (1, 0, 1, 1))|1': 0.835920177383592, '((0, 1, 0, 1), (1, 1, 1, 1))|0': 0.8377125193199382, '((0, 1, 0, 1), (1, 1, 1, 1))|1': 0.8475967174677609, '((0, 1, 1, 0), (0, 0, 0, 0))|0': 0.16120906801007556, '((0, 1, 1, 0), (0, 0, 0, 0))|1': 0.17693836978131214, '((0, 1, 0, 0), (0, 1, 1, 0))|0': 0.7583444592790387, '((0, 1, 0, 0), (0, 1, 1, 0))|1': 0.7916270218839201, '((0, 0, 0, 1), (0, 1, 1, 1))|0': 0.8501026694045175, '((0, 0, 0, 1), (0, 1, 1, 1))|1': 0.8317191283292978, '((1, 0, 1, 1), (0, 1, 0, 1))|0': 0.2862669245647969, '((1, 0, 1, 1), (0, 1, 0, 1))|1': 0.24551831644583008, '((0, 1, 1, 0), (1, 0, 1, 0))|0': 0.4927675988428158, '((0, 1, 1, 0), (1, 0, 1, 0))|1': 0.583224115334207}
+def metric(data):
+    import numpy as np
+    def jsd2(p, q):
+        # Jensen-Shannon divergence (nats) between Bernoulli(p), Bernoulli(q)
+        v = 0.0
+        for x, y in ((1.0 - p, 1.0 - q), (p, q)):
+            m = 0.5 * (x + y)
+            if x > 0:
+                v += 0.5 * x * np.log(x / m)
+            if y > 0:
+                v += 0.5 * y * np.log(y / m)
+        return float(v)
+    sums, counts = {}, {}
+    for _, subj in data.groupby('subject_id', sort=False):
+        a = list(subj['option_a_ratings'])
+        b = list(subj['option_b_ratings'])
+        r = subj['response'].to_numpy(dtype=int)
+        for t in range(1, len(r)):
+            key = str((tuple(a[t]), tuple(b[t]))) + '|' + str(int(r[t-1]))
+            sums[key] = sums.get(key, 0) + int(r[t])
+            counts[key] = counts.get(key, 0) + 1
+    num = den = 0.0
+    for k, n in counts.items():
+        num += n * jsd2(sums[k] / n, P_REF.get(k, 0.5))
+        den += n
+    return float(num / den) if den else 0.0
+
+```
+
+**Observed (real) value:** 0.0172 (var=0.0002)
+**Previous candidate values (this loop):**
+  - iter 1: 0.0258 (var=0.0002) (Δ vs real +0.0087)
+  - iter 2: 0.0076 (var=0.0002) (Δ vs real -0.0096)
+  - iter 3: 0.0159 (var=0.0002) (Δ vs real -0.0013)
+  - iter 4: 0.0088 (var=0.0001) (Δ vs real -0.0084)
+  - iter 5: 0.0279 (var=0.0003) (Δ vs real +0.0108)
+  - iter 6: 0.0264 (var=0.0003) (Δ vs real +0.0093)
+  - iter 7 (most recent): 0.0197 (var=0.0002) (Δ vs real +0.0025)
+**Other theories' values on this metric (for reference):**
+- pi_2: 0.0015 (var=0.0003)
+- pi_1: 0.0071 (var=0.0001)
+- pi_3: 0.0258 (var=0.0002)
+- pi_4: 0.0175 (var=0.0002)
+- pi_5: 0.0184 (var=0.0002)
+- pi_6: 0.0090 (var=0.0002)
+
+### Experiment 3
+**Design**
+  A=[1, 1, 1, 1]  B=[1, 1, 0, 1]
+  A=[0, 1, 0, 0]  B=[1, 1, 1, 1]
+  A=[1, 0, 0, 0]  B=[0, 1, 0, 0]
+  A=[0, 1, 1, 0]  B=[1, 1, 0, 0]
+  A=[1, 1, 1, 1]  B=[1, 0, 1, 0]
+  A=[1, 0, 0, 0]  B=[1, 0, 0, 1]
+  A=[1, 0, 1, 1]  B=[1, 0, 0, 1]
+  A=[1, 0, 1, 0]  B=[1, 0, 0, 0]
+  A=[1, 1, 0, 0]  B=[0, 0, 0, 1]
+  A=[0, 1, 0, 0]  B=[0, 0, 1, 1]
+  A=[1, 0, 0, 0]  B=[1, 1, 0, 0]
+  A=[1, 0, 0, 1]  B=[0, 0, 1, 0]
+  A=[1, 0, 1, 1]  B=[1, 0, 1, 0]
+  A=[1, 0, 1, 0]  B=[0, 1, 0, 1]
+  A=[1, 0, 1, 0]  B=[1, 1, 0, 0]
+  A=[1, 1, 1, 0]  B=[0, 0, 0, 1]
+
+**Metric**
+```python
+P_REF = {'((1, 0, 0, 0), (1, 1, 0, 0))|0': 0.8840579710144928, '((1, 0, 0, 0), (1, 1, 0, 0))|1': 0.8748615725359912, '((1, 0, 1, 1), (1, 0, 0, 1))|0': 0.11559139784946236, '((1, 0, 1, 1), (1, 0, 0, 1))|1': 0.12134502923976608, '((1, 0, 1, 0), (1, 1, 0, 0))|0': 0.1378692927484333, '((1, 0, 1, 0), (1, 1, 0, 0))|1': 0.14641288433382138, '((1, 0, 1, 0), (1, 0, 0, 0))|0': 0.10933333333333334, '((1, 0, 1, 0), (1, 0, 0, 0))|1': 0.1362962962962963, '((0, 1, 1, 0), (1, 1, 0, 0))|0': 0.8860648553900088, '((0, 1, 1, 0), (1, 1, 0, 0))|1': 0.874051593323217, '((1, 0, 1, 1), (1, 0, 1, 0))|0': 0.11531531531531532, '((1, 0, 1, 1), (1, 0, 1, 0))|1': 0.14202898550724638, '((1, 1, 1, 1), (1, 1, 0, 1))|0': 0.1309823677581864, '((1, 1, 1, 1), (1, 1, 0, 1))|1': 0.1650943396226415, '((1, 1, 1, 0), (0, 0, 0, 1))|0': 0.1084070796460177, '((1, 1, 1, 0), (0, 0, 0, 1))|1': 0.11160714285714286, '((1, 1, 1, 1), (1, 0, 1, 0))|0': 0.10942441492726122, '((1, 1, 1, 1), (1, 0, 1, 0))|1': 0.2146118721461187, '((0, 1, 0, 0), (1, 1, 1, 1))|0': 0.860832137733142, '((0, 1, 0, 0), (1, 1, 1, 1))|1': 0.8712601994560291, '((1, 0, 0, 0), (0, 1, 0, 0))|0': 0.11829134720700986, '((1, 0, 0, 0), (0, 1, 0, 0))|1': 0.11161217587373168, '((1, 1, 0, 0), (0, 0, 0, 1))|0': 0.14411764705882352, '((1, 1, 0, 0), (0, 0, 0, 1))|1': 0.12142857142857143, '((1, 0, 0, 0), (1, 0, 0, 1))|0': 0.8772378516624041, '((1, 0, 0, 0), (1, 0, 0, 1))|1': 0.8177966101694916, '((1, 0, 0, 1), (0, 0, 1, 0))|0': 0.10836501901140684, '((1, 0, 0, 1), (0, 0, 1, 0))|1': 0.1891891891891892, '((1, 0, 1, 0), (0, 1, 0, 1))|0': 0.11185682326621924, '((1, 0, 1, 0), (0, 1, 0, 1))|1': 0.16993464052287582, '((0, 1, 0, 0), (0, 0, 1, 1))|0': 0.8882733148661126, '((0, 1, 0, 0), (0, 0, 1, 1))|1': 0.8729016786570744}
+def metric(data):
+    import numpy as np
+    def jsd2(p, q):
+        # Jensen-Shannon divergence (nats) between Bernoulli(p), Bernoulli(q)
+        v = 0.0
+        for x, y in ((1.0 - p, 1.0 - q), (p, q)):
+            m = 0.5 * (x + y)
+            if x > 0:
+                v += 0.5 * x * np.log(x / m)
+            if y > 0:
+                v += 0.5 * y * np.log(y / m)
+        return float(v)
+    sums, counts = {}, {}
+    for _, subj in data.groupby('subject_id', sort=False):
+        a = list(subj['option_a_ratings'])
+        b = list(subj['option_b_ratings'])
+        r = subj['response'].to_numpy(dtype=int)
+        for t in range(1, len(r)):
+            key = str((tuple(a[t]), tuple(b[t]))) + '|' + str(int(r[t-1]))
+            sums[key] = sums.get(key, 0) + int(r[t])
+            counts[key] = counts.get(key, 0) + 1
+    num = den = 0.0
+    for k, n in counts.items():
+        num += n * jsd2(sums[k] / n, P_REF.get(k, 0.5))
+        den += n
+    return float(num / den) if den else 0.0
+
+```
+
+**Observed (real) value:** 0.0038 (var=0.0001)
+**Previous candidate values (this loop):**
+  - iter 1: 0.0017 (var=0.0001) (Δ vs real -0.0021)
+  - iter 2: 0.0146 (var=0.0005) (Δ vs real +0.0108)
+  - iter 3: 0.0017 (var=0.0001) (Δ vs real -0.0021)
+  - iter 4: 0.0102 (var=0.0002) (Δ vs real +0.0064)
+  - iter 5: 0.0016 (var=0.0001) (Δ vs real -0.0022)
+  - iter 6: 0.0011 (var=0.0001) (Δ vs real -0.0027)
+  - iter 7 (most recent): 0.0061 (var=0.0002) (Δ vs real +0.0023)
+**Other theories' values on this metric (for reference):**
+- pi_3: 0.0011 (var=0.0001)
+- pi_2: 0.0207 (var=0.0006)
+- pi_1: 0.0219 (var=0.0003)
+- pi_4: 0.0020 (var=0.0001)
+- pi_5: 0.0053 (var=0.0003)
+- pi_6: 0.0048 (var=0.0003)
+
+### Experiment 4
+**Design**
+  A=[0, 1, 0, 1]  B=[1, 1, 1, 0]
+  A=[0, 1, 1, 0]  B=[1, 0, 0, 1]
+  A=[0, 0, 1, 1]  B=[1, 1, 1, 1]
+  A=[1, 1, 1, 1]  B=[0, 0, 0, 0]
+  A=[1, 1, 1, 0]  B=[1, 0, 0, 1]
+  A=[1, 1, 0, 0]  B=[0, 0, 1, 0]
+  A=[0, 0, 1, 0]  B=[1, 1, 1, 1]
+  A=[1, 0, 0, 1]  B=[1, 1, 0, 0]
+  A=[0, 1, 1, 0]  B=[0, 0, 0, 1]
+  A=[1, 1, 0, 0]  B=[1, 0, 1, 1]
+  A=[1, 1, 0, 0]  B=[0, 1, 1, 1]
+  A=[1, 0, 0, 1]  B=[1, 0, 0, 0]
+  A=[0, 0, 0, 0]  B=[0, 0, 1, 1]
+  A=[0, 1, 0, 1]  B=[1, 0, 1, 1]
+  A=[0, 1, 1, 0]  B=[0, 0, 1, 1]
+  A=[1, 0, 1, 1]  B=[0, 1, 1, 1]
+
+**Metric**
+```python
+P_REF = {'((0, 1, 0, 1), (1, 1, 1, 0))|0': 0.6834677419354839, '((0, 1, 0, 1), (1, 1, 1, 0))|1': 0.75, '((1, 1, 1, 0), (1, 0, 0, 1))|0': 0.2972972972972973, '((1, 1, 1, 0), (1, 0, 0, 1))|1': 0.3210930828351836, '((1, 1, 0, 0), (0, 1, 1, 1))|0': 0.5884861407249466, '((1, 1, 0, 0), (0, 1, 1, 1))|1': 0.525522041763341, '((0, 0, 1, 0), (1, 1, 1, 1))|0': 0.8384074941451991, '((0, 0, 1, 0), (1, 1, 1, 1))|1': 0.8456659619450317, '((1, 1, 0, 0), (0, 0, 1, 0))|0': 0.23440453686200377, '((1, 1, 0, 0), (0, 0, 1, 0))|1': 0.2749326145552561, '((1, 1, 1, 1), (0, 0, 0, 0))|0': 0.15806451612903225, '((1, 1, 1, 1), (0, 0, 0, 0))|1': 0.1875, '((0, 1, 1, 0), (0, 0, 1, 1))|0': 0.4133489461358314, '((0, 1, 1, 0), (0, 0, 1, 1))|1': 0.5232558139534884, '((1, 1, 0, 0), (1, 0, 1, 1))|0': 0.6568627450980392, '((1, 1, 0, 0), (1, 0, 1, 1))|1': 0.7034990791896869, '((1, 0, 0, 1), (1, 1, 0, 0))|0': 0.48372781065088755, '((1, 0, 0, 1), (1, 1, 0, 0))|1': 0.5204626334519573, '((0, 1, 1, 0), (0, 0, 0, 1))|0': 0.3069544364508393, '((0, 1, 1, 0), (0, 0, 0, 1))|1': 0.3115942028985507, '((0, 0, 0, 0), (0, 0, 1, 1))|0': 0.8237082066869301, '((0, 0, 0, 0), (0, 0, 1, 1))|1': 0.8081180811808119, '((0, 0, 1, 1), (1, 1, 1, 1))|0': 0.823943661971831, '((0, 0, 1, 1), (1, 1, 1, 1))|1': 0.8312236286919831, '((1, 0, 1, 1), (0, 1, 1, 1))|0': 0.376425855513308, '((1, 0, 1, 1), (0, 1, 1, 1))|1': 0.44919786096256686, '((0, 1, 0, 1), (1, 0, 1, 1))|0': 0.721120186697783, '((0, 1, 0, 1), (1, 0, 1, 1))|1': 0.7592788971367974, '((0, 1, 1, 0), (1, 0, 0, 1))|0': 0.5577156743620899, '((0, 1, 1, 0), (1, 0, 0, 1))|1': 0.646878198567042, '((1, 0, 0, 1), (1, 0, 0, 0))|0': 0.26953748006379585, '((1, 0, 0, 1), (1, 0, 0, 0))|1': 0.23870417732310314}
+def metric(data):
+    import numpy as np
+    def jsd2(p, q):
+        # Jensen-Shannon divergence (nats) between Bernoulli(p), Bernoulli(q)
+        v = 0.0
+        for x, y in ((1.0 - p, 1.0 - q), (p, q)):
+            m = 0.5 * (x + y)
+            if x > 0:
+                v += 0.5 * x * np.log(x / m)
+            if y > 0:
+                v += 0.5 * y * np.log(y / m)
+        return float(v)
+    sums, counts = {}, {}
+    for _, subj in data.groupby('subject_id', sort=False):
+        a = list(subj['option_a_ratings'])
+        b = list(subj['option_b_ratings'])
+        r = subj['response'].to_numpy(dtype=int)
+        for t in range(1, len(r)):
+            key = str((tuple(a[t]), tuple(b[t]))) + '|' + str(int(r[t-1]))
+            sums[key] = sums.get(key, 0) + int(r[t])
+            counts[key] = counts.get(key, 0) + 1
+    num = den = 0.0
+    for k, n in counts.items():
+        num += n * jsd2(sums[k] / n, P_REF.get(k, 0.5))
+        den += n
+    return float(num / den) if den else 0.0
+
+```
+
+**Observed (real) value:** 0.0335 (var=0.0005)
+**Previous candidate values (this loop):**
+  - iter 1: 0.0364 (var=0.0003) (Δ vs real +0.0029)
+  - iter 2: 0.0115 (var=0.0004) (Δ vs real -0.0221)
+  - iter 3: 0.0273 (var=0.0003) (Δ vs real -0.0062)
+  - iter 4: 0.0130 (var=0.0003) (Δ vs real -0.0206)
+  - iter 5: 0.0364 (var=0.0003) (Δ vs real +0.0028)
+  - iter 6: 0.0404 (var=0.0004) (Δ vs real +0.0068)
+  - iter 7 (most recent): 0.0213 (var=0.0002) (Δ vs real -0.0123)
+**Other theories' values on this metric (for reference):**
+- pi_2: 0.0017 (var=0.0006)
+- pi_3: 0.0278 (var=0.0004)
+- pi_1: 0.0103 (var=0.0002)
+- pi_4: 0.0304 (var=0.0003)
+- pi_5: 0.0202 (var=0.0003)
+- pi_6: 0.0147 (var=0.0003)
+
+### Experiment 5
+**Design**
+  A=[1, 0, 1, 0]  B=[1, 1, 1, 1]
+  A=[0, 1, 1, 1]  B=[1, 1, 0, 1]
+  A=[1, 0, 1, 0]  B=[0, 1, 0, 1]
+  A=[0, 0, 1, 1]  B=[1, 1, 0, 1]
+  A=[0, 1, 0, 1]  B=[1, 1, 1, 0]
+  A=[1, 0, 0, 1]  B=[1, 0, 1, 0]
+  A=[0, 0, 0, 1]  B=[0, 0, 1, 1]
+  A=[1, 0, 0, 1]  B=[0, 0, 1, 0]
+  A=[1, 1, 0, 1]  B=[1, 1, 1, 0]
+  A=[0, 0, 0, 0]  B=[0, 1, 0, 1]
+  A=[0, 1, 0, 1]  B=[1, 0, 0, 1]
+  A=[1, 0, 0, 0]  B=[1, 1, 0, 0]
+  A=[0, 1, 1, 1]  B=[1, 1, 1, 0]
+  A=[0, 1, 0, 1]  B=[0, 0, 1, 1]
+  A=[1, 1, 1, 1]  B=[0, 1, 1, 1]
+  A=[0, 0, 0, 1]  B=[0, 0, 1, 0]
+
+**Metric**
+```python
+P_REF = {'((1, 1, 1, 1), (0, 1, 1, 1))|0': 0.167420814479638, '((1, 1, 1, 1), (0, 1, 1, 1))|1': 0.11561119293078057, '((1, 1, 0, 1), (1, 1, 1, 0))|0': 0.8738938053097345, '((1, 1, 0, 1), (1, 1, 1, 0))|1': 0.8560267857142857, '((0, 0, 0, 1), (0, 0, 1, 1))|0': 0.8552631578947368, '((0, 0, 0, 1), (0, 0, 1, 1))|1': 0.8891369047619048, '((0, 0, 1, 1), (1, 1, 0, 1))|0': 0.8465011286681715, '((0, 0, 1, 1), (1, 1, 0, 1))|1': 0.8732498157700811, '((1, 0, 1, 0), (1, 1, 1, 1))|0': 0.8842105263157894, '((1, 0, 1, 0), (1, 1, 1, 1))|1': 0.8854961832061069, '((1, 0, 1, 0), (0, 1, 0, 1))|0': 0.13548387096774195, '((1, 0, 1, 0), (0, 1, 0, 1))|1': 0.12434456928838951, '((0, 1, 0, 1), (1, 1, 1, 0))|0': 0.8744343891402715, '((0, 1, 0, 1), (1, 1, 1, 0))|1': 0.8700873362445415, '((1, 0, 0, 1), (1, 0, 1, 0))|0': 0.868995633187773, '((1, 0, 0, 1), (1, 0, 1, 0))|1': 0.8688230008984726, '((0, 1, 0, 1), (0, 0, 1, 1))|0': 0.8370044052863436, '((0, 1, 0, 1), (0, 0, 1, 1))|1': 0.8785759694850604, '((0, 1, 1, 1), (1, 1, 1, 0))|0': 0.8617511520737328, '((0, 1, 1, 1), (1, 1, 1, 0))|1': 0.8740849194729137, '((0, 1, 1, 1), (1, 1, 0, 1))|0': 0.8440366972477065, '((0, 1, 1, 1), (1, 1, 0, 1))|1': 0.8868520859671302, '((0, 0, 0, 1), (0, 0, 1, 0))|0': 0.8442265795206971, '((0, 0, 0, 1), (0, 0, 1, 0))|1': 0.8877551020408163, '((0, 1, 0, 1), (1, 0, 0, 1))|0': 0.8174603174603174, '((0, 1, 0, 1), (1, 0, 0, 1))|1': 0.8869509043927648, '((1, 0, 0, 0), (1, 1, 0, 0))|0': 0.8436213991769548, '((1, 0, 0, 0), (1, 1, 0, 0))|1': 0.875951293759513, '((1, 0, 0, 1), (0, 0, 1, 0))|0': 0.12236286919831224, '((1, 0, 0, 1), (0, 0, 1, 0))|1': 0.11068458093410109, '((0, 0, 0, 0), (0, 1, 0, 1))|0': 0.8761261261261262, '((0, 0, 0, 0), (0, 1, 0, 1))|1': 0.8606194690265486}
+def metric(data):
+    import numpy as np
+    def jsd2(p, q):
+        # Jensen-Shannon divergence (nats) between Bernoulli(p), Bernoulli(q)
+        v = 0.0
+        for x, y in ((1.0 - p, 1.0 - q), (p, q)):
+            m = 0.5 * (x + y)
+            if x > 0:
+                v += 0.5 * x * np.log(x / m)
+            if y > 0:
+                v += 0.5 * y * np.log(y / m)
+        return float(v)
+    sums, counts = {}, {}
+    for _, subj in data.groupby('subject_id', sort=False):
+        a = list(subj['option_a_ratings'])
+        b = list(subj['option_b_ratings'])
+        r = subj['response'].to_numpy(dtype=int)
+        for t in range(1, len(r)):
+            key = str((tuple(a[t]), tuple(b[t]))) + '|' + str(int(r[t-1]))
+            sums[key] = sums.get(key, 0) + int(r[t])
+            counts[key] = counts.get(key, 0) + 1
+    num = den = 0.0
+    for k, n in counts.items():
+        num += n * jsd2(sums[k] / n, P_REF.get(k, 0.5))
+        den += n
+    return float(num / den) if den else 0.0
+
+```
+
+**Observed (real) value:** 0.0021 (var=0.0001)
+**Previous candidate values (this loop):**
+  - iter 1: 0.0010 (var=0.0001) (Δ vs real -0.0011)
+  - iter 2: 0.0134 (var=0.0008) (Δ vs real +0.0113)
+  - iter 3: 0.0010 (var=0.0001) (Δ vs real -0.0010)
+  - iter 4: 0.0151 (var=0.0003) (Δ vs real +0.0130)
+  - iter 5: 0.0011 (var=0.0002) (Δ vs real -0.0010)
+  - iter 6: 0.0007 (var=0.0001) (Δ vs real -0.0013)
+  - iter 7 (most recent): 0.0106 (var=0.0004) (Δ vs real +0.0085)
+**Other theories' values on this metric (for reference):**
+- pi_3: 0.0014 (var=0.0001)
+- pi_4: 0.0029 (var=0.0002)
+- pi_1: 0.0457 (var=0.0004)
+- pi_2: 0.0328 (var=0.0016)
+- pi_5: 0.0035 (var=0.0002)
+- pi_6: 0.0027 (var=0.0005)
+
+### Experiment 6
+**Design**
+  A=[1, 0, 1, 1]  B=[0, 1, 0, 0]
+  A=[0, 1, 0, 0]  B=[1, 0, 1, 0]
+  A=[1, 0, 1, 0]  B=[0, 1, 1, 0]
+  A=[0, 0, 1, 0]  B=[1, 1, 0, 0]
+  A=[1, 1, 1, 1]  B=[1, 0, 1, 1]
+  A=[0, 0, 1, 0]  B=[0, 1, 0, 0]
+  A=[1, 0, 1, 1]  B=[0, 1, 0, 0]
+  A=[0, 0, 0, 1]  B=[1, 0, 0, 0]
+  A=[1, 1, 0, 1]  B=[0, 1, 0, 0]
+  A=[0, 1, 0, 1]  B=[0, 1, 0, 0]
+  A=[0, 1, 1, 0]  B=[0, 1, 0, 0]
+  A=[0, 1, 0, 0]  B=[1, 0, 1, 0]
+  A=[1, 0, 1, 0]  B=[0, 1, 0, 0]
+  A=[0, 1, 0, 1]  B=[1, 0, 1, 0]
+  A=[1, 1, 1, 1]  B=[0, 1, 0, 0]
+  A=[0, 1, 0, 1]  B=[0, 0, 1, 1]
+
+**Metric**
+```python
+P_REF = {'((0, 1, 0, 1), (1, 0, 1, 0))|0': 0.8851744186046512, '((0, 1, 0, 1), (1, 0, 1, 0))|1': 0.85431654676259, '((1, 1, 1, 1), (0, 1, 0, 0))|0': 0.138815207780725, '((1, 1, 1, 1), (0, 1, 0, 0))|1': 0.13303437967115098, '((0, 1, 0, 1), (0, 0, 1, 1))|0': 0.7742331288343558, '((0, 1, 0, 1), (0, 0, 1, 1))|1': 0.7372262773722628, '((1, 0, 1, 1), (0, 1, 0, 0))|0': 0.11290959336754836, '((1, 0, 1, 1), (0, 1, 0, 0))|1': 0.14995313964386128, '((1, 1, 1, 1), (1, 0, 1, 1))|0': 0.13828238719068414, '((1, 1, 1, 1), (1, 0, 1, 1))|1': 0.12488769092542677, '((0, 1, 0, 0), (1, 0, 1, 0))|0': 0.8749523446435379, '((0, 1, 0, 0), (1, 0, 1, 0))|1': 0.8515864892528148, '((0, 1, 1, 0), (0, 1, 0, 0))|0': 0.11936339522546419, '((0, 1, 1, 0), (0, 1, 0, 0))|1': 0.14499252615844543, '((1, 0, 1, 0), (0, 1, 1, 0))|0': 0.12627551020408162, '((1, 0, 1, 0), (0, 1, 1, 0))|1': 0.15517241379310345, '((0, 1, 0, 1), (0, 1, 0, 0))|0': 0.13167259786476868, '((0, 1, 0, 1), (0, 1, 0, 0))|1': 0.13609467455621302, '((1, 1, 0, 1), (0, 1, 0, 0))|0': 0.12406417112299466, '((1, 1, 0, 1), (0, 1, 0, 0))|1': 0.13641618497109825, '((1, 0, 1, 0), (0, 1, 0, 0))|0': 0.13288288288288289, '((1, 0, 1, 0), (0, 1, 0, 0))|1': 0.12938596491228072, '((0, 0, 1, 0), (0, 1, 0, 0))|0': 0.24436363636363637, '((0, 0, 1, 0), (0, 1, 0, 0))|1': 0.2447058823529412, '((0, 0, 0, 1), (1, 0, 0, 0))|0': 0.8819255222524978, '((0, 0, 0, 1), (1, 0, 0, 0))|1': 0.8669527896995708, '((0, 0, 1, 0), (1, 1, 0, 0))|0': 0.8461538461538461, '((0, 0, 1, 0), (1, 1, 0, 0))|1': 0.8728323699421965}
+def metric(data):
+    import numpy as np
+    def jsd2(p, q):
+        # Jensen-Shannon divergence (nats) between Bernoulli(p), Bernoulli(q)
+        v = 0.0
+        for x, y in ((1.0 - p, 1.0 - q), (p, q)):
+            m = 0.5 * (x + y)
+            if x > 0:
+                v += 0.5 * x * np.log(x / m)
+            if y > 0:
+                v += 0.5 * y * np.log(y / m)
+        return float(v)
+    sums, counts = {}, {}
+    for _, subj in data.groupby('subject_id', sort=False):
+        a = list(subj['option_a_ratings'])
+        b = list(subj['option_b_ratings'])
+        r = subj['response'].to_numpy(dtype=int)
+        for t in range(1, len(r)):
+            key = str((tuple(a[t]), tuple(b[t]))) + '|' + str(int(r[t-1]))
+            sums[key] = sums.get(key, 0) + int(r[t])
+            counts[key] = counts.get(key, 0) + 1
+    num = den = 0.0
+    for k, n in counts.items():
+        num += n * jsd2(sums[k] / n, P_REF.get(k, 0.5))
+        den += n
+    return float(num / den) if den else 0.0
+
+```
+
+**Observed (real) value:** 0.0031 (var=0.0001)
+**Previous candidate values (this loop):**
+  - iter 1: 0.0029 (var=0.0001) (Δ vs real -0.0002)
+  - iter 2: 0.0109 (var=0.0003) (Δ vs real +0.0078)
+  - iter 3: 0.0019 (var=0.0001) (Δ vs real -0.0012)
+  - iter 4: 0.0041 (var=0.0001) (Δ vs real +0.0010)
+  - iter 5: 0.0026 (var=0.0001) (Δ vs real -0.0005)
+  - iter 6: 0.0028 (var=0.0001) (Δ vs real -0.0003)
+  - iter 7 (most recent): 0.0026 (var=0.0001) (Δ vs real -0.0005)
+**Other theories' values on this metric (for reference):**
+- pi_4: 0.0014 (var=0.0001)
+- pi_3: 0.0028 (var=0.0001)
+- pi_1: 0.0226 (var=0.0004)
+- pi_2: 0.0268 (var=0.0034)
+- pi_5: 0.0015 (var=0.0001)
+- pi_6: 0.0034 (var=0.0002)
+
+### Experiment 7
+**Design**
+  A=[0, 0, 0, 0]  B=[1, 1, 0, 0]
+  A=[1, 1, 0, 1]  B=[0, 0, 1, 1]
+  A=[0, 1, 1, 1]  B=[0, 0, 1, 0]
+  A=[0, 1, 1, 0]  B=[0, 1, 0, 1]
+  A=[1, 0, 1, 0]  B=[0, 1, 0, 1]
+  A=[1, 0, 1, 0]  B=[0, 0, 0, 1]
+  A=[1, 0, 1, 1]  B=[0, 0, 0, 0]
+  A=[0, 1, 0, 0]  B=[1, 1, 1, 1]
+  A=[1, 0, 0, 0]  B=[0, 0, 0, 0]
+  A=[0, 1, 1, 0]  B=[1, 1, 0, 1]
+  A=[0, 1, 0, 0]  B=[1, 1, 0, 1]
+  A=[1, 0, 0, 1]  B=[0, 1, 0, 0]
+  A=[0, 0, 1, 0]  B=[1, 1, 1, 1]
+  A=[1, 1, 1, 1]  B=[0, 0, 0, 1]
+  A=[1, 1, 1, 0]  B=[0, 0, 0, 1]
+  A=[1, 1, 1, 0]  B=[1, 0, 1, 1]
+
+**Metric**
+```python
+P_REF = {'((0, 1, 0, 0), (1, 1, 1, 1))|0': 0.8641975308641975, '((0, 1, 0, 0), (1, 1, 1, 1))|1': 0.8896713615023474, '((0, 1, 1, 0), (1, 1, 0, 1))|0': 0.881404174573055, '((0, 1, 1, 0), (1, 1, 0, 1))|1': 0.8806970509383378, '((1, 1, 1, 0), (0, 0, 0, 1))|0': 0.14123006833712984, '((1, 1, 1, 0), (0, 0, 0, 1))|1': 0.1399132321041215, '((0, 0, 0, 0), (1, 1, 0, 0))|0': 0.8642659279778393, '((0, 0, 0, 0), (1, 1, 0, 0))|1': 0.8842398884239888, '((1, 0, 1, 0), (0, 0, 0, 1))|0': 0.12005856515373353, '((1, 0, 1, 0), (0, 0, 0, 1))|1': 0.1336405529953917, '((1, 0, 1, 1), (0, 0, 0, 0))|0': 0.13126843657817108, '((1, 0, 1, 1), (0, 0, 0, 0))|1': 0.12612612612612611, '((1, 0, 1, 0), (0, 1, 0, 1))|0': 0.1225271218889598, '((1, 0, 1, 0), (0, 1, 0, 1))|1': 0.15021459227467812, '((0, 1, 1, 0), (0, 1, 0, 1))|0': 0.11598513011152416, '((0, 1, 1, 0), (0, 1, 0, 1))|1': 0.12307692307692308, '((0, 1, 1, 1), (0, 0, 1, 0))|0': 0.15137254901960784, '((0, 1, 1, 1), (0, 0, 1, 0))|1': 0.17523809523809525, '((1, 0, 0, 1), (0, 1, 0, 0))|0': 0.12048192771084337, '((1, 0, 0, 1), (0, 1, 0, 0))|1': 0.13402061855670103, '((1, 1, 1, 0), (1, 0, 1, 1))|0': 0.29596412556053814, '((1, 1, 1, 0), (1, 0, 1, 1))|1': 0.30364963503649633, '((1, 1, 1, 1), (0, 0, 0, 1))|0': 0.12527716186252771, '((1, 1, 1, 1), (0, 0, 0, 1))|1': 0.11581291759465479, '((1, 1, 0, 1), (0, 0, 1, 1))|0': 0.13, '((1, 1, 0, 1), (0, 0, 1, 1))|1': 0.15555555555555556, '((0, 0, 1, 0), (1, 1, 1, 1))|0': 0.8756841282251759, '((0, 0, 1, 0), (1, 1, 1, 1))|1': 0.8234165067178503, '((0, 1, 0, 0), (1, 1, 0, 1))|0': 0.8695081967213115, '((0, 1, 0, 0), (1, 1, 0, 1))|1': 0.7927272727272727, '((1, 0, 0, 0), (0, 0, 0, 0))|0': 0.13166855845629966, '((1, 0, 0, 0), (0, 0, 0, 0))|1': 0.1501632208922742}
+def metric(data):
+    import numpy as np
+    def jsd2(p, q):
+        # Jensen-Shannon divergence (nats) between Bernoulli(p), Bernoulli(q)
+        v = 0.0
+        for x, y in ((1.0 - p, 1.0 - q), (p, q)):
+            m = 0.5 * (x + y)
+            if x > 0:
+                v += 0.5 * x * np.log(x / m)
+            if y > 0:
+                v += 0.5 * y * np.log(y / m)
+        return float(v)
+    sums, counts = {}, {}
+    for _, subj in data.groupby('subject_id', sort=False):
+        a = list(subj['option_a_ratings'])
+        b = list(subj['option_b_ratings'])
+        r = subj['response'].to_numpy(dtype=int)
+        for t in range(1, len(r)):
+            key = str((tuple(a[t]), tuple(b[t]))) + '|' + str(int(r[t-1]))
+            sums[key] = sums.get(key, 0) + int(r[t])
+            counts[key] = counts.get(key, 0) + 1
+    num = den = 0.0
+    for k, n in counts.items():
+        num += n * jsd2(sums[k] / n, P_REF.get(k, 0.5))
+        den += n
+    return float(num / den) if den else 0.0
+
+```
+
+**Observed (real) value:** 0.0033 (var=0.0003)
+**Previous candidate values (this loop):**
+  - iter 1: 0.0027 (var=0.0001) (Δ vs real -0.0006)
+  - iter 2: 0.0041 (var=0.0001) (Δ vs real +0.0008)
+  - iter 3: 0.0029 (var=0.0001) (Δ vs real -0.0004)
+  - iter 4: 0.0050 (var=0.0001) (Δ vs real +0.0016)
+  - iter 5: 0.0027 (var=0.0001) (Δ vs real -0.0006)
+  - iter 6: 0.0021 (var=0.0001) (Δ vs real -0.0013)
+  - iter 7 (most recent): 0.0019 (var=0.0001) (Δ vs real -0.0015)
+**Other theories' values on this metric (for reference):**
+- pi_5: 0.0015 (var=0.0002)
+- pi_4: 0.0019 (var=0.0001)
+- pi_1: 0.0142 (var=0.0002)
+- pi_2: 0.0136 (var=0.0006)
+- pi_3: 0.0029 (var=0.0001)
+- pi_6: 0.0042 (var=0.0001)
+
+### Experiment 8
+**Design**
+  A=[0, 0, 1, 0]  B=[0, 1, 1, 1]
+  A=[1, 1, 1, 1]  B=[0, 0, 0, 1]
+  A=[0, 0, 0, 1]  B=[0, 0, 0, 0]
+  A=[0, 1, 1, 0]  B=[1, 0, 0, 0]
+  A=[1, 1, 0, 0]  B=[1, 0, 0, 0]
+  A=[0, 0, 0, 0]  B=[1, 1, 1, 1]
+  A=[1, 0, 1, 1]  B=[0, 0, 1, 0]
+  A=[0, 1, 1, 1]  B=[1, 1, 1, 0]
+  A=[1, 1, 0, 0]  B=[0, 1, 0, 1]
+  A=[0, 0, 1, 1]  B=[1, 1, 1, 1]
+  A=[0, 0, 0, 1]  B=[1, 0, 0, 1]
+  A=[1, 1, 0, 0]  B=[1, 0, 1, 0]
+  A=[1, 0, 0, 0]  B=[1, 1, 1, 0]
+  A=[0, 0, 0, 1]  B=[1, 1, 1, 0]
+  A=[0, 0, 1, 1]  B=[1, 1, 0, 0]
+  A=[1, 1, 0, 0]  B=[0, 1, 0, 1]
+
+**Metric**
+```python
+P_REF = {'((1, 1, 0, 0), (1, 0, 0, 0))|0': 0.11957671957671957, '((1, 1, 0, 0), (1, 0, 0, 0))|1': 0.10058479532163743, '((0, 0, 0, 1), (1, 0, 0, 1))|0': 0.8520084566596194, '((0, 0, 0, 1), (1, 0, 0, 1))|1': 0.8673700075357951, '((1, 1, 1, 1), (0, 0, 0, 1))|0': 0.17372881355932204, '((1, 1, 1, 1), (0, 0, 0, 1))|1': 0.11317135549872123, '((0, 1, 1, 1), (1, 1, 1, 0))|0': 0.8517745302713987, '((0, 1, 1, 1), (1, 1, 1, 0))|1': 0.8652535957607873, '((0, 1, 1, 0), (1, 0, 0, 0))|0': 0.8755555555555555, '((0, 1, 1, 0), (1, 0, 0, 0))|1': 0.8588888888888889, '((0, 0, 0, 1), (1, 1, 1, 0))|0': 0.8913649025069638, '((0, 0, 0, 1), (1, 1, 1, 0))|1': 0.8835489833641405, '((1, 1, 0, 0), (0, 1, 0, 1))|0': 0.11898173768677366, '((1, 1, 0, 0), (0, 1, 0, 1))|1': 0.13608477412158393, '((0, 0, 1, 0), (0, 1, 1, 1))|0': 0.8636871508379889, '((0, 0, 1, 0), (0, 1, 1, 1))|1': 0.8839779005524862, '((1, 0, 0, 0), (1, 1, 1, 0))|0': 0.8688046647230321, '((1, 0, 0, 0), (1, 1, 1, 0))|1': 0.8824057450628366, '((0, 0, 1, 1), (1, 1, 1, 1))|0': 0.8829902491874323, '((0, 0, 1, 1), (1, 1, 1, 1))|1': 0.8688711516533637, '((0, 0, 1, 1), (1, 1, 0, 0))|0': 0.891449814126394, '((0, 0, 1, 1), (1, 1, 0, 0))|1': 0.8813186813186813, '((1, 1, 0, 0), (1, 0, 1, 0))|0': 0.7663716814159292, '((1, 1, 0, 0), (1, 0, 1, 0))|1': 0.7805970149253731, '((0, 0, 0, 0), (1, 1, 1, 1))|0': 0.8597733711048159, '((0, 0, 0, 0), (1, 1, 1, 1))|1': 0.8738574040219378, '((0, 0, 0, 1), (0, 0, 0, 0))|0': 0.15196078431372548, '((0, 0, 0, 1), (0, 0, 0, 0))|1': 0.10185185185185185, '((1, 0, 1, 1), (0, 0, 1, 0))|0': 0.15384615384615385, '((1, 0, 1, 1), (0, 0, 1, 0))|1': 0.12087087087087087}
+def metric(data):
+    import numpy as np
+    def jsd2(p, q):
+        # Jensen-Shannon divergence (nats) between Bernoulli(p), Bernoulli(q)
+        v = 0.0
+        for x, y in ((1.0 - p, 1.0 - q), (p, q)):
+            m = 0.5 * (x + y)
+            if x > 0:
+                v += 0.5 * x * np.log(x / m)
+            if y > 0:
+                v += 0.5 * y * np.log(y / m)
+        return float(v)
+    sums, counts = {}, {}
+    for _, subj in data.groupby('subject_id', sort=False):
+        a = list(subj['option_a_ratings'])
+        b = list(subj['option_b_ratings'])
+        r = subj['response'].to_numpy(dtype=int)
+        for t in range(1, len(r)):
+            key = str((tuple(a[t]), tuple(b[t]))) + '|' + str(int(r[t-1]))
+            sums[key] = sums.get(key, 0) + int(r[t])
+            counts[key] = counts.get(key, 0) + 1
+    num = den = 0.0
+    for k, n in counts.items():
+        num += n * jsd2(sums[k] / n, P_REF.get(k, 0.5))
+        den += n
+    return float(num / den) if den else 0.0
+
+```
+
+**Observed (real) value:** 0.0029 (var=0.0002)
+**Previous candidate values (this loop):**
+  - iter 1: 0.0017 (var=0.0001) (Δ vs real -0.0012)
+  - iter 2: 0.0092 (var=0.0003) (Δ vs real +0.0064)
+  - iter 3: 0.0071 (var=0.0001) (Δ vs real +0.0042)
+  - iter 4: 0.0080 (var=0.0003) (Δ vs real +0.0051)
+  - iter 5: 0.0013 (var=0.0001) (Δ vs real -0.0015)
+  - iter 6: 0.0016 (var=0.0001) (Δ vs real -0.0013)
+  - iter 7 (most recent): 0.0051 (var=0.0002) (Δ vs real +0.0022)
+**Other theories' values on this metric (for reference):**
+- pi_4: 0.0009 (var=0.0001)
+- pi_5: 0.0041 (var=0.0001)
+- pi_1: 0.0407 (var=0.0003)
+- pi_2: 0.0254 (var=0.0010)
+- pi_3: 0.0013 (var=0.0001)
+- pi_6: 0.0083 (var=0.0004)
+
+### Experiment 9
+**Design**
+  A=[0, 1, 0, 1]  B=[1, 1, 0, 0]
+  A=[0, 0, 1, 0]  B=[1, 0, 0, 1]
+  A=[1, 1, 0, 0]  B=[1, 0, 1, 1]
+  A=[0, 1, 0, 1]  B=[1, 0, 1, 1]
+  A=[1, 0, 0, 1]  B=[1, 0, 1, 1]
+  A=[0, 0, 0, 1]  B=[0, 0, 1, 0]
+  A=[1, 1, 1, 1]  B=[0, 1, 0, 1]
+  A=[1, 0, 1, 1]  B=[0, 1, 0, 1]
+  A=[1, 0, 1, 0]  B=[1, 1, 1, 0]
+  A=[1, 0, 1, 1]  B=[1, 0, 0, 1]
+  A=[1, 1, 0, 1]  B=[1, 1, 1, 0]
+  A=[0, 1, 0, 0]  B=[1, 1, 1, 1]
+  A=[0, 1, 1, 1]  B=[1, 0, 1, 0]
+  A=[1, 0, 0, 1]  B=[1, 0, 0, 0]
+  A=[0, 1, 1, 1]  B=[1, 1, 0, 1]
+  A=[0, 0, 0, 0]  B=[1, 0, 1, 0]
+
+**Metric**
+```python
+P_REF = {'((0, 0, 0, 1), (0, 0, 1, 0))|0': 0.7921348314606742, '((0, 0, 0, 1), (0, 0, 1, 0))|1': 0.8216911764705882, '((1, 0, 1, 1), (1, 0, 0, 1))|0': 0.12317327766179541, '((1, 0, 1, 1), (1, 0, 0, 1))|1': 0.10186092066601371, '((1, 0, 0, 1), (1, 0, 1, 1))|0': 0.8571428571428571, '((1, 0, 0, 1), (1, 0, 1, 1))|1': 0.8814070351758794, '((0, 1, 0, 1), (1, 1, 0, 0))|0': 0.8228004956629492, '((0, 1, 0, 1), (1, 1, 0, 0))|1': 0.8116817724068479, '((0, 1, 0, 0), (1, 1, 1, 1))|0': 0.8561643835616438, '((0, 1, 0, 0), (1, 1, 1, 1))|1': 0.886604774535809, '((1, 1, 1, 1), (0, 1, 0, 1))|0': 0.1357142857142857, '((1, 1, 1, 1), (0, 1, 0, 1))|1': 0.11097560975609756, '((1, 0, 1, 1), (0, 1, 0, 1))|0': 0.13636363636363635, '((1, 0, 1, 1), (0, 1, 0, 1))|1': 0.1104014598540146, '((1, 0, 1, 0), (1, 1, 1, 0))|0': 0.8716981132075472, '((1, 0, 1, 0), (1, 1, 1, 0))|1': 0.8729729729729729, '((0, 1, 0, 1), (1, 0, 1, 1))|0': 0.8808373590982287, '((0, 1, 0, 1), (1, 0, 1, 1))|1': 0.9007633587786259, '((0, 0, 0, 0), (1, 0, 1, 0))|0': 0.8223234624145785, '((0, 0, 0, 0), (1, 0, 1, 0))|1': 0.8897869213813373, '((0, 1, 1, 1), (1, 1, 0, 1))|0': 0.6948775055679287, '((0, 1, 1, 1), (1, 1, 0, 1))|1': 0.7142857142857143, '((0, 0, 1, 0), (1, 0, 0, 1))|0': 0.8745387453874539, '((0, 0, 1, 0), (1, 0, 0, 1))|1': 0.8712241653418124, '((1, 1, 0, 1), (1, 1, 1, 0))|0': 0.8233502538071066, '((1, 1, 0, 1), (1, 1, 1, 0))|1': 0.8208588957055215, '((1, 1, 0, 0), (1, 0, 1, 1))|0': 0.8550512445095169, '((1, 1, 0, 0), (1, 0, 1, 1))|1': 0.8343777976723367, '((0, 1, 1, 1), (1, 0, 1, 0))|0': 0.29411764705882354, '((0, 1, 1, 1), (1, 0, 1, 0))|1': 0.3739245532759762, '((1, 0, 0, 1), (1, 0, 0, 0))|0': 0.15138282387190685, '((1, 0, 0, 1), (1, 0, 0, 0))|1': 0.14106019766397124}
+def metric(data):
+    import numpy as np
+    def jsd2(p, q):
+        # Jensen-Shannon divergence (nats) between Bernoulli(p), Bernoulli(q)
+        v = 0.0
+        for x, y in ((1.0 - p, 1.0 - q), (p, q)):
+            m = 0.5 * (x + y)
+            if x > 0:
+                v += 0.5 * x * np.log(x / m)
+            if y > 0:
+                v += 0.5 * y * np.log(y / m)
+        return float(v)
+    sums, counts = {}, {}
+    for _, subj in data.groupby('subject_id', sort=False):
+        a = list(subj['option_a_ratings'])
+        b = list(subj['option_b_ratings'])
+        r = subj['response'].to_numpy(dtype=int)
+        for t in range(1, len(r)):
+            key = str((tuple(a[t]), tuple(b[t]))) + '|' + str(int(r[t-1]))
+            sums[key] = sums.get(key, 0) + int(r[t])
+            counts[key] = counts.get(key, 0) + 1
+    num = den = 0.0
+    for k, n in counts.items():
+        num += n * jsd2(sums[k] / n, P_REF.get(k, 0.5))
+        den += n
+    return float(num / den) if den else 0.0
+
+```
+
+**Observed (real) value:** 0.0293 (var=0.0001)
+**Previous candidate values (this loop):**
+  - iter 1: 0.0118 (var=0.0001) (Δ vs real -0.0175)
+  - iter 2: 0.0115 (var=0.0003) (Δ vs real -0.0178)
+  - iter 3: 0.0032 (var=0.0001) (Δ vs real -0.0261)
+  - iter 4: 0.0038 (var=0.0001) (Δ vs real -0.0255)
+  - iter 5: 0.0124 (var=0.0001) (Δ vs real -0.0169)
+  - iter 6: 0.0118 (var=0.0001) (Δ vs real -0.0175)
+  - iter 7 (most recent): 0.0116 (var=0.0002) (Δ vs real -0.0177)
+**Other theories' values on this metric (for reference):**
+- pi_6: 0.0010 (var=0.0001)
+- pi_4: 0.0121 (var=0.0001)
+- pi_1: 0.0146 (var=0.0002)
+- pi_2: 0.0179 (var=0.0008)
+- pi_3: 0.0159 (var=0.0001)
+- pi_5: 0.0129 (var=0.0001)
+
+### Experiment 10
+**Design**
+  A=[0, 0, 1, 1]  B=[1, 1, 1, 0]
+  A=[1, 0, 0, 0]  B=[0, 1, 1, 0]
+  A=[1, 1, 1, 0]  B=[1, 1, 0, 0]
+  A=[0, 0, 1, 1]  B=[1, 1, 1, 0]
+  A=[1, 0, 1, 1]  B=[1, 1, 0, 1]
+  A=[0, 1, 1, 1]  B=[0, 0, 0, 0]
+  A=[0, 1, 0, 1]  B=[1, 0, 0, 0]
+  A=[1, 0, 1, 0]  B=[1, 0, 0, 0]
+  A=[1, 1, 1, 1]  B=[0, 1, 1, 1]
+  A=[0, 1, 1, 1]  B=[0, 1, 0, 1]
+  A=[1, 1, 1, 1]  B=[0, 0, 0, 0]
+  A=[0, 1, 1, 1]  B=[1, 0, 1, 0]
+  A=[1, 1, 1, 1]  B=[0, 0, 0, 0]
+  A=[0, 1, 1, 0]  B=[0, 0, 0, 0]
+  A=[1, 0, 0, 0]  B=[0, 1, 1, 1]
+  A=[0, 0, 1, 1]  B=[0, 0, 0, 0]
+
+**Metric**
+```python
+P_REF = {'((1, 0, 0, 0), (0, 1, 1, 0))|0': 0.13099041533546327, '((1, 0, 0, 0), (0, 1, 1, 0))|1': 0.17446808510638298, '((0, 1, 1, 1), (0, 0, 0, 0))|0': 0.11888638073739653, '((0, 1, 1, 1), (0, 0, 0, 0))|1': 0.14861995753715498, '((1, 1, 1, 1), (0, 1, 1, 1))|0': 0.11997019374068554, '((1, 1, 1, 1), (0, 1, 1, 1))|1': 0.1462882096069869, '((1, 0, 0, 0), (0, 1, 1, 1))|0': 0.1408987052551409, '((1, 0, 0, 0), (0, 1, 1, 1))|1': 0.10677618069815195, '((1, 0, 1, 0), (1, 0, 0, 0))|0': 0.12692656391659113, '((1, 0, 1, 0), (1, 0, 0, 0))|1': 0.1406025824964132, '((1, 0, 1, 1), (1, 1, 0, 1))|0': 0.2112676056338028, '((1, 0, 1, 1), (1, 1, 0, 1))|1': 0.2616407982261641, '((0, 1, 0, 1), (1, 0, 0, 0))|0': 0.8734402852049911, '((0, 1, 0, 1), (1, 0, 0, 0))|1': 0.859882005899705, '((0, 0, 1, 1), (1, 1, 1, 0))|0': 0.868018018018018, '((0, 0, 1, 1), (1, 1, 1, 0))|1': 0.8615942028985507, '((0, 1, 1, 1), (1, 0, 1, 0))|0': 0.8794642857142857, '((0, 1, 1, 1), (1, 0, 1, 0))|1': 0.8808823529411764, '((1, 1, 1, 0), (1, 1, 0, 0))|0': 0.12733260153677278, '((1, 1, 1, 0), (1, 1, 0, 0))|1': 0.12260967379077616, '((1, 1, 1, 1), (0, 0, 0, 0))|0': 0.12469635627530365, '((1, 1, 1, 1), (0, 0, 0, 0))|1': 0.12477876106194691, '((0, 1, 1, 1), (0, 1, 0, 1))|0': 0.1360544217687075, '((0, 1, 1, 1), (0, 1, 0, 1))|1': 0.129979035639413, '((0, 0, 1, 1), (0, 0, 0, 0))|0': 0.13088512241054615, '((0, 0, 1, 1), (0, 0, 0, 0))|1': 0.1552511415525114, '((0, 1, 1, 0), (0, 0, 0, 0))|0': 0.1266294227188082, '((0, 1, 1, 0), (0, 0, 0, 0))|1': 0.12396694214876033}
+def metric(data):
+    import numpy as np
+    def jsd2(p, q):
+        # Jensen-Shannon divergence (nats) between Bernoulli(p), Bernoulli(q)
+        v = 0.0
+        for x, y in ((1.0 - p, 1.0 - q), (p, q)):
+            m = 0.5 * (x + y)
+            if x > 0:
+                v += 0.5 * x * np.log(x / m)
+            if y > 0:
+                v += 0.5 * y * np.log(y / m)
+        return float(v)
+    sums, counts = {}, {}
+    for _, subj in data.groupby('subject_id', sort=False):
+        a = list(subj['option_a_ratings'])
+        b = list(subj['option_b_ratings'])
+        r = subj['response'].to_numpy(dtype=int)
+        for t in range(1, len(r)):
+            key = str((tuple(a[t]), tuple(b[t]))) + '|' + str(int(r[t-1]))
+            sums[key] = sums.get(key, 0) + int(r[t])
+            counts[key] = counts.get(key, 0) + 1
+    num = den = 0.0
+    for k, n in counts.items():
+        num += n * jsd2(sums[k] / n, P_REF.get(k, 0.5))
+        den += n
+    return float(num / den) if den else 0.0
+
+```
+
+**Observed (real) value:** 0.0017 (var=0.0001)
+**Previous candidate values (this loop):**
+  - iter 1: 0.0019 (var=0.0001) (Δ vs real +0.0002)
+  - iter 2: 0.0061 (var=0.0003) (Δ vs real +0.0044)
+  - iter 3: 0.0232 (var=0.0008) (Δ vs real +0.0215)
+  - iter 4: 0.0200 (var=0.0007) (Δ vs real +0.0183)
+  - iter 5: 0.0019 (var=0.0001) (Δ vs real +0.0002)
+  - iter 6: 0.0010 (var=0.0001) (Δ vs real -0.0007)
+  - iter 7 (most recent): 0.0016 (var=0.0002) (Δ vs real -0.0001)
+**Other theories' values on this metric (for reference):**
+- pi_4: 0.0016 (var=0.0001)
+- pi_6: 0.0376 (var=0.0015)
+- pi_1: 0.0789 (var=0.0004)
+- pi_2: 0.0405 (var=0.0016)
+- pi_3: 0.0021 (var=0.0001)
+- pi_5: 0.0011 (var=0.0001)
+
+## PREVIOUS CANDIDATE (this loop)
+The RUNNING-BEST (last ACCEPTED) candidate in this critique loop — i.e. the source the loop's accept gate kept as the best base so far. If your most recent attempt was REJECTED by the gate, this is NOT that attempt; it is the previously-accepted base the gate rolled back to. Iterate on this source — the next critic feedback should be applied on top of it.
+
+**Description**
+Probabilistic Strategy Selection: Decision makers do not blend strategies within a single trial. Instead, on each trial, they probabilistically choose between a non-compensatory heuristic (Take-The-Best) and a compensatory strategy (Weighted Additive). The probability of choosing the heuristic varies across individuals. Finally, a lapse rate accounts for execution errors or random guessing.
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, stimulus, history):
+    import numpy as np
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(f"Expected a (2, n_features) stimulus; got shape {stim.shape}.")
+    
+    a, b = stim[0], stim[1]
+    validities = np.asarray(parameters["validities"], dtype=float)
+    
+    # Strategy 1: Take-The-Best (TTB)
+    order = np.argsort(validities)[::-1]
+    p_ttb_core = np.array([0.5, 0.5])
+    for idx in order:
+        if a[idx] > b[idx]:
+            p_ttb_core = np.array([1.0, 0.0])
+            break
+        elif b[idx] > a[idx]:
+            p_ttb_core = np.array([0.0, 1.0])
+            break
+            
+    # Strategy 2: Weighted Additive (WADD)
+    clipped_vals = np.clip(validities, 1e-4, 1.0 - 1e-4)
+    weights = np.log(clipped_vals / (1.0 - clipped_vals))
+    score_a = np.sum(weights * a)
+    score_b = np.sum(weights * b)
+    
+    if score_a > score_b:
+        p_wadd_core = np.array([1.0, 0.0])
+    elif score_b > score_a:
+        p_wadd_core = np.array([0.0, 1.0])
+    else:
+        p_wadd_core = np.array([0.5, 0.5])
+        
+    # Probabilistic Strategy Selection
+    p_ttb = float(parameters["p_ttb"])
+    p_core = p_ttb * p_ttb_core + (1.0 - p_ttb) * p_wadd_core
+    
+    # Response noise
+    epsilon = float(parameters["epsilon"])
+    n_opts = p_core.shape[0]
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+
+
+`policy(probs) -> int`:
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities /= probabilities.sum()
+    return int(np.random.choice(len(probabilities), p=probabilities))
+
+
+`parameters`:
+- p_ttb: [0.0, 1.0]
+- epsilon: [0.0, 0.5]
+- validities: validities
+
+`rationale`: Following the arbiter's suggestion, this model implements a Probabilistic Strategy Selection mechanism. Rather than deterministically falling back from one strategy to another (which can lead to overly rigid predictions), the decision maker stochastically selects between a purely non-compensatory strategy (Take-The-Best) and a purely compensatory strategy (Weighted Additive) on each trial. This captures between-subject variability in strategy preference and trial-by-trial strategy exploration, while maintaining the psychological plausibility of discrete strategy execution.
+
+## PRIOR FEEDBACK ITERATIONS
+The critic's verdicts on each previous in-loop candidate, in order. Each block ends with an **Outcome of this advice** line saying whether the candidate the proposer produced AFTER this advice was ACCEPTED (loss strictly beat the running best) or REJECTED (the gate discarded it). Address the most recent iteration's feedback in your next edit, but down-weight past advice whose candidates were REJECTED.
+
+### Iteration 1
+Verdict: regenerate
+Interpretation: The Probabilistic Strategy Selection candidate faithfully implements the arbiter's recommendation and performs well, successfully achieving an accepted loss. By stochastically mixing Take-The-Best (TTB) and Weighted Additive (WADD), it captures a good portion of the behavioral variance across most experiments. However, it slightly underperforms on experiments 1, 2, 4, and 9 compared to the real data. A likely reason for this is that the WADD component is implemented as a strict deterministic step function (outputting [1.0, 0.0] or [0.0, 1.0]) before mixing, which ignores the margin of the score difference.
+Rationale: To improve the fit on the more complex datasets, replace the deterministic argmax in the Weighted Additive (WADD) strategy with a softmax function controlled by a new `temperature` parameter. This will allow the compensatory WADD strategy to reflect varying degrees of confidence based on the magnitude of the score difference, rather than treating all WADD decisions as equally certain. Add a `temperature` parameter (e.g., [0.1, 5.0]) to the parameter ranges and apply it to the WADD scores before the probabilistic mixing step. Keep the TTB strategy, the mixing probability `p_ttb`, and the lapse rate `epsilon` intact.
+
+**Outcome of this advice:** iter 1 candidate loss=0.1433 -> iter 2 candidate loss=0.3397 -> the gate marked it REJECTED.
+
+### Iteration 2
+Verdict: regenerate
+Interpretation: The candidate from iteration 2 attempted to soften the Weighted Additive (WADD) strategy using a softmax temperature. However, this candidate was REJECTED by the accept-gate because the aggregate loss increased significantly (from 0.1433 to 0.3397). The softmax modification degraded performance on experiments 3, 5, 6, 7, 8, and 10, likely because the log-odds weights combined with the temperature parameter miscalibrated the deterministic preferences subjects show in these specific tasks. We must revert to the iteration 1 base and try a different in-family adjustment.
+Rationale: Since softening the WADD strategy failed, we should keep the deterministic nature of both strategies before mixing, as it better captures the sharp decision boundaries in the data. Instead of changing the decision rule to softmax, modify how the compensatory WADD scores are calculated. The log-odds transformation of validities can create extreme weights that distort the compensatory evaluation. Update the compensatory strategy to either use the raw validities directly as weights, or use a simple Tallying strategy (unit weights for all cues). Keep the probabilistic strategy selection (p_ttb) and the epsilon lapse rate intact. This maintains the prescribed mechanism family while avoiding the scaling issues introduced by the log-odds and softmax temperature.
+
+**Outcome of this advice:** iter 2 candidate loss=0.3397 -> iter 3 candidate loss=0.1991 -> the gate marked it REJECTED.
+
+### Iteration 3
+Verdict: regenerate
+Interpretation: The candidate from iteration 3 attempted to use raw validities instead of log-odds for the Weighted Additive (WADD) strategy, but this was REJECTED by the accept-gate (loss increased to 0.1991 from the base of 0.1433). Using raw validities likely failed to provide the correct compensatory contrast to TTB, as it may not sufficiently separate strong from weak cues or it alters the decision boundaries in a way that misaligns with human data. Since both softmax temperature (iter 2) and raw validities (iter 3) have failed to improve upon the base model, we should explore a different compensatory mechanism that avoids weight scaling issues entirely.
+Rationale: Revert to the accepted base from iteration 1, but replace the Weighted Additive (WADD) strategy with a simple Tallying strategy. In Tallying, the score for an option is simply the unweighted sum of its positive cues (unit weights). Mix this deterministic Tallying strategy with the deterministic TTB strategy probabilistically using `p_ttb`. This provides a robust, parameter-free compensatory alternative to TTB that avoids the extreme values of log-odds and the under-differentiation of raw validities. Keep the overall Probabilistic Strategy Selection framework and the `epsilon` lapse rate intact.
+
+**Outcome of this advice:** iter 3 candidate loss=0.1991 -> iter 4 candidate loss=0.3552 -> the gate marked it REJECTED.
+
+### Iteration 4
+Verdict: regenerate
+Interpretation: The candidate from iteration 4 replaced the Weighted Additive (WADD) strategy with Tallying, but this was REJECTED by the accept-gate (loss increased significantly to 0.3552). Across iterations 2, 3, and 4, attempts to alter the compensatory strategy (softmax WADD, raw validities WADD, Tallying) have all failed to beat the iteration 1 base (deterministic WADD with log-odds). This indicates that the deterministic log-odds WADD formulation is actually structurally sound for these tasks. However, we have overlooked a crucial part of the arbiter's original recommendation: making the strategy selection probability depend on the dispersion of cue validities.
+Rationale: Revert to the accepted iteration 1 base (Probabilistic Strategy Selection between deterministic TTB and deterministic WADD using log-odds validities). Instead of altering the WADD strategy, improve the gating mechanism. Following the arbiter's prompt, make the probability of choosing TTB depend on the dispersion of the cue validities. Replace the static `p_ttb` parameter with a logistic function based on the validities' standard deviation: `dispersion = np.std(validities)` and `p_ttb = 1.0 / (1.0 + np.exp(-(w0 + w1 * dispersion)))`. Update the parameters to estimate `w0` and `w1` (e.g., range [-5.0, 5.0]) instead of a fixed `p_ttb`. Keep the `epsilon` lapse rate intact. This allows the model to adaptively shift between heuristic and compensatory strategies across different experimental designs, fulfilling the arbiter's intent.
+
+**Outcome of this advice:** iter 4 candidate loss=0.3552 -> iter 5 candidate loss=0.1529 -> the gate marked it REJECTED.
+
+### Iteration 5
+Verdict: regenerate
+Interpretation: The candidate from iteration 5 attempted to make the strategy selection probability (p_ttb) dependent on the standard deviation (dispersion) of the cue validities. While this faithfully followed the arbiter's suggestion and performed reasonably well (loss of 0.1529), it was REJECTED by the accept-gate because it failed to beat the simpler running-best base from iteration 1 (loss of 0.1433, which used a static p_ttb). This suggests that while environment-dependent gating is a good theoretical direction, the standard deviation of validities across the entire set is not the statistic that drives human shifts toward heuristic strategies in these specific experiments.
+Rationale: Revert to the accepted iteration 1 base (deterministic TTB and deterministic log-odds WADD). Since dispersion (standard deviation) failed to improve the fit, we should try a different environmental statistic to control the gating. Psychologically, the use of a non-compensatory strategy like Take-The-Best is most strongly triggered by the presence of a single highly reliable cue (a 'silver bullet'). Therefore, make the probability of selecting TTB depend on the *maximum* cue validity in the environment, rather than the dispersion. Replace the static `p_ttb` with a logistic function: `max_val = float(np.max(validities))`, `z = w0 + w1 * max_val`, and `p_ttb = 1.0 / (1.0 + np.exp(-z))`. Estimate parameters `w0` and `w1` (e.g., range [-5.0, 5.0]). Keep the `epsilon` lapse rate and the deterministic core strategies intact. This maintains the prescribed Probabilistic Strategy Selection family while refining the environmental adaptation mechanism.
+
+**Outcome of this advice:** iter 5 candidate loss=0.1529 -> iter 6 candidate loss=0.1537 -> the gate marked it REJECTED.
+
+### Iteration 6
+Verdict: regenerate
+Interpretation: The candidate from iteration 6 attempted to gate the strategy selection probability (p_ttb) using the maximum cue validity. However, this candidate was REJECTED by the accept-gate (loss=0.1537), failing to beat the simple running-best base from iteration 1 (loss=0.1433) which used a static p_ttb parameter. Across iterations 2 through 6, attempts to dynamically gate p_ttb (using dispersion or max validity) or modify the WADD mechanism (softmax, raw validities, tallying) have all failed to improve upon the base model. This strongly suggests that a static mixing probability across trials, combined with deterministic TTB and log-odds WADD, is the most robust structural baseline within this family. However, the deterministic WADD component might still be too brittle when option scores are nearly identical.
+Rationale: Revert to the accepted iteration 1 base (Probabilistic Strategy Selection with a static `p_ttb` parameter and deterministic log-odds WADD). Since dynamic gating of `p_ttb` has consistently failed, we should keep `p_ttb` as a static parameter to be estimated (e.g., range [0.0, 1.0]). To improve upon the base, introduce a `wadd_threshold` parameter (e.g., [0.0, 2.0]) to the Weighted Additive strategy. If the absolute difference between `score_a` and `score_b` is strictly less than `wadd_threshold`, the WADD strategy should output a tie `[0.5, 0.5]`. This acts as a confidence or discriminability threshold, capturing the psychological reality that decision-makers will guess rather than deterministically choose an option when the compensatory evidence is functionally indistinguishable. Keep the deterministic TTB strategy and the `epsilon` lapse rate intact.
+
+**Outcome of this advice:** iter 6 candidate loss=0.1537 -> iter 7 candidate loss=0.1820 -> the gate marked it REJECTED.
+
+### Iteration 7 (most recent — address this)
+Verdict: regenerate
+Interpretation: The candidate from iteration 7 attempted to introduce a discriminability threshold to the Weighted Additive (WADD) strategy, but it was REJECTED by the accept-gate (loss=0.1820), failing to beat the simple running-best base from iteration 1 (loss=0.1433). Across the last six iterations, we have systematically tried and failed to improve the base model by altering the WADD mechanism (softmax, raw validities, tallying, threshold) or by gating the strategy selection probability using environmental statistics like dispersion and max validity. This indicates that the core deterministic logic of both TTB and log-odds WADD is structurally sound, but our attempts to dynamically mix them have missed the mark.
+Rationale: Revert to the accepted iteration 1 base (Probabilistic Strategy Selection between deterministic TTB and deterministic log-odds WADD). We have exhausted modifications to the core strategies and several gating mechanisms, but we have overlooked one explicit suggestion from the arbiter: gating based on 'task complexity'. Make the probability of selecting TTB depend on the number of cues (features) in the task. Replace the static `p_ttb` parameter with a logistic function of task complexity: `complexity = float(len(validities))`, `z = w0 + w1 * complexity`, and `p_ttb = 1.0 / (1.0 + np.exp(-z))`. Estimate the parameters `w0` and `w1` (e.g., range [-5.0, 5.0]). Keep the `epsilon` lapse rate and the deterministic TTB and WADD core strategies intact. This provides a final, conceptually grounded test of dynamic strategy selection within the prescribed family.
+
+**Outcome of this advice:** iter 7 candidate loss=0.1820 -> next candidate accept-status=PENDING (this is the advice you are addressing now).
+
+
+## IMPLEMENTATION GUARDRAILS
+- The parameters should be within the specified ranges.
+- The model's predictions should be valid probability distributions (non-negative and sum to 1).
+- When converting logits to probabilities via softmax, always use the numerically stable form: subtract the max before exponentiating (`x = x - np.max(x); p = np.exp(x); p /= p.sum()`). A naive `np.exp(x) / np.sum(np.exp(x))` overflows to Inf/NaN for large logits. Alternatively, use `scipy.special.softmax`.
+
+
+## PROPOSAL — MINIMAL-DIFF EDIT (do NOT rewrite from scratch)
+The RUNNING-BEST (last ACCEPTED) candidate is shown verbatim above under `## PREVIOUS CANDIDATE (this loop)`. This is the base the loop's accept gate is currently keeping; the most recent critic feedback (see `## PRIOR FEEDBACK ITERATIONS`) should be applied on top of it. Apply the SMALLEST edit that addresses the critic's diagnosis while staying inside the arbiter's prescribed mechanism family:
+  - Re-emit the previous source verbatim, then change ONLY the lines needed to address the critic (a parameter range, a normalization, a softmax temperature, an attention scheme, a gating term, a buggy indexing line, etc.).
+  - Keep all unaffected functions, equations, parameter names, and the overall mechanism intact.
+  - Do NOT rewrite `predict` / `policy` end-to-end if a few lines would do, and do NOT switch mechanism families — that is the arbiter's decision, not yours in this loop.
+  - Briefly explain the minimal edit in `rationale`.
+If you genuinely believe a larger rewrite is required, you may do one, but justify in `rationale` why the minimal-diff path was insufficient.
+
+## RESPONSE FORMAT
+Return a JSON object with the following fields:
+- theory: The theoretical claim this theory makes about cognition.
+- predict: Python source defining def predict(parameters, state, history) -> np.ndarray.
+- policy: Python source defining def policy(probs) -> int.
+- parameters: Parameter ranges (e.g. "[1.0, 10.0]") or choices (e.g. "{1, 2}"), sampled per subject.
+- rationale: Reasoning behind this theory design; used to explain why this theory is better then the previous ones.
+
+
+## Response
+
+```json
+```json
+{
+  "theory": "Probabilistic Strategy Selection (Complexity-Gated): Decision makers probabilistically choose between a non-compensatory heuristic (Take-The-Best) and a compensatory strategy (Weighted Additive) on each trial. The probability of selecting the heuristic strategy is dynamically modulated by task complexity (the number of available cues), reflecting the adaptive use of simpler strategies in more complex environments.",
+  "predict": "def predict(parameters, stimulus, history):\n    import numpy as np\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n    \n    a, b = stim[0], stim[1]\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Strategy 1: Take-The-Best (TTB)\n    order = np.argsort(validities)[::-1]\n    p_ttb_core = np.array([0.5, 0.5])\n    for idx in order:\n        if a[idx] > b[idx]:\n            p_ttb_core = np.array([1.0, 0.0])\n            break\n        elif b[idx] > a[idx]:\n            p_ttb_core = np.array([0.0, 1.0])\n            break\n            \n    # Strategy 2: Weighted Additive (WADD)\n    clipped_vals = np.clip(validities, 1e-4, 1.0 - 1e-4)\n    weights = np.log(clipped_vals / (1.0 - clipped_vals))\n    score_a = np.sum(weights * a)\n    score_b = np.sum(weights * b)\n    \n    if score_a > score_b:\n        p_wadd_core = np.array([1.0, 0.0])\n    elif score_b > score_a:\n        p_wadd_core = np.array([0.0, 1.0])\n    else:\n        p_wadd_core = np.array([0.5, 0.5])\n        \n    # Probabilistic Strategy Selection based on Task Complexity\n    w0 = float(parameters[\"w0\"])\n    w1 = float(parameters[\"w1\"])\n    complexity = float(len(validities))\n    z = w0 + w1 * complexity\n    p_ttb = 1.0 / (1.0 + np.exp(-z))\n    \n    p_core = p_ttb * p_ttb_core + (1.0 - p_ttb) * p_wadd_core\n    \n    # Response noise\n    epsilon = float(parameters[\"epsilon\"])\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+  "policy": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+  "parameters": {
+    "w0": "[-5.0, 5.0]",
+    "w1": "[-5.0, 5.0]",
+    "epsilon": "[0.0, 0.5]",
+    "validities": "validities"
+  },
+  "rationale": "Following the critic's advice, we revert to the accepted iteration 1 base (probabilistic mixing of deterministic TTB and deterministic log-odds WADD). We replace the static `p_ttb` parameter with a logistic function of task complexity (the number of cues), governed by parameters `w0` and `w1`. This minimal edit tests the arbiter's explicit suggestion that strategy selection probability may depend on task complexity, allowing the model to adaptively shift between strategies across different experimental designs while keeping the core decision mechanisms unchanged."
+}
+```
+```
+
+## Usage
+
+```json
+{
+  "prompt_token_count": 38043,
+  "candidates_token_count": 992,
+  "total_token_count": 40211
+}
+```

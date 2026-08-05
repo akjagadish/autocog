@@ -1,0 +1,58 @@
+{
+  "round_idx": 3,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_5",
+      "killed": true,
+      "theory": {
+        "description": "Rank-Based Weighting Model with Exponential Decay (Average Ties): Subjects evaluate options by computing a weighted sum of their features. They rank features based on validities and assign subjective weights using an exponential decay function. Ties in validities are assigned their average rank, providing a smoother spacing of decay weights. A decay parameter lambda smoothly interpolates between Tallying (lambda=1) and Take The Best (lambda=0).",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    from scipy.stats import rankdata\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    lambda_param = float(parameters[\"lambda_param\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Rank features by validity (highest validity = rank 1)\n    # Using 'average' method to handle ties smoothly\n    ranks = rankdata(-validities, method='average')\n    \n    # Exponential rank decay: w = lambda_param ^ (rank - 1)\n    w = lambda_param ** (ranks - 1.0)\n    \n    # Option scores are the weighted sum of features\n    scores = stim @ w\n    \n    # Softmax over scores with inverse temperature beta\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    # Add independent lapse noise\n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+        "parameters": {
+          "lambda_param": "[0.0, 1.0]",
+          "beta": "[0.1, 10.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Reverting to the last accepted base (exponential rank decay) because linear decay degraded the overall fit. Modifying the rankdata method from 'dense' to 'average' as suggested by the critic. This provides a smoother and more statistically standard spacing for the exponential decay function when handling tied validities, without being as extreme as the rejected 'min' method."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_4",
+      "killed": false,
+      "theory": {
+        "description": "Non-linear Subjective Weighting Model: Subjects evaluate options by computing a weighted sum of their features, but they do not use the objective cue validities directly. Instead, subjective cue weights are a power function of the provided validities. An individual-specific exponent parameter controls the non-linearity of this transformation. This single mechanism unifies multiple decision strategies: an exponent near 0 flattens the weights (yielding Equal-Weight/Tallying), an exponent of 1 uses the validities linearly (yielding WADD), and a large exponent strongly amplifies the most valid cues (yielding non-compensatory Take The Best behavior).",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    gamma = float(parameters[\"gamma\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Non-linear subjective weighting: w_i = v_i ^ gamma\n    # Validities are in [0.5, 1.0], so base is positive.\n    w = np.maximum(validities, 0.0) ** gamma\n    \n    # Option scores are the weighted sum of features\n    scores = stim @ w\n    \n    # Softmax over scores with inverse temperature beta\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    # Add independent lapse noise\n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+        "parameters": {
+          "gamma": "[0.0, 10.0]",
+          "beta": "[0.1, 15.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the arbiter's suggestion, this theory unifies compensatory and non-compensatory decision-making without relying on a discrete mixture of heuristics. By applying an individual-specific exponent (gamma) to the cue validities, the model can natively capture Tallying (gamma ~ 0), WADD (gamma ~ 1), and Take The Best (gamma >> 1) behaviors within a single, continuous weighted-additive framework. This provides a more robust and elegant explanation for the intermediate TTB matches and varying strategy adoptions observed in the experiments."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_6",
+    "slot": 1,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Threshold-Gated Compensatory Model: Subjects sort cues by their validities and evaluate the numerical gaps between adjacent cues in this sorted order. If the validities are closely clustered, subjects integrate them additively, functioning as a weighted additive model. However, if a gap exceeds a subjective threshold, all subsequent lower-ranked cues are heavily discounted or completely ignored, triggering a shift toward a non-compensatory, semi-lexicographic heuristic. The threshold is sensitive enough to trigger discrete strategy shifts frequently.",
+      "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    gap_threshold = float(parameters[\"gap_threshold\"])\n    discount_factor = float(parameters[\"discount_factor\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Sort validities descending to evaluate gaps\n    order = np.argsort(-validities)\n    sorted_vals = validities[order]\n    \n    w_sorted = np.zeros_like(sorted_vals)\n    if len(sorted_vals) > 0:\n        w_sorted[0] = sorted_vals[0]\n        current_discount = 1.0\n        \n        for i in range(1, len(sorted_vals)):\n            # If the gap between adjacent sorted validities exceeds the threshold, apply discount\n            if (sorted_vals[i-1] - sorted_vals[i]) > gap_threshold:\n                current_discount *= discount_factor\n            w_sorted[i] = sorted_vals[i] * current_discount\n            \n    # Map subjective weights back to original feature order\n    w = np.zeros_like(validities)\n    w[order] = w_sorted\n    \n    # Option scores are the sum of feature values weighted by the threshold-gated subjective weights\n    scores = stim @ w\n    \n    # Softmax over scores with inverse temperature beta\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    # Add independent lapse noise\n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n",
+      "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+      "parameters": {
+        "gap_threshold": "[0.0, 0.3]",
+        "discount_factor": "[0.0, 1.0]",
+        "beta": "[0.1, 25.0]",
+        "epsilon": "[0.0, 0.5]",
+        "validities": "validities"
+      },
+      "rationale": "Applying the minimal edit suggested by the critic: narrowed the `gap_threshold` range to [0.0, 0.3] to ensure the discrete shift triggers more readily for typical validity distributions, and widened `beta` to [0.1, 25.0] to allow for sharper determinism when the non-compensatory heuristic is engaged. The core gap-evaluating mechanism remains unchanged."
+    }
+  }
+}

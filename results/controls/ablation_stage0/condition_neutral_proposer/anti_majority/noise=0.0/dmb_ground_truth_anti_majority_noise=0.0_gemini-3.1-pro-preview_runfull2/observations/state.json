@@ -1,0 +1,2041 @@
+{
+  "rounds": [
+    {
+      "observations": [
+        {
+          "experiment": {
+            "rationale": "To cleanly dissociate Take The Best (TTB) from Tallying, we use 5 features with strictly descending validities. In each trial, one option is favored by the single most valid discriminating cue (which TTB relies on exclusively), while the other option is favored by a greater number of less valid cues (which Tallying simply counts). Thus, TTB and Tallying make opposite predictions on every trial.",
+            "validities": [
+              0.95,
+              0.85,
+              0.75,
+              0.65,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                1
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                0
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    \n    ttb_consistent = 0\n    total = 0\n    for _, row in data.iterrows():\n        a = row['option_a_ratings']\n        b = row['option_b_ratings']\n        \n        # TTB prediction\n        winner = None\n        for j in range(len(a)):\n            if a[j] > b[j]:\n                winner = 0\n                break\n            elif b[j] > a[j]:\n                winner = 1\n                break\n        \n        if winner is not None:\n            if row['response'] == winner:\n                ttb_consistent += 1\n            total += 1\n            \n    return float(ttb_consistent / total) if total > 0 else 0.5",
+            "rationale": "The experimental design carefully constructs trials such that Take The Best and Tallying always make strictly opposite predictions. By calculating the proportion of choices that are consistent with the Take The Best heuristic, we can perfectly separate the two theories: TTB will yield scores near 1.0, whereas Tallying will yield scores near 0.0."
+          },
+          "proposer_theory": {
+            "description": "People compare two options by consulting cues one at a time in order of validity, stopping at the first cue that discriminates between the two options. That cue alone determines the choice: the option with the higher value on the discriminating cue wins, and no other cue is consulted. Cues with lower validity are never reached when a higher-validity cue already discriminates, so Take The Best is a \"one-reason\" decision rule \u2014 only a single feature is ever used on any given choice. Because only the sign of the comparison on the top discriminating cue matters, TTB ignores both the magnitude of that difference and all information on lower-validity cues, making it maximally frugal in the use of evidence. Cue validities are subjective and can be learned, inferred from instructions, or fixed by task structure. When no cue discriminates (all feature-wise comparisons tie) the learner has no basis for preference and must guess. Response noise enters through a softmax over the binary TTB score (winner = 1, loser = 0) with inverse temperature beta, plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+            "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Take The Best (Gigerenzer & Goldstein 1996).\n    # Stimulus is the pair of option feature vectors for the current\n    # trial: array-like of shape (2, n_features), row 0 = option A,\n    # row 1 = option B. Cue cascade: features are consulted in order\n    # of descending validity; the first discriminating cue (strict\n    # inequality) determines the winner; if no cue discriminates,\n    # the model guesses uniformly. History is ignored.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"TTB expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n    n_features = stim.shape[1]\n\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    if val.shape[0] != n_features:\n        raise ValueError(\n            f\"validities length {val.shape[0]} != n_features {n_features}.\"\n        )\n    # Descending validity; argsort is stable so validity ties break\n    # toward the earlier feature index.\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n\n    a, b = stim[0], stim[1]\n    winner = None\n    for j in cue_order:\n        if a[j] > b[j]:\n            winner = 0\n            break\n        if b[j] > a[j]:\n            winner = 1\n            break\n\n    if winner is None:\n        # No discriminating cue \u2014 pure guess.\n        return np.ones(2) / 2.0\n\n    scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. For the\n    # binary TTB score this collapses to sigmoid(beta) for the winner,\n    # giving a direct mapping from beta onto the paper's flip-noise\n    # levels (beta=0 \u2194 50/50; beta \u226b 1 \u2194 deterministic).\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]",
+              "validities": "validities"
+            },
+            "rationale": null
+          },
+          "proposer_label": "pi_1",
+          "real_value": 0.6583333333333333,
+          "real_variance": 0.016649305555555553,
+          "predicted_values": [
+            {
+              "value": 0.8495833333333334,
+              "variance": 0.011658680555555556,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.13145833333333334,
+              "variance": 0.008055078124999998,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.7360416666666667,
+              "variance": 0.030870703125000003,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.715,
+              "variance": 0.021500694444444447,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.7122916666666667,
+              "variance": 0.023098480902777777,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.7777083333333333,
+              "variance": 0.006608550347222223,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.8620833333333333,
+              "variance": 0.007406944444444444,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_000_obs_00.jsonl"
+        },
+        {
+          "experiment": {
+            "rationale": "To cleanly dissociate Tallying from Take The Best (TTB), we use 5 features with strictly descending validities. In each trial, one option is favored by the single most valid discriminating cue (which TTB relies on exclusively), while the other option is favored by a greater number of less valid cues (which Tallying simply counts). We also include variations where the first cue is tied, forcing TTB to rely on the second cue, while Tallying still favors the opposite option based on the remaining cues. Thus, TTB and Tallying make opposite predictions on every trial.",
+            "validities": [
+              0.95,
+              0.85,
+              0.75,
+              0.65,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    \n    a_mat = np.stack(data['option_a_ratings'].values)\n    b_mat = np.stack(data['option_b_ratings'].values)\n    \n    a_wins = np.sum(a_mat > b_mat, axis=1)\n    b_wins = np.sum(b_mat > a_mat, axis=1)\n    \n    tally_pred = np.where(a_wins > b_wins, 0, 1)\n    \n    mask = a_wins != b_wins\n    if not np.any(mask):\n        return 0.5\n        \n    matches = (data['response'].values[mask] == tally_pred[mask])\n    return float(np.mean(matches))",
+            "rationale": "This metric computes the proportion of choices that align with the Tallying heuristic. Tallying and Take The Best (TTB) make opposite predictions on 6 out of the 8 unique trial types in this design. Therefore, a subject using Tallying will have a high score on this metric (close to 1.0, depending on noise), whereas a subject using TTB will consistently choose the opposite on most trials, yielding a low score (around 0.25). Because the metric is an average over ~96 trials per subject, within-subject and between-subject variance will be low, easily distinguishing the two theories."
+          },
+          "proposer_theory": {
+            "description": "People compare two options by counting, across all features, how often one option has a higher value than the other. The option that wins on more features is chosen. Tallying discards cardinal magnitudes \u2014 only the sign of each feature-wise comparison matters \u2014 so the heuristic is robust to monotone rescaling of individual features and cannot be swayed by a single large feature difference in the way Equal-Weight can. Ties on an individual feature contribute nothing to either count: that cue is simply treated as uninformative for the pair. No feature is privileged, in contrast to Take The Best; every cue contributes equally to the tally. When the two counts are equal the heuristic has no basis for preference and the learner must guess. Response noise enters through a softmax over the two tallies with inverse temperature beta (interpolating between fully deterministic choice at large beta and uniform guessing at beta = 0), plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+            "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Tallying heuristic (Dawes 1979; Gigerenzer &\n    # Goldstein 1999). Stimulus is the pair of option feature vectors\n    # for the current trial: array-like of shape (2, n_features),\n    # with row 0 = option A, row 1 = option B. History is ignored.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"Tallying expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n\n    a, b = stim[0], stim[1]\n    # Count strict feature-wise wins; ties contribute to neither option.\n    a_wins = float(np.sum(a > b))\n    b_wins = float(np.sum(b > a))\n    scores = np.array([a_wins, b_wins])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. When\n    # a_wins == b_wins the softmax is exactly uniform regardless of\n    # beta, which is the correct behavior for an undiscriminating\n    # tally.\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]"
+            },
+            "rationale": null
+          },
+          "proposer_label": "pi_2",
+          "real_value": 0.275,
+          "real_variance": 0.019314236111111112,
+          "predicted_values": [
+            {
+              "value": 0.8547916666666666,
+              "variance": 0.006572960069444444,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.3260416666666667,
+              "variance": 0.003929036458333333,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.39375,
+              "variance": 0.01509982638888889,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.44458333333333333,
+              "variance": 0.009771874999999998,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.41083333333333333,
+              "variance": 0.01190173611111111,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.3960416666666667,
+              "variance": 0.002584592013888889,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.318125,
+              "variance": 0.002522612847222222,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_000_obs_01.jsonl"
+        }
+      ],
+      "next_theory": {
+        "description": "The Weighted Additive (WADD) model with non-linear weight scaling posits that decision makers integrate all available information by computing a weighted sum of features. However, the weighting of cues is not strictly proportional to their log-odds validity. Instead, decision makers apply a non-linear transformation (parameterized by gamma) to the log-odds, allowing them to stretch the weight differential. This permits WADD to approximate lexicographic (TTB-like) choice when gamma > 1, or more uniform (Tallying-like) weighting when gamma < 1, while remaining a fully compensatory integration process.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"WADD expects a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Transform validities to log-odds weights, clipping to avoid infinity\n    val_clipped = np.clip(val, 0.5001, 0.9999)\n    log_odds = np.log(val_clipped / (1.0 - val_clipped))\n    \n    gamma = float(parameters[\"gamma\"])\n    w = np.sign(log_odds) * (np.abs(log_odds) ** gamma)\n    \n    # Compute weighted sum for each option\n    score_a = np.sum(w * a)\n    score_b = np.sum(w * b)\n    scores = np.array([score_a, score_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax over the weighted scores\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+        "parameters": {
+          "beta": "[0.1, 10.0]",
+          "epsilon": "[0.0, 0.5]",
+          "gamma": "[0.5, 2.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's advice, we constrained the upper bounds of both `gamma` and `beta`. The previous `gamma` range up to 5.0 allowed the weights to stretch so much that the model over-predicted TTB consistency in Experiment 1. By restricting `gamma` to [0.5, 2.5] and `beta` to [0.1, 10.0], the model is prevented from collapsing into an overly deterministic lexicographic strategy, softening the predictions to better match the empirical mixture of compensatory and non-compensatory behaviors."
+      },
+      "next_theory_idx": 2,
+      "next_theory_label": "pi_3"
+    },
+    {
+      "observations": [
+        {
+          "experiment": {
+            "rationale": "To distinguish Take The Best (TTB) from Weighted Additive (WADD) with non-linear weight scaling, we use four features with varying validities. The trials are designed to contrast the single-cue reliance of TTB against the compensatory integration of WADD. In several trials, the option favored by the single most valid discriminating cue is opposed by multiple less valid cues favoring the other option. By varying the number and validity of the opposing cues, we can identify whether participants evaluate cues sequentially and stop at the first discriminator (TTB) or integrate them compensatorily (WADD). Furthermore, the varying margins of compensation provide a gradient that can estimate the non-linear scaling parameter gamma in the WADD model.",
+            "validities": [
+              0.95,
+              0.85,
+              0.75,
+              0.65
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    comp_choices = 0\n    total = 0\n    \n    for _, row in data.iterrows():\n        a = tuple(row['option_a_ratings'])\n        b = tuple(row['option_b_ratings'])\n        resp = row['response']\n        \n        # Trial 1: A has best cue, B has all others (compensatory is B)\n        if a == (1, 0, 0, 0) and b == (0, 1, 1, 1):\n            comp_choices += (resp == 1)\n            total += 1\n        # Trial 2: B has best cue, A has next two (compensatory is A)\n        elif a == (0, 1, 1, 0) and b == (1, 0, 0, 0):\n            comp_choices += (resp == 0)\n            total += 1\n        # Trial 4: A has best available cue, B has next two (compensatory is B)\n        elif a == (0, 1, 0, 0) and b == (0, 0, 1, 1):\n            comp_choices += (resp == 1)\n            total += 1\n            \n    if total == 0:\n        return 0.0\n    return float(comp_choices / total)",
+            "rationale": "This metric calculates the proportion of choices that favor the 'compensatory' option in trials where a single highly valid cue is opposed by multiple lower-validity cues (Trials 1, 2, and 4). Take The Best (TTB) will almost never choose the compensatory option because it strictly follows the first discriminating cue. Conversely, the Weighted Additive (WADD) model, depending on its non-linear scaling parameter gamma, will frequently choose the compensatory option as the combined weight of the lower-validity cues can outweigh the single best cue. This leads to a substantial difference in the expected value of this metric between the two theories."
+          },
+          "proposer_theory": {
+            "description": "People compare two options by consulting cues one at a time in order of validity, stopping at the first cue that discriminates between the two options. That cue alone determines the choice: the option with the higher value on the discriminating cue wins, and no other cue is consulted. Cues with lower validity are never reached when a higher-validity cue already discriminates, so Take The Best is a \"one-reason\" decision rule \u2014 only a single feature is ever used on any given choice. Because only the sign of the comparison on the top discriminating cue matters, TTB ignores both the magnitude of that difference and all information on lower-validity cues, making it maximally frugal in the use of evidence. Cue validities are subjective and can be learned, inferred from instructions, or fixed by task structure. When no cue discriminates (all feature-wise comparisons tie) the learner has no basis for preference and must guess. Response noise enters through a softmax over the binary TTB score (winner = 1, loser = 0) with inverse temperature beta, plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+            "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Take The Best (Gigerenzer & Goldstein 1996).\n    # Stimulus is the pair of option feature vectors for the current\n    # trial: array-like of shape (2, n_features), row 0 = option A,\n    # row 1 = option B. Cue cascade: features are consulted in order\n    # of descending validity; the first discriminating cue (strict\n    # inequality) determines the winner; if no cue discriminates,\n    # the model guesses uniformly. History is ignored.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"TTB expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n    n_features = stim.shape[1]\n\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    if val.shape[0] != n_features:\n        raise ValueError(\n            f\"validities length {val.shape[0]} != n_features {n_features}.\"\n        )\n    # Descending validity; argsort is stable so validity ties break\n    # toward the earlier feature index.\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n\n    a, b = stim[0], stim[1]\n    winner = None\n    for j in cue_order:\n        if a[j] > b[j]:\n            winner = 0\n            break\n        if b[j] > a[j]:\n            winner = 1\n            break\n\n    if winner is None:\n        # No discriminating cue \u2014 pure guess.\n        return np.ones(2) / 2.0\n\n    scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. For the\n    # binary TTB score this collapses to sigmoid(beta) for the winner,\n    # giving a direct mapping from beta onto the paper's flip-noise\n    # levels (beta=0 \u2194 50/50; beta \u226b 1 \u2194 deterministic).\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]",
+              "validities": "validities"
+            },
+            "rationale": null
+          },
+          "proposer_label": "pi_1",
+          "real_value": 0.22777777777777777,
+          "real_variance": 0.018950617283950616,
+          "predicted_values": [
+            {
+              "value": 0.1361111111111111,
+              "variance": 0.008834876543209875,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.37166666666666665,
+              "variance": 0.09055216049382717,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.8577777777777778,
+              "variance": 0.009741975308641976,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.2911111111111111,
+              "variance": 0.019174074074074076,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.2738888888888889,
+              "variance": 0.04709907407407408,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.24944444444444444,
+              "variance": 0.008163271604938271,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.14166666666666666,
+              "variance": 0.008927469135802469,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_001_obs_00.jsonl"
+        },
+        {
+          "experiment": {
+            "rationale": "To distinguish the Weighted Additive (WADD) model with non-linear weight scaling from the lexicographic Take The Best (TTB) model, we use a 5-feature design with a steep drop-off in validities. TTB evaluates cues strictly sequentially and stops at the first discriminator, ignoring all other cues. WADD integrates all cues, but its non-linear scaling parameter (gamma) determines whether it behaves more like TTB (gamma > 1) or more like Tallying (gamma < 1). By pitting the single highest-validity cue against varying numbers of lower-validity cues, we create compensatory trials where WADD (with low-to-moderate gamma) will choose the option favored by the sum of lower-validity cues, while TTB will stubbornly choose the option favored by the single best cue. Varying the threshold of compensation across trials provides a fine-grained measure to estimate WADD's gamma parameter and clearly separate it from TTB's strict one-reason decision making.",
+            "validities": [
+              0.92,
+              0.82,
+              0.72,
+              0.62,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    # Identify trials where Option A has only 1 positive feature (the most valid one) \n    # and Option B has 3 or 4 positive features (all lower validity).\n    # This corresponds exactly to Trial 1 and Trial 3 in the design.\n    a_sum = data['option_a_ratings'].apply(sum)\n    b_sum = data['option_b_ratings'].apply(sum)\n    mask = (a_sum == 1) & (b_sum >= 3)\n    if not mask.any():\n        return 0.0\n    # Return the proportion of times Option B was chosen (response == 1)\n    return float(data.loc[mask, 'response'].mean())",
+            "rationale": "In Trial 1 and Trial 3, Option A is favored by the single most valid discriminating cue, while Option B is favored by all remaining lower-validity cues. The Take The Best (TTB) model is non-compensatory and strictly follows the single best cue, so it will almost exclusively choose Option A (resulting in a response near 0). The Weighted Additive (WADD) model, however, integrates all cues; depending on its gamma parameter, the sum of the numerous lower-validity cues can outweigh the single best cue, leading to a much higher probability of choosing Option B. This metric isolates these highly compensatory trials and calculates the proportion of B choices, cleanly separating the two theories."
+          },
+          "proposer_theory": {
+            "description": "The Weighted Additive (WADD) model with non-linear weight scaling posits that decision makers integrate all available information by computing a weighted sum of features. However, the weighting of cues is not strictly proportional to their log-odds validity. Instead, decision makers apply a non-linear transformation (parameterized by gamma) to the log-odds, allowing them to stretch the weight differential. This permits WADD to approximate lexicographic (TTB-like) choice when gamma > 1, or more uniform (Tallying-like) weighting when gamma < 1, while remaining a fully compensatory integration process.",
+            "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"WADD expects a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Transform validities to log-odds weights, clipping to avoid infinity\n    val_clipped = np.clip(val, 0.5001, 0.9999)\n    log_odds = np.log(val_clipped / (1.0 - val_clipped))\n    \n    gamma = float(parameters[\"gamma\"])\n    w = np.sign(log_odds) * (np.abs(log_odds) ** gamma)\n    \n    # Compute weighted sum for each option\n    score_a = np.sum(w * a)\n    score_b = np.sum(w * b)\n    scores = np.array([score_a, score_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax over the weighted scores\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+            "parameters": {
+              "beta": "[0.1, 10.0]",
+              "epsilon": "[0.0, 0.5]",
+              "gamma": "[0.5, 2.5]",
+              "validities": "validities"
+            },
+            "rationale": "Following the critic's advice, we constrained the upper bounds of both `gamma` and `beta`. The previous `gamma` range up to 5.0 allowed the weights to stretch so much that the model over-predicted TTB consistency in Experiment 1. By restricting `gamma` to [0.5, 2.5] and `beta` to [0.1, 10.0], the model is prevented from collapsing into an overly deterministic lexicographic strategy, softening the predictions to better match the empirical mixture of compensatory and non-compensatory behaviors."
+          },
+          "proposer_label": "pi_3",
+          "real_value": 0.23333333333333334,
+          "real_variance": 0.027222222222222228,
+          "predicted_values": [
+            {
+              "value": 0.36333333333333334,
+              "variance": 0.07257222222222222,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.14083333333333334,
+              "variance": 0.015825694444444444,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.87,
+              "variance": 0.012058333333333332,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.2808333333333333,
+              "variance": 0.024639583333333336,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.485,
+              "variance": 0.0579,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.29333333333333333,
+              "variance": 0.015136111111111114,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.14,
+              "variance": 0.0079,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_001_obs_01.jsonl"
+        }
+      ],
+      "next_theory": {
+        "description": "Strategy Mixture Theory (TTB + WADD): Decision makers do not universally adopt a single monolithic strategy. Instead, choices are generated from a probabilistic mixture of decision rules. On any given trial, an individual uses a non-compensatory heuristic (Take The Best) with probability 'alpha', and a compensatory strategy (Weighted Additive - WADD) with probability '1 - alpha'. Mixing these strategies captures intermediate rates of compensatory and non-compensatory choices, while WADD leverages cue validities for a more nuanced compensatory evaluation.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    beta = float(parameters[\"beta\"])\n    alpha = float(parameters[\"alpha\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Strategy 1: Take The Best (TTB)\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n    winner_ttb = None\n    for j in cue_order:\n        if a[j] > b[j]:\n            winner_ttb = 0\n            break\n        if b[j] > a[j]:\n            winner_ttb = 1\n            break\n            \n    if winner_ttb is None:\n        p_ttb = np.array([0.5, 0.5])\n    else:\n        scores_ttb = np.array([1.0, 0.0]) if winner_ttb == 0 else np.array([0.0, 1.0])\n        z_ttb = beta * (scores_ttb - scores_ttb.max())\n        e_ttb = np.exp(z_ttb)\n        p_ttb = e_ttb / e_ttb.sum()\n        \n    # Strategy 2: WADD (Weighted Additive)\n    score_a_wadd = np.sum(a * val)\n    score_b_wadd = np.sum(b * val)\n    scores_wadd = np.array([score_a_wadd, score_b_wadd])\n    \n    z_wadd = beta * (scores_wadd - scores_wadd.max())\n    e_wadd = np.exp(z_wadd)\n    p_wadd = e_wadd / e_wadd.sum()\n    \n    # Mixture of the two strategies\n    p_mix = alpha * p_ttb + (1.0 - alpha) * p_wadd\n    \n    # Apply lapse rate\n    n_opts = p_mix.shape[0]\n    p_final = (1.0 - epsilon) * p_mix + epsilon * (np.ones(n_opts) / n_opts)\n    \n    return p_final\n",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+        "parameters": {
+          "alpha": "[0.5, 1.0]",
+          "beta": "[1.0, 20.0]",
+          "epsilon": "[0.0, 0.2]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's advice, I shifted the `alpha` parameter range from [0.0, 1.0] to [0.5, 1.0] to reflect the strong empirical bias toward non-compensatory choices (TTB-like behavior) observed in the data. I also increased the lower bound of `beta` from 0.1 to 1.0 to reduce baseline noise in the softmax functions and prevent the choice probabilities from flattening too much toward 0.5."
+      },
+      "next_theory_idx": 1,
+      "next_theory_label": "pi_4"
+    },
+    {
+      "observations": [
+        {
+          "experiment": {
+            "rationale": "To maximally distinguish Theory 1 (Mixture of TTB and linear WADD) from Theory 2 (Non-linear WADD), we exploit a fundamental difference in how they weight cues. Theory 1's WADD component uses raw validities as linear weights, while Theory 2 transforms validities into log-odds before applying a non-linear scaling parameter (gamma). Because raw validities are bounded between 0.5 and 1.0, their sum grows quickly, making linear WADD strongly favor options with more positive cues (Tallying-like behavior). In contrast, log-odds can be heavily skewed (e.g., a 0.92 validity has a much higher log-odds than a 0.72 validity), meaning Theory 2 can easily favor the single best cue even without a strict TTB mechanism, especially when gamma > 1. By pitting the highest-validity cue against various combinations of lower-validity cues, we create trials where the raw validity sum strongly opposes the highest cue, but the log-odds sum (depending on gamma) may still favor it. The pattern of choices across these specific trade-offs will differentiate a probabilistic mixture of step-function TTB and linear WADD from a deterministic, non-linearly scaled log-odds WADD.",
+            "validities": [
+              0.92,
+              0.82,
+              0.72,
+              0.62,
+              0.52
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                0,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    data = data.copy()\n    data['A_str'] = data['option_a_ratings'].apply(lambda x: ''.join(map(str, x)))\n    data['B_str'] = data['option_b_ratings'].apply(lambda x: ''.join(map(str, x)))\n    \n    def get_p_a(a_str, b_str):\n        mask1 = (data['A_str'] == a_str) & (data['B_str'] == b_str)\n        mask2 = (data['A_str'] == b_str) & (data['B_str'] == a_str)\n        \n        chose_a = 0\n        total = 0\n        \n        if mask1.any():\n            chose_a += (data.loc[mask1, 'response'] == 0).sum()\n            total += mask1.sum()\n        if mask2.any():\n            chose_a += (data.loc[mask2, 'response'] == 1).sum()\n            total += mask2.sum()\n            \n        if total == 0:\n            return 0.5\n        return chose_a / total\n\n    # Trial 8: Concordant for Strategy Mixture, weak advantage for NL-WADD\n    p_a_t8 = get_p_a('10011', '01100')\n    \n    # Trial 7: Discordant for Strategy Mixture, massive advantage for NL-WADD\n    p_a_t7 = get_p_a('11000', '00111')\n    \n    return float(p_a_t8 - p_a_t7)",
+            "rationale": "This metric exploits a perfect reversal in cue weighting between Linear WADD (used in Strategy Mixture) and Non-Linear WADD.\n\nIn Trial 8 (10011 vs 01100), Linear WADD sums raw validities and strictly favors Option A (2.06 vs 1.54). Since Take-The-Best (TTB) also favors A, the Strategy Mixture model predicts a very high P(A). In Trial 7 (11000 vs 00111), Linear WADD favors Option B (1.74 vs 1.86), opposing TTB. Consequently, the Strategy Mixture model's P(A) drops to roughly the mixture parameter 'alpha'. Thus, Strategy Mixture predicts P(A|T8) - P(A|T7) > 0.\n\nIn contrast, Non-Linear WADD transforms validities to log-odds. In Trial 7, Option A possesses the top two cues, which under log-odds scaling sum to a massive, insurmountable advantage over the bottom three cues for any gamma > 0. In Trial 8, Option B holds the strong second cue, making the contest much closer. Therefore, Non-Linear WADD predicts a stronger preference for A in Trial 7 than in Trial 8, yielding P(A|T8) - P(A|T7) < 0.\n\nThis robust sign flip clearly discriminates the two theories."
+          },
+          "proposer_theory": {
+            "description": "Strategy Mixture Theory (TTB + WADD): Decision makers do not universally adopt a single monolithic strategy. Instead, choices are generated from a probabilistic mixture of decision rules. On any given trial, an individual uses a non-compensatory heuristic (Take The Best) with probability 'alpha', and a compensatory strategy (Weighted Additive - WADD) with probability '1 - alpha'. Mixing these strategies captures intermediate rates of compensatory and non-compensatory choices, while WADD leverages cue validities for a more nuanced compensatory evaluation.",
+            "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    beta = float(parameters[\"beta\"])\n    alpha = float(parameters[\"alpha\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Strategy 1: Take The Best (TTB)\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n    winner_ttb = None\n    for j in cue_order:\n        if a[j] > b[j]:\n            winner_ttb = 0\n            break\n        if b[j] > a[j]:\n            winner_ttb = 1\n            break\n            \n    if winner_ttb is None:\n        p_ttb = np.array([0.5, 0.5])\n    else:\n        scores_ttb = np.array([1.0, 0.0]) if winner_ttb == 0 else np.array([0.0, 1.0])\n        z_ttb = beta * (scores_ttb - scores_ttb.max())\n        e_ttb = np.exp(z_ttb)\n        p_ttb = e_ttb / e_ttb.sum()\n        \n    # Strategy 2: WADD (Weighted Additive)\n    score_a_wadd = np.sum(a * val)\n    score_b_wadd = np.sum(b * val)\n    scores_wadd = np.array([score_a_wadd, score_b_wadd])\n    \n    z_wadd = beta * (scores_wadd - scores_wadd.max())\n    e_wadd = np.exp(z_wadd)\n    p_wadd = e_wadd / e_wadd.sum()\n    \n    # Mixture of the two strategies\n    p_mix = alpha * p_ttb + (1.0 - alpha) * p_wadd\n    \n    # Apply lapse rate\n    n_opts = p_mix.shape[0]\n    p_final = (1.0 - epsilon) * p_mix + epsilon * (np.ones(n_opts) / n_opts)\n    \n    return p_final\n",
+            "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+            "parameters": {
+              "alpha": "[0.5, 1.0]",
+              "beta": "[1.0, 20.0]",
+              "epsilon": "[0.0, 0.2]",
+              "validities": "validities"
+            },
+            "rationale": "Following the critic's advice, I shifted the `alpha` parameter range from [0.0, 1.0] to [0.5, 1.0] to reflect the strong empirical bias toward non-compensatory choices (TTB-like behavior) observed in the data. I also increased the lower bound of `beta` from 0.1 to 1.0 to reduce baseline noise in the softmax functions and prevent the choice probabilities from flattening too much toward 0.5."
+          },
+          "proposer_label": "pi_4",
+          "real_value": -0.39,
+          "real_variance": 0.18914999999999998,
+          "predicted_values": [
+            {
+              "value": 0.16249999999999998,
+              "variance": 0.04703125000000001,
+              "label": "pi_4"
+            },
+            {
+              "value": -0.01749999999999996,
+              "variance": 0.035006249999999996,
+              "label": "pi_3"
+            },
+            {
+              "value": -0.012499999999999956,
+              "variance": 0.03015625,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.745,
+              "variance": 0.06810000000000001,
+              "label": "pi_2"
+            },
+            {
+              "value": -0.10999999999999999,
+              "variance": 0.0554,
+              "label": "pi_5"
+            },
+            {
+              "value": -0.01750000000000007,
+              "variance": 0.03000625,
+              "label": "pi_6"
+            },
+            {
+              "value": -0.014999999999999902,
+              "variance": 0.026025,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_002_obs_00.jsonl"
+        },
+        {
+          "experiment": {
+            "rationale": "To maximally distinguish Theory 1 (Non-linear log-odds WADD) from Theory 2 (Mixture of TTB and Linear WADD), we exploit the fundamental difference in how they weight cues. Theory 2's WADD component uses raw validities as linear weights, which sums up quickly and strongly favors options with more positive cues (similar to Tallying). Theory 1 transforms validities into log-odds before applying a non-linear scaling parameter (gamma). Because log-odds grow asymptotically as validity approaches 1.0, Theory 1 can strongly favor a single highly valid cue over multiple moderately valid cues, even without a strict TTB mechanism. By creating trials where the linear sum of raw validities strongly opposes the highest cue, but the log-odds sum supports it (or vice-versa depending on the exact combination), we can cleanly separate the probabilistic mixture of step-function TTB and linear WADD from the deterministic, non-linearly scaled log-odds WADD.",
+            "validities": [
+              0.93,
+              0.85,
+              0.75,
+              0.65,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                1
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    a_str = data['option_a_ratings'].apply(lambda x: ''.join(map(str, x)))\n    b_str = data['option_b_ratings'].apply(lambda x: ''.join(map(str, x)))\n    \n    t7_a = (a_str == '10100') & (b_str == '01011')\n    t7_b = (a_str == '01011') & (b_str == '10100')\n    \n    t36_a = (a_str == '10000') & (b_str == '01111')\n    t36_b = (a_str == '01111') & (b_str == '10000')\n    \n    t7_ttb = pd.concat([\n        data.loc[t7_a, 'response'] == 0,\n        data.loc[t7_b, 'response'] == 1\n    ])\n    \n    t36_ttb = pd.concat([\n        data.loc[t36_a, 'response'] == 0,\n        data.loc[t36_b, 'response'] == 1\n    ])\n    \n    t7_rate = t7_ttb.mean() if len(t7_ttb) > 0 else 0.5\n    t36_rate = t36_ttb.mean() if len(t36_ttb) > 0 else 0.5\n    \n    return float(t7_rate - t36_rate)",
+            "rationale": "This metric calculates the difference in the rate of choosing the TTB-favored option between Trial 7 and Trials 3/6. Under the Competing theory (Strategy Mixture), the agent mixes between TTB and Linear WADD. In both Trial 7 and Trials 3/6, Linear WADD strongly favors the non-TTB option. Thus, the agent only chooses the TTB option when using the TTB heuristic, which happens with probability 'alpha'. Because 'alpha' is consistent, the difference in TTB choice rate between these trials is near 0. Under the Advocated theory (Non-linear log-odds WADD), the decision depends on the non-linear scaling of log-odds validities. In Trial 7, the log-odds of the TTB option's cues are strong enough to outweigh the opposing cues for ANY value of the scaling parameter 'gamma', leading to a consistently high TTB choice rate (~1.0). In Trials 3/6, the TTB option has only the top cue against all four other cues; for smaller values of 'gamma', the sum of the four non-TTB cues outweighs the top cue, pulling the average TTB choice rate down significantly. Therefore, the Advocated theory predicts a large positive difference."
+          },
+          "proposer_theory": {
+            "description": "The Weighted Additive (WADD) model with non-linear weight scaling posits that decision makers integrate all available information by computing a weighted sum of features. However, the weighting of cues is not strictly proportional to their log-odds validity. Instead, decision makers apply a non-linear transformation (parameterized by gamma) to the log-odds, allowing them to stretch the weight differential. This permits WADD to approximate lexicographic (TTB-like) choice when gamma > 1, or more uniform (Tallying-like) weighting when gamma < 1, while remaining a fully compensatory integration process.",
+            "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"WADD expects a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Transform validities to log-odds weights, clipping to avoid infinity\n    val_clipped = np.clip(val, 0.5001, 0.9999)\n    log_odds = np.log(val_clipped / (1.0 - val_clipped))\n    \n    gamma = float(parameters[\"gamma\"])\n    w = np.sign(log_odds) * (np.abs(log_odds) ** gamma)\n    \n    # Compute weighted sum for each option\n    score_a = np.sum(w * a)\n    score_b = np.sum(w * b)\n    scores = np.array([score_a, score_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax over the weighted scores\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+            "parameters": {
+              "beta": "[0.1, 10.0]",
+              "epsilon": "[0.0, 0.5]",
+              "gamma": "[0.5, 2.5]",
+              "validities": "validities"
+            },
+            "rationale": "Following the critic's advice, we constrained the upper bounds of both `gamma` and `beta`. The previous `gamma` range up to 5.0 allowed the weights to stretch so much that the model over-predicted TTB consistency in Experiment 1. By restricting `gamma` to [0.5, 2.5] and `beta` to [0.1, 10.0], the model is prevented from collapsing into an overly deterministic lexicographic strategy, softening the predictions to better match the empirical mixture of compensatory and non-compensatory behaviors."
+          },
+          "proposer_label": "pi_3",
+          "real_value": -0.19833333333333336,
+          "real_variance": 0.1422611111111111,
+          "predicted_values": [
+            {
+              "value": 0.22416666666666663,
+              "variance": 0.1096451388888889,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.0,
+              "variance": 0.020902777777777777,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.01749999999999996,
+              "variance": 0.019797916666666665,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.024999999999999994,
+              "variance": 0.024097222222222225,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.3383333333333333,
+              "variance": 0.09226666666666666,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.01666666666666672,
+              "variance": 0.017638888888888888,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.015833333333333366,
+              "variance": 0.012561805555555557,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_002_obs_01.jsonl"
+        }
+      ],
+      "next_theory": {
+        "description": "Cue Difference Threshold Theory: Decision-makers evaluate options lexicographically but demand that the best discriminating cue provides a decisive advantage. A cue is deemed decisive if its validity exceeds the best opposing cue by a sufficient threshold, or if the sheer number of opposing cues is small enough (below a tallying deficit limit). If the top cue's advantage is challenged by a concentrated block of moderately high opposing cues (failing both conditions), the decision-maker abandons the non-compensatory heuristic and falls back to a compensatory Weighted Additive (WADD) process to resolve the choice.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    threshold = float(parameters[\"threshold\"])\n    deficit_limit = int(parameters[\"deficit_limit\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Identify which cues favor which option\n    favor_a = (a > b)\n    favor_b = (b > a)\n    \n    max_val_a = np.max(val[favor_a]) if np.any(favor_a) else 0.0\n    max_val_b = np.max(val[favor_b]) if np.any(favor_b) else 0.0\n    \n    winner_ttb = 0 if max_val_a > max_val_b else (1 if max_val_b > max_val_a else None)\n    \n    if winner_ttb is not None:\n        # Number of cues favoring the TTB loser\n        num_opposing = np.sum(favor_b) if winner_ttb == 0 else np.sum(favor_a)\n        \n        # Two conditions for TTB to be considered decisive:\n        # 1. The validity difference between the best cues of each option is large enough.\n        # 2. The number of opposing cues is within the acceptable deficit limit.\n        cue_diff_decisive = abs(max_val_a - max_val_b) >= threshold\n        deficit_ok = num_opposing <= deficit_limit\n        \n        if cue_diff_decisive or deficit_ok:\n            # Decisive advantage: stick to TTB\n            scores = np.array([1.0, 0.0]) if winner_ttb == 0 else np.array([0.0, 1.0])\n        else:\n            # Not decisive: fall back to compensatory WADD\n            val_clipped = np.clip(val, 0.5001, 0.9999)\n            log_odds = np.log(val_clipped / (1.0 - val_clipped))\n            score_a = np.sum(log_odds * a)\n            score_b = np.sum(log_odds * b)\n            \n            # Normalize compensatory scores by total weight to keep the scale \n            # comparable to the [0, 1] TTB scores for the softmax temperature.\n            total_w = np.sum(log_odds)\n            scores = np.array([score_a, score_b]) / total_w if total_w > 0 else np.array([0.5, 0.5])\n    else:\n        scores = np.array([0.5, 0.5])\n        \n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = p_core.shape[0]\n    p_final = (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n    \n    return p_final",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))",
+        "parameters": {
+          "threshold": "[0.0, 1.0]",
+          "deficit_limit": "{0, 1, 2, 3, 4, 5}",
+          "beta": "[0.1, 25.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Reverting to the exact hard-gating mechanism from the accepted Iteration 1 base, which performed best so far. We retain the WADD fallback and boolean switch (cue difference decisive OR deficit OK). To give the optimizer more flexibility to fit the hard thresholds without breaking the mechanism family, the parameter ranges for `beta` and `threshold` are widened, while preserving the random lapse rate (`epsilon`) at the end of the calculation."
+      },
+      "next_theory_idx": 2,
+      "next_theory_label": "pi_5"
+    },
+    {
+      "observations": [
+        {
+          "experiment": {
+            "rationale": "To distinguish Theory 1 (Strategy Mixture: TTB + Linear WADD) from Theory 2 (Cue Difference Threshold: TTB with a fallback to Log-Odds WADD), we exploit the non-linear nature of log-odds compared to raw validities. We use a set of validities with one extreme high value (0.99) and several moderate values. Because log-odds grow asymptotically as validity approaches 1.0, the single 0.99 cue has a massive log-odds weight (approx 4.60) compared to the moderate cues, but a small linear weight (0.99). In critical trials, we pit the 0.99 cue against multiple moderate cues such that the linear sum strongly favors the moderate cues, but the log-odds sum still favors the single 0.99 cue. Theory 2 will either stick to TTB or fall back to log-odds WADD\u2014both of which favor the 0.99 cue, leading to a deterministic choice. Theory 1, however, will mix TTB (favoring the 0.99 cue) and Linear WADD (favoring the moderate cues), predicting a mixed response rate. We also vary the top cue difference and the number of opposing cues to trigger Theory 2's threshold and deficit limit fallback conditions differentially.",
+            "validities": [
+              0.99,
+              0.85,
+              0.8,
+              0.75,
+              0.6
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                0,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                1,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    \n    a_ratings = np.array(data['option_a_ratings'].tolist())\n    b_ratings = np.array(data['option_b_ratings'].tolist())\n    responses = data['response'].values\n    \n    val = np.array([0.99, 0.85, 0.8, 0.75, 0.6])\n    diff = a_ratings - b_ratings\n    \n    first_diff_idx = np.argmax(diff != 0, axis=1)\n    ttb_winner = np.where(diff[np.arange(len(diff)), first_diff_idx] > 0, 0, 1)\n    \n    val_clipped = np.clip(val, 0.5001, 0.9999)\n    log_odds = np.log(val_clipped / (1.0 - val_clipped))\n    lo_score_a = a_ratings @ log_odds\n    lo_score_b = b_ratings @ log_odds\n    lo_winner = np.where(lo_score_a > lo_score_b, 0, 1)\n    \n    lin_score_a = a_ratings @ val\n    lin_score_b = b_ratings @ val\n    lin_winner = np.where(lin_score_a > lin_score_b, 0, 1)\n    \n    group1_mask = (ttb_winner == lo_winner) & (ttb_winner != lin_winner)\n    group2_mask = (ttb_winner != lo_winner) & (ttb_winner != lin_winner)\n    \n    if np.sum(group1_mask) == 0 or np.sum(group2_mask) == 0:\n        return 0.0\n        \n    rate1 = np.mean(responses[group1_mask] == ttb_winner[group1_mask])\n    rate2 = np.mean(responses[group2_mask] == ttb_winner[group2_mask])\n    \n    return float(rate1 - rate2)",
+            "rationale": "This metric leverages a difference-in-differences approach to cancel out subject-specific variance. We isolate two groups of trials where Linear WADD opposes Take The Best (TTB). In Group 1, Log-Odds WADD agrees with TTB; in Group 2, Log-Odds WADD opposes TTB. Theory 1 (Strategy Mixture) mixes TTB and Linear WADD, so its probability of choosing the TTB winner is roughly the mixing parameter 'alpha' in both groups, yielding a difference near 0. Theory 2 (Cue Difference Threshold) relies on TTB but falls back to Log-Odds WADD. In Group 1, both TTB and the fallback strategy agree, leading to a high TTB choice rate. In Group 2, the fallback strategy opposes TTB, dragging the TTB choice rate down. Thus, Theory 2 predicts a substantially positive difference between the two groups, discriminating the theories cleanly."
+          },
+          "proposer_theory": {
+            "description": "Strategy Mixture Theory (TTB + WADD): Decision makers do not universally adopt a single monolithic strategy. Instead, choices are generated from a probabilistic mixture of decision rules. On any given trial, an individual uses a non-compensatory heuristic (Take The Best) with probability 'alpha', and a compensatory strategy (Weighted Additive - WADD) with probability '1 - alpha'. Mixing these strategies captures intermediate rates of compensatory and non-compensatory choices, while WADD leverages cue validities for a more nuanced compensatory evaluation.",
+            "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    beta = float(parameters[\"beta\"])\n    alpha = float(parameters[\"alpha\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Strategy 1: Take The Best (TTB)\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n    winner_ttb = None\n    for j in cue_order:\n        if a[j] > b[j]:\n            winner_ttb = 0\n            break\n        if b[j] > a[j]:\n            winner_ttb = 1\n            break\n            \n    if winner_ttb is None:\n        p_ttb = np.array([0.5, 0.5])\n    else:\n        scores_ttb = np.array([1.0, 0.0]) if winner_ttb == 0 else np.array([0.0, 1.0])\n        z_ttb = beta * (scores_ttb - scores_ttb.max())\n        e_ttb = np.exp(z_ttb)\n        p_ttb = e_ttb / e_ttb.sum()\n        \n    # Strategy 2: WADD (Weighted Additive)\n    score_a_wadd = np.sum(a * val)\n    score_b_wadd = np.sum(b * val)\n    scores_wadd = np.array([score_a_wadd, score_b_wadd])\n    \n    z_wadd = beta * (scores_wadd - scores_wadd.max())\n    e_wadd = np.exp(z_wadd)\n    p_wadd = e_wadd / e_wadd.sum()\n    \n    # Mixture of the two strategies\n    p_mix = alpha * p_ttb + (1.0 - alpha) * p_wadd\n    \n    # Apply lapse rate\n    n_opts = p_mix.shape[0]\n    p_final = (1.0 - epsilon) * p_mix + epsilon * (np.ones(n_opts) / n_opts)\n    \n    return p_final\n",
+            "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+            "parameters": {
+              "alpha": "[0.5, 1.0]",
+              "beta": "[1.0, 20.0]",
+              "epsilon": "[0.0, 0.2]",
+              "validities": "validities"
+            },
+            "rationale": "Following the critic's advice, I shifted the `alpha` parameter range from [0.0, 1.0] to [0.5, 1.0] to reflect the strong empirical bias toward non-compensatory choices (TTB-like behavior) observed in the data. I also increased the lower bound of `beta` from 0.1 to 1.0 to reduce baseline noise in the softmax functions and prevent the choice probabilities from flattening too much toward 0.5."
+          },
+          "proposer_label": "pi_4",
+          "real_value": -0.06977777777777783,
+          "real_variance": 0.04050143209876542,
+          "predicted_values": [
+            {
+              "value": 0.00477777777777777,
+              "variance": 0.009541987654320988,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.1547777777777778,
+              "variance": 0.035229641975308645,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.005777777777777771,
+              "variance": 0.004791308641975309,
+              "label": "pi_1"
+            },
+            {
+              "value": -0.004555555555555535,
+              "variance": 0.006267518518518518,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.2524444444444444,
+              "variance": 0.02111624691358025,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.21677777777777785,
+              "variance": 0.008772209876543209,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.049555555555555575,
+              "variance": 0.008487456790123457,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_003_obs_00.jsonl"
+        },
+        {
+          "experiment": {
+            "rationale": "To cleanly dissociate Theory 1 (Cue Difference Threshold with log-odds WADD fallback) from Theory 2 (Mixture of TTB and linear WADD), we exploit the difference between log-odds weighting and linear weighting, as well as the threshold-triggered fallback mechanism. We use five features with a wide spread of validities. Because log-odds grow non-linearly, the highest validity cue (0.95) has a massive log-odds weight compared to moderate cues, but a relatively small linear weight advantage. In trials where the 0.95 cue is pitted against several moderate cues (e.g., 0.75, 0.65, 0.55), the linear sum strongly favors the moderate cues (Linear WADD), while the log-odds sum still favors the 0.95 cue. Theory 1 will either stick to TTB or fall back to log-odds WADD\u2014both of which favor the single highest cue, resulting in a deterministic choice. Theory 2, however, mixes TTB (favoring the top cue) and Linear WADD (favoring the multiple moderate cues), predicting a mixed response. By varying the difference between the top cues and the number of opposing cues, we can also map out the threshold and deficit limit parameters of Theory 1.",
+            "validities": [
+              0.95,
+              0.85,
+              0.75,
+              0.65,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                0,
+                0
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    data['A_str'] = data['option_a_ratings'].apply(lambda x: ''.join(map(str, map(int, x))))\n    data['B_str'] = data['option_b_ratings'].apply(lambda x: ''.join(map(str, map(int, x))))\n    \n    group_x_pairs = {\n        frozenset(['10000', '00111']),\n        frozenset(['01000', '00110']),\n        frozenset(['00100', '00011'])\n    }\n    \n    group_y_pairs = {\n        frozenset(['10000', '01111']),\n        frozenset(['01000', '00111'])\n    }\n    \n    def get_single_cue_chosen(row):\n        a_is_single = sum(row['option_a_ratings']) == 1\n        if a_is_single:\n            return 1.0 if row['response'] == 0 else 0.0\n        else:\n            return 1.0 if row['response'] == 1 else 0.0\n\n    is_x = data.apply(lambda row: frozenset([row['A_str'], row['B_str']]) in group_x_pairs, axis=1)\n    is_y = data.apply(lambda row: frozenset([row['A_str'], row['B_str']]) in group_y_pairs, axis=1)\n    \n    x_trials = data[is_x]\n    y_trials = data[is_y]\n    \n    if len(x_trials) == 0 or len(y_trials) == 0:\n        return 0.0\n        \n    p_x = x_trials.apply(get_single_cue_chosen, axis=1).mean()\n    p_y = y_trials.apply(get_single_cue_chosen, axis=1).mean()\n    \n    return float(p_x - p_y)",
+            "rationale": "By comparing trials where the log-odds WADD fallback favors the single-cue option (Group X) versus trials where the log-odds WADD fallback flips to favoring the multiple-cue option (Group Y), we can heavily penalize Theory 1's fallback mechanism. Theory 1 will show a massive drop in the rate of choosing the single-cue option from Group X to Group Y. Theory 2 uses linear WADD as its compensatory mechanism, which strongly favors the multiple-cue option in BOTH groups, meaning its choice probabilities will be much more stable across these two sets of trials."
+          },
+          "proposer_theory": {
+            "description": "Cue Difference Threshold Theory: Decision-makers evaluate options lexicographically but demand that the best discriminating cue provides a decisive advantage. A cue is deemed decisive if its validity exceeds the best opposing cue by a sufficient threshold, or if the sheer number of opposing cues is small enough (below a tallying deficit limit). If the top cue's advantage is challenged by a concentrated block of moderately high opposing cues (failing both conditions), the decision-maker abandons the non-compensatory heuristic and falls back to a compensatory Weighted Additive (WADD) process to resolve the choice.",
+            "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    threshold = float(parameters[\"threshold\"])\n    deficit_limit = int(parameters[\"deficit_limit\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Identify which cues favor which option\n    favor_a = (a > b)\n    favor_b = (b > a)\n    \n    max_val_a = np.max(val[favor_a]) if np.any(favor_a) else 0.0\n    max_val_b = np.max(val[favor_b]) if np.any(favor_b) else 0.0\n    \n    winner_ttb = 0 if max_val_a > max_val_b else (1 if max_val_b > max_val_a else None)\n    \n    if winner_ttb is not None:\n        # Number of cues favoring the TTB loser\n        num_opposing = np.sum(favor_b) if winner_ttb == 0 else np.sum(favor_a)\n        \n        # Two conditions for TTB to be considered decisive:\n        # 1. The validity difference between the best cues of each option is large enough.\n        # 2. The number of opposing cues is within the acceptable deficit limit.\n        cue_diff_decisive = abs(max_val_a - max_val_b) >= threshold\n        deficit_ok = num_opposing <= deficit_limit\n        \n        if cue_diff_decisive or deficit_ok:\n            # Decisive advantage: stick to TTB\n            scores = np.array([1.0, 0.0]) if winner_ttb == 0 else np.array([0.0, 1.0])\n        else:\n            # Not decisive: fall back to compensatory WADD\n            val_clipped = np.clip(val, 0.5001, 0.9999)\n            log_odds = np.log(val_clipped / (1.0 - val_clipped))\n            score_a = np.sum(log_odds * a)\n            score_b = np.sum(log_odds * b)\n            \n            # Normalize compensatory scores by total weight to keep the scale \n            # comparable to the [0, 1] TTB scores for the softmax temperature.\n            total_w = np.sum(log_odds)\n            scores = np.array([score_a, score_b]) / total_w if total_w > 0 else np.array([0.5, 0.5])\n    else:\n        scores = np.array([0.5, 0.5])\n        \n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = p_core.shape[0]\n    p_final = (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n    \n    return p_final",
+            "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))",
+            "parameters": {
+              "threshold": "[0.0, 1.0]",
+              "deficit_limit": "{0, 1, 2, 3, 4, 5}",
+              "beta": "[0.1, 25.0]",
+              "epsilon": "[0.0, 0.5]",
+              "validities": "validities"
+            },
+            "rationale": "Reverting to the exact hard-gating mechanism from the accepted Iteration 1 base, which performed best so far. We retain the WADD fallback and boolean switch (cue difference decisive OR deficit OK). To give the optimizer more flexibility to fit the hard thresholds without breaking the mechanism family, the parameter ranges for `beta` and `threshold` are widened, while preserving the random lapse rate (`epsilon`) at the end of the calculation."
+          },
+          "proposer_label": "pi_5",
+          "real_value": -0.1433333333333333,
+          "real_variance": 0.06616851851851853,
+          "predicted_values": [
+            {
+              "value": 0.18694444444444447,
+              "variance": 0.037069521604938274,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.03722222222222216,
+              "variance": 0.011345987654320988,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.004722222222222294,
+              "variance": 0.006918287037037038,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.04722222222222221,
+              "variance": 0.006875,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.12694444444444442,
+              "variance": 0.05764668209876543,
+              "label": "pi_3"
+            },
+            {
+              "value": -0.060833333333333406,
+              "variance": 0.01347908950617284,
+              "label": "pi_6"
+            },
+            {
+              "value": -0.03833333333333333,
+              "variance": 0.010220370370370371,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_003_obs_01.jsonl"
+        }
+      ],
+      "next_theory": {
+        "description": "Rank-Dependent Tallying: Decision-makers primarily evaluate options based on the sheer number of positive features (a tallying-like process), but the weight of each feature is subject to rank-based discounting. Rather than scaling exponentially with log-odds, a feature's weight decays as a power law of its validity rank. This ensures a strong compensatory mechanism where multiple moderate cues can easily overpower a single high-validity cue, and tallying differences dominate choice probabilities unless the validity rank differences are extreme.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    gamma = float(parameters[\"gamma\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Assign ranks to features based on validity (1 = highest validity)\n    n_features = len(val)\n    order = np.argsort(-val, kind=\"stable\")\n    ranks = np.zeros(n_features)\n    ranks[order] = np.arange(1, n_features + 1)\n    \n    # Rank-based discounting: weight decays as an inverse power of rank\n    w = 1.0 / (ranks ** gamma)\n    \n    # Compute weighted tally for each option\n    score_a = np.sum(w * a)\n    score_b = np.sum(w * b)\n    scores = np.array([score_a, score_b])\n    \n    # Softmax choice rule\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = p_core.shape[0]\n    p_final = (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n    \n    return p_final\n",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+        "parameters": {
+          "gamma": "[2.0, 8.0]",
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Shifted the `gamma` parameter range even higher to `[2.0, 8.0]` as suggested by the critic. This further steepens the power-law decay of cue weights, penalizing lower-ranked cues more heavily. This reduces the still slightly excessive compensatory behavior observed in the previous iteration and brings the model's predictions closer to the empirical data in Experiments 2 and 4."
+      },
+      "next_theory_idx": 2,
+      "next_theory_label": "pi_6"
+    },
+    {
+      "observations": [
+        {
+          "experiment": {
+            "rationale": "Theory 1 predicts choices as a probabilistic mixture of Take-The-Best (TTB) and a Linear Weighted Additive rule (WADD). Because Linear WADD uses raw validities as weights, it is strongly compensatory: the sum of several moderate validities easily exceeds a single high validity. Theory 2, on the other hand, uses rank-dependent tallying where the weight of a feature decays as an inverse power of its rank (gamma >= 2.0). Mathematically, for any gamma >= 2.0, the weight of the highest-ranked feature (1.0) is strictly greater than the sum of all subsequent feature weights combined (which maxes out at ~0.645). Thus, Theory 2 acts as a deterministic, strictly non-compensatory lexicographic model (essentially a pure TTB rule). By pitting the highest-validity discriminating cue against multiple lower-validity cues, we can cleanly separate the two theories: Theory 2 will uniformly choose the option favored by the single best cue, while Theory 1 will exhibit a mixed response profile reflecting its compensatory WADD component.",
+            "validities": [
+              0.95,
+              0.85,
+              0.8,
+              0.75,
+              0.7
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                1,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    \n    A = np.stack(data['option_a_ratings'].values)\n    B = np.stack(data['option_b_ratings'].values)\n    resp = data['response'].values\n    \n    # Identify TTB predictions\n    diff = A - B\n    diff_bool = diff != 0\n    first_diff_idx = diff_bool.argmax(axis=1)\n    first_diff_val = diff[np.arange(len(diff)), first_diff_idx]\n    ttb_winner = np.where(first_diff_val > 0, 0, 1)\n    \n    # Identify WADD predictions\n    validities = np.array([0.95, 0.85, 0.8, 0.75, 0.7])\n    wadd_diff = (A - B).dot(validities)\n    wadd_winner = np.where(wadd_diff > 0, 0, 1)\n    \n    # Restrict to trials where TTB and WADD make opposite predictions\n    disagree = (ttb_winner != wadd_winner) & diff_bool.any(axis=1)\n    \n    # Group 1: Disagree trials where the highest valid cue (Cue 0) discriminates\n    group1 = disagree & (first_diff_idx == 0)\n    \n    # Group 2: Disagree trials where Cue 0 is tied, so Cue 1 discriminates\n    group2 = disagree & (first_diff_idx == 1)\n    \n    if np.sum(group1) == 0 or np.sum(group2) == 0:\n        return 0.0\n        \n    # Calculate TTB match rate in both groups\n    match1 = np.mean(resp[group1] == ttb_winner[group1])\n    match2 = np.mean(resp[group2] == ttb_winner[group2])\n    \n    # The contrast is the difference in TTB match rate\n    return float(match1 - match2)",
+            "rationale": "In Theory 1 (Strategy Mixture), choices on disagree trials are a probabilistic mixture of TTB and WADD. Because both strategies are locally highly deterministic on these trials, the probability of choosing the TTB-favored option is simply the mixture parameter 'alpha', regardless of whether the first or second cue discriminates. Thus, Theory 1 predicts the TTB match rate will be identical across Group 1 and Group 2, making the difference ~0. \n\nIn Theory 2 (Rank-Dependent Tallying), the decision relies on the difference in weighted tallies. When Cue 0 discriminates (Group 1), the score difference is massive (e.g. ~0.65), leading to a high TTB match rate. However, when Cue 0 is tied and Cue 1 discriminates (Group 2), the weight of Cue 1 (0.25) barely exceeds the sum of the remaining cues (0.2135), resulting in a tiny score difference (0.0365). Because Theory 2 uses a softmax rule, this tiny difference pushes the choice probability very close to 50%. Thus, Theory 2 predicts a drastically lower TTB match rate in Group 2 compared to Group 1, yielding a strongly positive difference."
+          },
+          "proposer_theory": {
+            "description": "Strategy Mixture Theory (TTB + WADD): Decision makers do not universally adopt a single monolithic strategy. Instead, choices are generated from a probabilistic mixture of decision rules. On any given trial, an individual uses a non-compensatory heuristic (Take The Best) with probability 'alpha', and a compensatory strategy (Weighted Additive - WADD) with probability '1 - alpha'. Mixing these strategies captures intermediate rates of compensatory and non-compensatory choices, while WADD leverages cue validities for a more nuanced compensatory evaluation.",
+            "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    beta = float(parameters[\"beta\"])\n    alpha = float(parameters[\"alpha\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Strategy 1: Take The Best (TTB)\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n    winner_ttb = None\n    for j in cue_order:\n        if a[j] > b[j]:\n            winner_ttb = 0\n            break\n        if b[j] > a[j]:\n            winner_ttb = 1\n            break\n            \n    if winner_ttb is None:\n        p_ttb = np.array([0.5, 0.5])\n    else:\n        scores_ttb = np.array([1.0, 0.0]) if winner_ttb == 0 else np.array([0.0, 1.0])\n        z_ttb = beta * (scores_ttb - scores_ttb.max())\n        e_ttb = np.exp(z_ttb)\n        p_ttb = e_ttb / e_ttb.sum()\n        \n    # Strategy 2: WADD (Weighted Additive)\n    score_a_wadd = np.sum(a * val)\n    score_b_wadd = np.sum(b * val)\n    scores_wadd = np.array([score_a_wadd, score_b_wadd])\n    \n    z_wadd = beta * (scores_wadd - scores_wadd.max())\n    e_wadd = np.exp(z_wadd)\n    p_wadd = e_wadd / e_wadd.sum()\n    \n    # Mixture of the two strategies\n    p_mix = alpha * p_ttb + (1.0 - alpha) * p_wadd\n    \n    # Apply lapse rate\n    n_opts = p_mix.shape[0]\n    p_final = (1.0 - epsilon) * p_mix + epsilon * (np.ones(n_opts) / n_opts)\n    \n    return p_final\n",
+            "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+            "parameters": {
+              "alpha": "[0.5, 1.0]",
+              "beta": "[1.0, 20.0]",
+              "epsilon": "[0.0, 0.2]",
+              "validities": "validities"
+            },
+            "rationale": "Following the critic's advice, I shifted the `alpha` parameter range from [0.0, 1.0] to [0.5, 1.0] to reflect the strong empirical bias toward non-compensatory choices (TTB-like behavior) observed in the data. I also increased the lower bound of `beta` from 0.1 to 1.0 to reduce baseline noise in the softmax functions and prevent the choice probabilities from flattening too much toward 0.5."
+          },
+          "proposer_label": "pi_4",
+          "real_value": -0.09555555555555562,
+          "real_variance": 0.12932592592592596,
+          "predicted_values": [
+            {
+              "value": -0.0038888888888889417,
+              "variance": 0.014907716049382715,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.3155555555555556,
+              "variance": 0.021906172839506168,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.008333333333333304,
+              "variance": 0.008341049382716048,
+              "label": "pi_1"
+            },
+            {
+              "value": -0.0005555555555555591,
+              "variance": 0.00785462962962963,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.4194444444444445,
+              "variance": 0.06877314814814812,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.022222222222222254,
+              "variance": 0.07734567901234567,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.01666666666666672,
+              "variance": 0.004660493827160494,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_004_obs_00.jsonl"
+        },
+        {
+          "experiment": {
+            "rationale": "Theory 1 is described as a rank-dependent tallying model, but its mathematical parameterization (gamma >= 2.0) ensures that the weight of the highest-ranked feature (1.0) is strictly greater than the sum of all subsequent feature weights combined (which maxes out at ~0.645 for gamma=2.0). Thus, Theory 1 acts as a deterministic, non-compensatory lexicographic model (pure TTB-like behavior). Theory 2, however, is a probabilistic mixture of TTB and a Linear Weighted Additive rule (WADD). Because Linear WADD uses raw validities as weights, it is strongly compensatory: the sum of several moderate validities easily exceeds a single high validity. By pitting the highest-validity discriminating cue against multiple lower-validity cues, we can cleanly separate the two theories: Theory 1 will uniformly choose the option favored by the single best cue, while Theory 2 will exhibit a mixed response profile reflecting its compensatory WADD component.",
+            "validities": [
+              0.95,
+              0.85,
+              0.75,
+              0.65,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                0,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                0,
+                0,
+                1,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    \n    val = np.array([0.95, 0.85, 0.75, 0.65, 0.55])\n    \n    wadd_b_ttb_a = []\n    lapse_rate_trials = []\n    \n    for _, row in data.iterrows():\n        a = np.array(row['option_a_ratings'])\n        b = np.array(row['option_b_ratings'])\n        resp = row['response']\n        \n        diff = a - b\n        ttb_winner = None\n        for i in range(len(diff)):\n            if diff[i] > 0:\n                ttb_winner = 0\n                break\n            elif diff[i] < 0:\n                ttb_winner = 1\n                break\n                \n        wadd_a = np.sum(a * val)\n        wadd_b = np.sum(b * val)\n        wadd_winner = 0 if wadd_a > wadd_b else 1\n        \n        if ttb_winner == 0 and wadd_winner == 1:\n            wadd_b_ttb_a.append(1 if resp == 1 else 0)\n        elif ttb_winner == wadd_winner:\n            lapse_rate_trials.append(1 if resp != ttb_winner else 0)\n            \n    p_comp = np.mean(wadd_b_ttb_a) if len(wadd_b_ttb_a) > 0 else 0.0\n    p_lapse = np.mean(lapse_rate_trials) if len(lapse_rate_trials) > 0 else 0.0\n    \n    return float(p_comp - p_lapse)",
+            "rationale": "Theory 1 operates as a strict non-compensatory (TTB-like) model due to its high gamma parameter, meaning it will only deviate from TTB choices due to random lapse (epsilon). Theory 2 mixes TTB with a compensatory WADD strategy, actively preferring the WADD-favored option when the two strategies disagree. This metric computes the probability of choosing the WADD-favored option on disagreement trials (Trials 1-6) and subtracts the empirical baseline lapse rate computed from agreement trials (Trials 7-8). For Theory 1, this difference will be ~0, while for Theory 2 it will be significantly positive (reflecting the WADD mixture component)."
+          },
+          "proposer_theory": {
+            "description": "Rank-Dependent Tallying: Decision-makers primarily evaluate options based on the sheer number of positive features (a tallying-like process), but the weight of each feature is subject to rank-based discounting. Rather than scaling exponentially with log-odds, a feature's weight decays as a power law of its validity rank. This ensures a strong compensatory mechanism where multiple moderate cues can easily overpower a single high-validity cue, and tallying differences dominate choice probabilities unless the validity rank differences are extreme.",
+            "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    gamma = float(parameters[\"gamma\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Assign ranks to features based on validity (1 = highest validity)\n    n_features = len(val)\n    order = np.argsort(-val, kind=\"stable\")\n    ranks = np.zeros(n_features)\n    ranks[order] = np.arange(1, n_features + 1)\n    \n    # Rank-based discounting: weight decays as an inverse power of rank\n    w = 1.0 / (ranks ** gamma)\n    \n    # Compute weighted tally for each option\n    score_a = np.sum(w * a)\n    score_b = np.sum(w * b)\n    scores = np.array([score_a, score_b])\n    \n    # Softmax choice rule\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = p_core.shape[0]\n    p_final = (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n    \n    return p_final\n",
+            "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+            "parameters": {
+              "gamma": "[2.0, 8.0]",
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]",
+              "validities": "validities"
+            },
+            "rationale": "Shifted the `gamma` parameter range even higher to `[2.0, 8.0]` as suggested by the critic. This further steepens the power-law decay of cue weights, penalizing lower-ranked cues more heavily. This reduces the still slightly excessive compensatory behavior observed in the previous iteration and brings the model's predictions closer to the empirical data in Experiments 2 and 4."
+          },
+          "proposer_label": "pi_6",
+          "real_value": -0.5455555555555556,
+          "real_variance": 0.07625802469135802,
+          "predicted_values": [
+            {
+              "value": 0.056944444444444436,
+              "variance": 0.010873842592592593,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.24194444444444443,
+              "variance": 0.02016273148148148,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.012777777777777777,
+              "variance": 0.005461728395061729,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.6763888888888889,
+              "variance": 0.0317843364197531,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.12055555555555558,
+              "variance": 0.0343320987654321,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.08805555555555553,
+              "variance": 0.017234645061728393,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.004722222222222211,
+              "variance": 0.0068797067901234564,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_004_obs_01.jsonl"
+        }
+      ],
+      "next_theory": {
+        "description": "Sequential Evidence Accumulation with Probabilistic Stopping, Urgency, and Memory Decay: Decision-makers evaluate cues sequentially by validity, accumulating evidence with a non-linear scaling of log-odds. Crucially, evidence from earlier cues decays over time (leakage), allowing later cues to overpower early ones if search continues. A step-dependent urgency signal increases the likelihood of stopping as search progresses, capturing both compensatory behavior and strong negative contrast effects.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    beta = float(parameters[\"beta\"])\n    gamma = float(parameters[\"gamma\"])\n    theta = float(parameters[\"theta\"])\n    delta = float(parameters[\"delta\"])\n    alpha = float(parameters[\"alpha\"])\n    phi = float(parameters[\"phi\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Convert validities to log-odds for evidence accumulation\n    val_clipped = np.clip(val, 0.5001, 0.9999)\n    log_odds = np.log(val_clipped / (1.0 - val_clipped))\n    w = log_odds ** alpha\n    \n    # Process cues in descending order of validity\n    order = np.argsort(-val, kind=\"stable\")\n    \n    E = 0.0\n    P_A = 0.0\n    P_reach = 1.0\n    n_features = len(val)\n    \n    for idx, i in enumerate(order):\n        # Accumulate evidence with memory decay (leakage)\n        E = E * phi + w[i] * (a[i] - b[i])\n        \n        if idx == n_features - 1:\n            p_stop = 1.0\n        else:\n            # Probabilistic stopping based on current evidence gap and urgency\n            x = gamma * np.abs(E) - theta + delta * idx\n            if x > 20:\n                p_stop = 1.0\n            elif x < -20:\n                p_stop = 0.0\n            else:\n                p_stop = 1.0 / (1.0 + np.exp(-x))\n                \n        # Probability of choosing A given current evidence E\n        scores = np.array([E, 0.0])\n        z = beta * (scores - np.max(scores))\n        e = np.exp(z)\n        p_choose_A = e[0] / np.sum(e)\n        \n        P_A += P_reach * p_stop * p_choose_A\n        P_reach *= (1.0 - p_stop)\n        \n    P_B = 1.0 - P_A\n    p_final = (1.0 - epsilon) * np.array([P_A, P_B]) + epsilon * 0.5\n    \n    return p_final",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "gamma": "[0.1, 50.0]",
+          "theta": "[0.0, 10.0]",
+          "delta": "[-5.0, 10.0]",
+          "alpha": "[0.1, 10.0]",
+          "phi": "[0.0, 1.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's advice, I have reverted to the Iteration 3 base architecture (softmax choice, memory decay, urgency, and non-linear log-odds) and expanded the upper bounds for gamma and alpha. This allows the stopping probability to become hyper-sensitive to the evidence gap, enabling the stark behavioral dichotomy needed to capture the deep negative contrast effects."
+      },
+      "next_theory_idx": 1,
+      "next_theory_label": "pi_7"
+    }
+  ]
+}

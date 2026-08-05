@@ -1,0 +1,51 @@
+{
+  "round_idx": 3,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_5",
+      "killed": false,
+      "theory": {
+        "description": "Tallying with Right-to-Left Position-Based Tie-Breaking",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Expected a (2, n_features) stimulus.\")\n        \n    a, b = stim[0], stim[1]\n    \n    # Tallying: count strict feature-wise wins\n    a_wins = float(np.sum(a > b))\n    b_wins = float(np.sum(b > a))\n    scores = np.array([a_wins, b_wins])\n    \n    # Position-based lexicographic tie-breaking (right-to-left)\n    if a_wins == b_wins:\n        for i in range(len(a) - 1, -1, -1):\n            if a[i] > b[i]:\n                scores[0] += 1.0\n                break\n            elif b[i] > a[i]:\n                scores[1] += 1.0\n                break\n                \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax with numerical stability\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    p = np.asarray(probs, dtype=np.float64)\n    p /= p.sum()  # Ensure valid probabilities\n    return int(np.random.choice(len(p), p=p))\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]"
+        },
+        "rationale": "Applying a minimal edit to the tie-breaking logic based on critic feedback. The previous left-to-right search failed on Experiments 3 and 4's tie-trials. Reversing the search direction to right-to-left (perhaps reflecting a recency effect in evaluating sequentially presented features) explains the systematic deviations observed in those experiments while maintaining the core Tallying performance on conflict trials."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_2",
+      "killed": true,
+      "theory": {
+        "description": "People compare two options by counting, across all features, how often one option has a higher value than the other. The option that wins on more features is chosen. Tallying discards cardinal magnitudes \u2014 only the sign of each feature-wise comparison matters \u2014 so the heuristic is robust to monotone rescaling of individual features and cannot be swayed by a single large feature difference in the way Equal-Weight can. Ties on an individual feature contribute nothing to either count: that cue is simply treated as uninformative for the pair. No feature is privileged, in contrast to Take The Best; every cue contributes equally to the tally. When the two counts are equal the heuristic has no basis for preference and the learner must guess. Response noise enters through a softmax over the two tallies with inverse temperature beta (interpolating between fully deterministic choice at large beta and uniform guessing at beta = 0), plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+        "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Tallying heuristic (Dawes 1979; Gigerenzer &\n    # Goldstein 1999). Stimulus is the pair of option feature vectors\n    # for the current trial: array-like of shape (2, n_features),\n    # with row 0 = option A, row 1 = option B. History is ignored.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"Tallying expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n\n    a, b = stim[0], stim[1]\n    # Count strict feature-wise wins; ties contribute to neither option.\n    a_wins = float(np.sum(a > b))\n    b_wins = float(np.sum(b > a))\n    scores = np.array([a_wins, b_wins])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. When\n    # a_wins == b_wins the softmax is exactly uniform regardless of\n    # beta, which is the correct behavior for an undiscriminating\n    # tally.\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]"
+        },
+        "rationale": null
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_6",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Tallying with Recency-Driven Tie-Breaking: Decision makers primarily evaluate options using a Tallying heuristic, counting the number of features where one option strictly dominates the other. When the tallies are tied, they do not guess randomly. Instead, they rely on the cues most recently encoded into working memory to break the tie. Assuming a standard left-to-right reading order, the right-most features are the most recently processed. The model resolves ties by scanning features from right to left, favoring the option that wins on the first differentiating feature encountered.",
+      "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    a, b = stim[0], stim[1]\n    \n    # Primary strategy: Tallying\n    a_wins = np.sum(a > b)\n    b_wins = np.sum(b > a)\n    \n    score_a = float(a_wins)\n    score_b = float(b_wins)\n    \n    # Recency-driven tie-breaking (right-to-left)\n    if a_wins == b_wins:\n        for i in reversed(range(len(a))):\n            if a[i] > b[i]:\n                score_a += 1.0\n                break\n            elif b[i] > a[i]:\n                score_b += 1.0\n                break\n                \n    beta = float(parameters['beta'])\n    epsilon = float(parameters['epsilon'])\n    \n    # Softmax choice with epsilon-greedy lapse\n    scores = np.array([score_a, score_b])\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = len(scores)\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+      "policy_source": "def policy(probs):\n    import numpy as np\n    p = np.asarray(probs, dtype=np.float64)\n    p /= p.sum()\n    return int(np.random.choice(len(p), p=p))\n",
+      "parameters": {
+        "beta": "[0.1, 20.0]",
+        "epsilon": "[0.0, 0.5]"
+      },
+      "rationale": "The arbiter pointed out that the standard Tallying model fails to capture systematic tie-breaking behavior, often reverting to random guessing when tallies are equal. Inspired by the success of right-to-left tie-breaking, this model introduces 'Tallying with Recency-Driven Tie-Breaking'. It posits that when primary tallying fails to distinguish between options, subjects fall back on the most recently encoded information in working memory. In a left-to-right reading paradigm, the right-most features are the most recent. This provides a psychologically grounded, memory-based explanation for the lexicographic tie-breaking effect without discarding the robust baseline of the Tallying heuristic."
+    }
+  }
+}

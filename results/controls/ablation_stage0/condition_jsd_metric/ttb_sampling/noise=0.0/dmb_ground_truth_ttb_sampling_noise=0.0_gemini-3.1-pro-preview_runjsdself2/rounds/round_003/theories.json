@@ -1,0 +1,53 @@
+{
+  "round_idx": 3,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_3",
+      "killed": false,
+      "theory": {
+        "description": "Take-The-Best (TTB) proposes that individuals use a non-compensatory lexicographic heuristic for decision making. They search through features in descending order of their validity and base their choice entirely on the first feature that discriminates between the two options, ignoring all remaining features. If no feature discriminates, they guess. Response noise is incorporated via a softmax function over the resulting binary scores and a lapse rate for random errors.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"TTB expects a (2, n_features) stimulus.\")\n        \n    a, b = stim[0], stim[1]\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Sort features by validity in descending order\n    order = np.argsort(validities)[::-1]\n    \n    scores = np.array([0.0, 0.0])\n    \n    # Find the first discriminating feature\n    for idx in order:\n        if a[idx] > b[idx]:\n            scores[0] = 1.0\n            break\n        elif b[idx] > a[idx]:\n            scores[1] = 1.0\n            break\n            \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax with max-subtraction for numerical stability\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    # Blend with uniform lapse rate\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probs = np.asarray(probabilities, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+        "parameters": {
+          "beta": "[0.001, 10.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's advice, we return to the base memoryless Take-The-Best (TTB) formulation but expand the lower bound of the inverse temperature parameter `beta` to [0.001, 10.0]. This allows the optimizer to explore softer decision boundaries and higher intrinsic choice noise without relying entirely on the uniform lapse rate parameter `epsilon` (which is kept at [0.0, 0.5]). The scoring mechanism remains unchanged (0 and 1) to avoid destabilizing the optimization surface."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_5",
+      "killed": true,
+      "theory": {
+        "description": "Weighted Additive (WADD) model with Log-Odds Weights: Decision makers integrate all available information by computing a fully compensatory weighted sum of the features for each option. To properly scale the importance of each cue, objective validities (probabilities) are transformed into log-odds. This ensures that non-predictive cues (validity = 0.5) receive a weight of zero and do not distort the evaluation. The option with the higher weighted sum is favored, with choice probabilities generated via a softmax function to account for decision noise, alongside a uniform lapse rate for random errors.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be shape (2, n_features).\")\n        \n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Transform validities to log-odds for proper weighting\n    # Clip to avoid log(0) or division by zero\n    v_clipped = np.clip(validities, 1e-5, 1.0 - 1e-5)\n    weights = np.log(v_clipped / (1.0 - v_clipped))\n    \n    # WADD: compute the weighted sum of features for each option\n    scores = stim @ weights\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax with max-subtraction for numerical stability\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    # Blend with uniform lapse rate\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probs = np.asarray(probabilities, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+        "parameters": {
+          "beta": "[0.001, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's feedback, the raw validities are now transformed into log-odds before computing the weighted sum. This is a crucial modification because raw validities are probabilities; simply summing them means a completely useless cue (validity 0.5) still adds a positive value to an option's score, distorting relative differences. The log-odds transformation correctly centers useless cues at a weight of zero and scales higher validities appropriately, yielding a more rigorous and theoretically sound compensatory WADD baseline."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_6",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Tallying (Equal Weights) heuristic: Decision makers ignore cue validities entirely and simply count the number of positive features for each option. They choose the option with the higher tally (i.e., the greatest number of positive cues). This represents a fast-and-frugal compensatory strategy where all cues are weighted equally, minimizing cognitive effort while still integrating all available features. Response noise is incorporated via a softmax function over the tallies, alongside a uniform lapse rate for random errors.",
+      "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be shape (2, n_features).\")\n        \n    a, b = stim[0], stim[1]\n    \n    # Tallying: count the number of positive features for each option\n    scores = np.array([np.sum(a), np.sum(b)], dtype=float)\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax with max-subtraction for numerical stability\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    # Blend with uniform lapse rate\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+      "policy_source": "def policy(probabilities):\n    import numpy as np\n    probs = np.asarray(probabilities, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+      "parameters": {
+        "beta": "[0.001, 10.0]",
+        "epsilon": "[0.0, 0.5]"
+      },
+      "rationale": "Following the arbiter's suggestion, the Weighted Additive model was replaced with the Tallying heuristic. Tallying represents a major alternative in the fast-and-frugal heuristics literature. Instead of weighting cues by their validities (like WADD) or relying on a single best cue (like TTB), Tallying integrates all cues but weights them equally. This is operationalized by simply summing the positive features for each option and applying a softmax choice rule over the totals. It contrasts mechanistically with both TTB and WADD, offering a robust baseline that handles environments where validities are either unknown, ignored, or too computationally costly to integrate."
+    }
+  }
+}

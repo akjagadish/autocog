@@ -1,0 +1,55 @@
+{
+  "round_idx": 1,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_1",
+      "killed": false,
+      "theory": {
+        "description": "People compare two options by consulting cues one at a time in order of validity, stopping at the first cue that discriminates between the two options. That cue alone determines the choice: the option with the higher value on the discriminating cue wins, and no other cue is consulted. Cues with lower validity are never reached when a higher-validity cue already discriminates, so Take The Best is a \"one-reason\" decision rule \u2014 only a single feature is ever used on any given choice. Because only the sign of the comparison on the top discriminating cue matters, TTB ignores both the magnitude of that difference and all information on lower-validity cues, making it maximally frugal in the use of evidence. Cue validities are subjective and can be learned, inferred from instructions, or fixed by task structure. When no cue discriminates (all feature-wise comparisons tie) the learner has no basis for preference and must guess. Response noise enters through a softmax over the binary TTB score (winner = 1, loser = 0) with inverse temperature beta, plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+        "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Take The Best (Gigerenzer & Goldstein 1996).\n    # Stimulus is the pair of option feature vectors for the current\n    # trial: array-like of shape (2, n_features), row 0 = option A,\n    # row 1 = option B. Cue cascade: features are consulted in order\n    # of descending validity; the first discriminating cue (strict\n    # inequality) determines the winner; if no cue discriminates,\n    # the model guesses uniformly. History is ignored.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"TTB expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n    n_features = stim.shape[1]\n\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    if val.shape[0] != n_features:\n        raise ValueError(\n            f\"validities length {val.shape[0]} != n_features {n_features}.\"\n        )\n    # Descending validity; argsort is stable so validity ties break\n    # toward the earlier feature index.\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n\n    a, b = stim[0], stim[1]\n    winner = None\n    for j in cue_order:\n        if a[j] > b[j]:\n            winner = 0\n            break\n        if b[j] > a[j]:\n            winner = 1\n            break\n\n    if winner is None:\n        # No discriminating cue \u2014 pure guess.\n        return np.ones(2) / 2.0\n\n    scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. For the\n    # binary TTB score this collapses to sigmoid(beta) for the winner,\n    # giving a direct mapping from beta onto the paper's flip-noise\n    # levels (beta=0 \u2194 50/50; beta \u226b 1 \u2194 deterministic).\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": null
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_3",
+      "killed": true,
+      "theory": {
+        "description": "People evaluate options by computing a weighted sum of their features, where the weights correspond to a non-linear scaling of the log-odds of the validities. This rational Bayesian integration strategy acts as a compensatory mechanism but exhibits strongly non-compensatory behavior when cues are highly diagnostic and the log-odds are exponentiated by a factor gamma. Choice is then made probabilistically based on the difference in these weighted sums.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"WADD expects a (2, n_features) stimulus.\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Clip validities to avoid infinities in log-odds calculation\n    val = np.clip(val, 0.001, 0.999)\n    \n    # Convert validities to log-odds\n    log_odds = np.log(val / (1.0 - val))\n    \n    # Exaggerate weight differences to capture non-compensatory behavior\n    gamma = float(parameters[\"gamma\"])\n    w = np.sign(log_odds) * (np.abs(log_odds) ** gamma)\n    \n    # WADD computes the sum of feature values weighted by their scaled log-odds\n    score_a = np.sum(w * a)\n    score_b = np.sum(w * b)\n    scores = np.array([score_a, score_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax choice rule with max-subtraction for numerical stability\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = probabilities / probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "gamma": "[1.0, 5.0]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's advice, we introduce a new parameter `gamma` to exponentiate the absolute value of the log-odds weights. This stretches the differences between weights, allowing the model to fit the highly non-compensatory (TTB-like) choices seen in the human data without leaving the WADD / Bayesian integration family. This minimal edit prevents multiple weak cues from inappropriately compensating for a single highly diagnostic cue."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_4",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Probabilistic Take The Best (Plackett-Luce Cue Search) with High Determinism",
+      "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    gamma = float(parameters[\"gamma\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Identify which cues discriminate and in which direction\n    diff = a - b\n    favor_a = (diff > 0)\n    favor_b = (diff < 0)\n    discriminating = favor_a | favor_b\n    \n    if not np.any(discriminating):\n        # No cues discriminate, guess uniformly\n        p_a = 0.5\n    else:\n        # The probability that a given discriminating cue is encountered first \n        # under a Plackett-Luce search order depends only on the relative weights \n        # of the discriminating cues.\n        # Subtract max validity for numerical stability before exponentiation.\n        max_val = np.max(val[discriminating])\n        w = np.exp(gamma * (val - max_val))\n        \n        weight_a = np.sum(w[favor_a])\n        weight_b = np.sum(w[favor_b])\n        \n        total_weight = weight_a + weight_b\n        p_a = weight_a / total_weight\n        \n    p_core = np.array([p_a, 1.0 - p_a])\n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n",
+      "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+      "parameters": {
+        "gamma": "[0.0, 100.0]",
+        "epsilon": "[0.0, 0.2]",
+        "validities": "validities"
+      },
+      "rationale": "Following the critic's feedback, the empirical data indicates that human subjects are using a highly deterministic Take-The-Best strategy, whereas the previous parameterization forced too much noise. To resolve this while keeping the Plackett-Luce mechanism, I increased the upper bound of `gamma` to 100.0, allowing the model to approximate a strict argmax (deterministic TTB) when needed. I also reduced the upper bound of the lapse rate `epsilon` to 0.2 to prevent excessive random guessing from diluting the TTB agreement."
+    }
+  }
+}

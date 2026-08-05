@@ -1,0 +1,53 @@
+{
+  "round_idx": 1,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_3",
+      "killed": false,
+      "theory": {
+        "description": "Decision-makers evaluate options using a Weighted Additive (WADD) strategy. Instead of relying on a single best cue (like Take The Best) or ignoring cue importance (like Tallying), individuals integrate all available features by weighting each feature according to its validity. The overall value of an option is the sum of its validity-weighted features. Choices are then made probabilistically by comparing these weighted sums, with response consistency governed by a softmax temperature parameter and a base lapse rate. A highly restricted temperature parameter prevents over-sensitivity to small differences in the weighted sums, matching the near-chance behavior of human subjects.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"WADD expects a (2, n_features) stimulus.\")\n    \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Calculate validity-weighted sums for both options\n    score_a = np.sum(a * val)\n    score_b = np.sum(b * val)\n    scores = np.array([score_a, score_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax with max-subtraction for numerical stability\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=float)\n    probabilities /= probabilities.sum()  # Ensure valid probabilities\n    return np.random.choice(len(probabilities), p=probabilities)",
+        "parameters": {
+          "beta": "[0.0, 2.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the feedback, the model slightly overpredicts the determinism of choices in Experiment 1 and underpredicts in Experiment 2. By tightening the `beta` parameter range further to [0.0, 2.0], the softmax decision rule will incorporate more noise, pulling the choice probabilities closer to the ~0.50-0.55 range observed in the empirical data while maintaining the Weighted Additive mechanism."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_2",
+      "killed": true,
+      "theory": {
+        "description": "People compare two options by counting, across all features, how often one option has a higher value than the other. The option that wins on more features is chosen. Tallying discards cardinal magnitudes \u2014 only the sign of each feature-wise comparison matters \u2014 so the heuristic is robust to monotone rescaling of individual features and cannot be swayed by a single large feature difference in the way Equal-Weight can. Ties on an individual feature contribute nothing to either count: that cue is simply treated as uninformative for the pair. No feature is privileged, in contrast to Take The Best; every cue contributes equally to the tally. When the two counts are equal the heuristic has no basis for preference and the learner must guess. Response noise enters through a softmax over the two tallies with inverse temperature beta (interpolating between fully deterministic choice at large beta and uniform guessing at beta = 0), plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+        "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Tallying heuristic (Dawes 1979; Gigerenzer &\n    # Goldstein 1999). Stimulus is the pair of option feature vectors\n    # for the current trial: array-like of shape (2, n_features),\n    # with row 0 = option A, row 1 = option B. History is ignored.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"Tallying expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n\n    a, b = stim[0], stim[1]\n    # Count strict feature-wise wins; ties contribute to neither option.\n    a_wins = float(np.sum(a > b))\n    b_wins = float(np.sum(b > a))\n    scores = np.array([a_wins, b_wins])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. When\n    # a_wins == b_wins the softmax is exactly uniform regardless of\n    # beta, which is the correct behavior for an undiscriminating\n    # tally.\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]"
+        },
+        "rationale": null
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_4",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Noisy Take The Best: Decision-makers use a lexicographic heuristic (Take The Best), checking features in descending order of validity and stopping at the first feature that discriminates between options. However, human application of this rule is highly noisy. A heavily restricted inverse temperature parameter accounts for the empirical observation that subjects' choices on these trials hover near chance level (0.50-0.55), rather than the highly deterministic choices (0.85+) predicted by standard TTB.",
+      "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    stim = np.asarray(state, dtype=float)\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Sort cues by validity descending; stable sort preserves original order on ties\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n    \n    a, b = stim[0], stim[1]\n    winner = None\n    for j in cue_order:\n        if a[j] > b[j]:\n            winner = 0\n            break\n        elif b[j] > a[j]:\n            winner = 1\n            break\n            \n    if winner is None:\n        return np.ones(2) / 2.0\n        \n    scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(2) / 2.0)",
+      "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=float)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))",
+      "parameters": {
+        "beta": "[0.0, 0.5]",
+        "epsilon": "[0.0, 0.5]",
+        "validities": "validities"
+      },
+      "rationale": "The arbiter recommended implementing Take The Best (TTB). However, as seen in the leaderboard (pi_1), a standard TTB model with a wide beta range severely overpredicts the metrics, scoring ~0.85-0.87 whereas human subjects score ~0.50-0.55. The data clearly shows that on these specific trials, subjects are operating very close to chance. To comply with the arbiter's suggestion while fixing the mechanistic failure of pi_1, I propose a Noisy Take The Best model. By restricting the softmax inverse temperature (beta) to a very low range [0.0, 0.5], the model captures the fact that subjects might be using lexicographic rules but with extreme inconsistency or high decision noise, bringing the predictions down to the ~0.50-0.55 range actually observed in humans."
+    }
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "round_idx": 16,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_17",
+      "killed": false,
+      "theory": {
+        "description": "Decisiveness-Dependent Strategy Selection with Sharp Transition: Decision-makers probabilistically select between a compensatory Tallying strategy and a non-compensatory Take-The-Best (TTB) strategy on a trial-by-trial basis. The probability of using Tallying is a logistic function of the absolute difference in tally scores between the two options. By strictly constraining the sensitivity (theta) to be positive and the threshold to [0.1, 0.9], the model naturally transitions to a sharp step function where Tallying heavily dominates for decisive tally differences (delta >= 1), while TTB is strictly reserved as a tie-breaker for complex/tied stimuli (delta == 0).",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    theta = float(parameters[\"theta\"])\n    threshold = float(parameters[\"threshold\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Tallying prediction\n    a_wins = np.sum(a > b)\n    b_wins = np.sum(b > a)\n    delta_tally = abs(a_wins - b_wins)\n    \n    if a_wins > b_wins:\n        p_a_tally = 1.0\n    elif b_wins > a_wins:\n        p_a_tally = 0.0\n    else:\n        p_a_tally = 0.5\n        \n    # Take-The-Best (TTB) prediction\n    order = np.argsort(val)[::-1]\n    p_a_ttb = 0.5\n    for idx in order:\n        if a[idx] > b[idx]:\n            p_a_ttb = 1.0\n            break\n        elif b[idx] > a[idx]:\n            p_a_ttb = 0.0\n            break\n            \n    # Strategy selection probability\n    # Probability of using Tallying depends on the decisiveness of the tally\n    exponent = -theta * (delta_tally - threshold)\n    exponent = np.clip(exponent, -500.0, 500.0) # Prevent overflow\n    p_use_tally = 1.0 / (1.0 + np.exp(exponent))\n    \n    p_a_core = p_use_tally * p_a_tally + (1.0 - p_use_tally) * p_a_ttb\n    p_b_core = 1.0 - p_a_core\n    \n    p_core = np.array([p_a_core, p_b_core])\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "theta": "[1.0, 20.0]",
+          "threshold": "[0.1, 0.9]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's feedback, the previous threshold range of [0.0, 2.0] allowed the optimizer to select values greater than 1.0, which inappropriately caused the model to use TTB even when the tally difference was decisive (e.g., delta_tally == 1). By narrowing the threshold range to [0.1, 0.9], the model is forced into a regime where a tied tally (delta_tally == 0) always results in a positive exponent (favoring TTB), while any decisive tally (delta_tally >= 1) results in a negative exponent (favoring Tallying). This perfectly mirrors the successful Tally-then-TTB logic while remaining within the smooth Strategy Selection family."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_18",
+      "killed": true,
+      "theory": {
+        "description": "Proportional Evidence Accumulation on Surviving Features with Exponentiated Tie-Breaker",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    gamma = float(parameters[\"gamma\"])\n    theta = float(parameters[\"theta\"])\n    \n    a_wins = (a > b).astype(float)\n    b_wins = (b > a).astype(float)\n    mask = a != b\n    n_surv = np.sum(mask)\n    \n    if n_surv == 0:\n        return np.array([0.5, 0.5])\n        \n    tally_a = np.sum(a_wins)\n    tally_b = np.sum(b_wins)\n    \n    # Exponentiate validities to smoothly transition between WADD and TTB tie-breaking\n    val_transformed = val ** theta\n    tie_w = val_transformed / np.sum(val_transformed)\n    \n    # Score combines Tallying and a strictly bounded validity-based tie-breaker\n    score_a = tally_a + gamma * np.sum(tie_w * a_wins)\n    score_b = tally_b + gamma * np.sum(tie_w * b_wins)\n    \n    # The decision variable is the proportion of surviving evidence\n    norm_score_a = score_a / n_surv\n    norm_score_b = score_b / n_surv\n    \n    scores = np.array([norm_score_a, norm_score_b])\n    \n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.1, 50.0]",
+          "epsilon": "[0.0, 0.5]",
+          "gamma": "[0.0, 0.99]",
+          "theta": "[0.1, 20.0]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's instruction, we revert to the Iteration 1 framework which enforces a strict Tally-then-validity hierarchy (gamma < 1) combined with proportional evidence accumulation (dividing by n_surv). We ensure the theta parameter exponentiates the validities before normalization to smoothly interpolate between a WADD-like and a strict TTB-like tie-breaker on the surviving features. This preserves Tallying dominance where appropriate while providing the flexibility needed to capture lexicographic tie-breaking."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_19",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Tallying with Graded Validity Tie-Breaker: Decision-makers primarily use a simple Tallying heuristic (comparing the total number of positive features). When tallies are unequal, choices are highly deterministic. However, when tallies are tied, instead of rigidly applying a non-compensatory Take-The-Best rule (which overpredicts determinism), they fall back to a compensatory Weighted Additive (WADD) evaluation of the features. This tie-breaking process is governed by its own sensitivity parameter, allowing tied decisions to exhibit the softer, empirically observed determinism (~0.60) while maintaining the structural dominance of Tallying.",
+      "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    a = np.asarray(stimulus[0], dtype=float)\n    b = np.asarray(stimulus[1], dtype=float)\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    beta_tally = float(parameters[\"beta_tally\"])\n    beta_wadd = float(parameters[\"beta_wadd\"])\n    theta = float(parameters[\"theta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    tally_a = np.sum(a)\n    tally_b = np.sum(b)\n    \n    if tally_a != tally_b:\n        # Primary decision based on tally difference\n        z = beta_tally * (tally_a - tally_b)\n    else:\n        # Fallback to WADD-based tie-breaker with exponentiated validities\n        val_w = val ** theta\n        wadd_a = np.sum(val_w * a)\n        wadd_b = np.sum(val_w * b)\n        max_wadd = np.sum(val_w)\n        if max_wadd == 0:\n            max_wadd = 1.0\n        # Normalize by max possible WADD for scale invariance\n        z = beta_wadd * (wadd_a - wadd_b) / max_wadd\n        \n    # Numerically stable logistic function\n    p_a = 1.0 / (1.0 + np.exp(-z))\n    \n    # Apply trembling hand epsilon\n    p_a = (1.0 - epsilon) * p_a + epsilon * 0.5\n    \n    return np.array([p_a, 1.0 - p_a])\n",
+      "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+      "parameters": {
+        "beta_tally": "[0.1, 20.0]",
+        "beta_wadd": "[0.1, 20.0]",
+        "theta": "[0.1, 10.0]",
+        "epsilon": "[0.0, 0.5]",
+        "validities": "validities"
+      },
+      "rationale": "Following the arbiter's diagnosis, strict non-compensatory tie-breakers (like Take-The-Best) overpredict determinism on tied trials. This model implements a two-stage lexicographic strategy: it first compares tallies, using `beta_tally` to drive strong determinism on unequal tallies. If tallies are tied, it falls back to a compensatory WADD process over the validities. By assigning a separate sensitivity parameter (`beta_wadd`) to this tie-breaker, the model can naturally capture the softer, more probabilistic choices observed empirically on tied trials, without compromising the dominance of the tallying heuristic on unequal trials."
+    }
+  }
+}

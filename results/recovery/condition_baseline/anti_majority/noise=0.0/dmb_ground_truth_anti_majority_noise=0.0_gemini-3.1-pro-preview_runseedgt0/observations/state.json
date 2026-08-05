@@ -1,0 +1,1610 @@
+{
+  "rounds": [
+    {
+      "observations": [
+        {
+          "experiment": {
+            "rationale": "The advocated theory posits a 'flipped-majority' ensemble in which the decision-maker computes the deterministic preferences of Tallying, Take The Best (TTB), and Weighted Additive (WADD), and then deliberately chooses the option that the majority of these heuristics do NOT prefer. The competing theory posits a standard Tallying heuristic with softmax noise. To maximally dissociate these theories, we design trials where Tallying has a strict preference for one option, and the majority of the three heuristics (often including Tallying itself) also agree on that same option. Consequently, the advocated theory will strongly predict choosing the exact opposite of what the competing Tallying theory predicts.",
+            "validities": [
+              0.95,
+              0.85,
+              0.75,
+              0.65
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    matches = 0\n    for _, row in data.iterrows():\n        a = np.array(row['option_a_ratings'])\n        b = np.array(row['option_b_ratings'])\n        a_wins = np.sum(a > b)\n        b_wins = np.sum(b > a)\n        if a_wins > b_wins and row['response'] == 0:\n            matches += 1\n        elif b_wins > a_wins and row['response'] == 1:\n            matches += 1\n        elif a_wins == b_wins:\n            matches += 0.5\n    return float(matches / len(data))",
+            "rationale": "Calculates the proportion of choices that align with the Tallying heuristic (choosing the option with more feature-wise wins). By design, the experimental trials pit the Tallying heuristic's deterministic preference against the Flipped-Majority prediction. The Tallying theory will score highly on this metric (near 1.0, minus noise), whereas the Advocated Flipped-Majority theory will score very poorly (near 0.0, plus noise)."
+          },
+          "proposer_theory": {
+            "description": "People are modeled as running three classic heuristics in parallel \u2014 Take The Best (one-reason, top-validity cue), Tallying (count of feature-wise wins), and Weighted Additive (validity-weighted sum) \u2014 reading off the single option each heuristic deterministically prefers, and then leaning toward whichever option the majority of the three did NOT prefer. With three binary voters at least two always agree, so a majority option always exists; the model targets its complement. Response noise enters only at the final, ensemble level: a softmax over the binary \"flipped-majority\" score with inverse temperature beta, plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options. The individual heuristics contribute only their hard preference (their argmax) to the vote \u2014 they carry no internal noise \u2014 so beta and epsilon describe noise in the contrarian response itself, not in the constituent heuristics.\n",
+            "predict_source": "def predict(parameters, stimulus, history):\n    # Anti-majority-vote ensemble. Each of Tallying / TTB / WADD\n    # contributes a single hard preference (the argmax of its\n    # deterministic score \u2014 no per-model softmax or lapse). We take the\n    # majority vote across the three binary votes and flip it: when at\n    # least two models agree on an option, we target the other one.\n    # Choice noise (softmax over beta, lapse over epsilon) is applied\n    # ONCE here, to the flipped-majority decision.\n\n    def _pref_tallying(stimulus):\n        # Tallying (Dawes 1979; Gigerenzer & Goldstein 1999): count\n        # strict feature-wise wins; prefer the option with more wins.\n        # Ties (equal win counts) fall to option A via argmax.\n        stim = np.asarray(stimulus, dtype=float)\n        if stim.ndim != 2 or stim.shape[0] != 2:\n            raise ValueError(\n                f\"Tallying expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n            )\n        a, b = stim[0], stim[1]\n        a_wins = float(np.sum(a > b))\n        b_wins = float(np.sum(b > a))\n        return int(np.argmax(np.array([a_wins, b_wins])))\n\n    def _pref_ttb(parameters, stimulus):\n        # Take The Best (Gigerenzer & Goldstein 1996): consult cues in\n        # descending validity; the first discriminating cue decides.\n        # If no cue discriminates, the score is uniform and argmax\n        # falls to option A.\n        stim = np.asarray(stimulus, dtype=float)\n        if stim.ndim != 2 or stim.shape[0] != 2:\n            raise ValueError(\n                f\"TTB expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n            )\n        n_features = stim.shape[1]\n        val = np.asarray(parameters[\"validities\"], dtype=float)\n        if val.shape[0] != n_features:\n            raise ValueError(\n                f\"validities length {val.shape[0]} != n_features {n_features}.\"\n            )\n        # Descending validity; argsort is stable so validity ties break\n        # toward the earlier feature index.\n        cue_order = np.argsort(-val, kind=\"stable\").tolist()\n        a, b = stim[0], stim[1]\n        winner = None\n        for j in cue_order:\n            if a[j] > b[j]:\n                winner = 0\n                break\n            if b[j] > a[j]:\n                winner = 1\n                break\n        if winner is None:\n            scores = np.ones(2) / 2.0\n        else:\n            scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])\n        return int(np.argmax(scores))\n\n    def _pref_wadd(parameters, stimulus):\n        # Weighted Additive (Payne, Bettman & Johnson 1993): prefer the\n        # option with the higher validity-weighted sum. Ties fall to\n        # option A via argmax.\n        stim = np.asarray(stimulus, dtype=float)\n        if stim.ndim != 2 or stim.shape[0] != 2:\n            raise ValueError(\n                f\"WADD expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n            )\n        n_features = stim.shape[1]\n        validities = np.asarray(parameters[\"validities\"], dtype=float)\n        w = np.asarray(parameters[\"weights\"], dtype=float)\n        if w.shape[0] != n_features:\n            raise ValueError(\n                f\"weights length {w.shape[0]} != n_features {n_features}.\"\n            )\n        scores = stim @ (validities * w)\n        return int(np.argmax(scores))\n\n    # Each model's hard preference (no noise inside the models).\n    c_tallying = _pref_tallying(stimulus)\n    c_ttb = _pref_ttb(parameters, stimulus)\n    c_wadd = _pref_wadd(parameters, stimulus)\n\n    # Majority vote across the three binary votes, then flip it.\n    votes = [c_tallying, c_ttb, c_wadd]\n    majority = 0 if votes.count(0) >= 2 else 1\n    flipped = 1 - majority\n\n    # Binary score for the flipped-majority choice (winner = 1, loser = 0),\n    # then ONE softmax + lapse over the two options.\n    scores = np.array([1.0, 0.0]) if flipped == 0 else np.array([0.0, 1.0])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. For the binary\n    # flipped score this collapses to sigmoid(beta) for the targeted\n    # option (beta=0 \u2194 50/50; beta \u226b 1 \u2194 deterministic flip).\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]",
+              "validities": "validities",
+              "weights": "[(0.0, 1.0)] * n_features"
+            },
+            "rationale": null
+          },
+          "proposer_label": "pi_1",
+          "real_value": 0.2675,
+          "real_variance": 0.04627361111111111,
+          "predicted_values": [
+            {
+              "value": 0.22875,
+              "variance": 0.031709895833333335,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.8572916666666667,
+              "variance": 0.007466362847222222,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.149375,
+              "variance": 0.009000043402777777,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.3925,
+              "variance": 0.0030748263888888895,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.19770833333333335,
+              "variance": 0.015748654513888887,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.60125,
+              "variance": 0.002838715277777777,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.18020833333333333,
+              "variance": 0.013108723958333337,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_000_obs_00.jsonl"
+        },
+        {
+          "experiment": {
+            "rationale": "We design trials where the Advocated Theory (Tallying) either strongly prefers one option or predicts indifference, while the Competing Theory (Anti-majority ensemble) predicts the exact opposite. By pitting a single highly valid cue against multiple lower-validity cues, we create scenarios where Tallying prefers the option with more wins, whereas Take The Best (TTB) prefers the option with the single best cue. When Weighted Additive (WADD) aligns with Tallying, the majority vote aligns with Tallying, causing the Anti-majority model to deterministically flip and choose the TTB-preferred option. This yields a strong quantitative and qualitative dissociation between the two theories.",
+            "validities": [
+              0.95,
+              0.85,
+              0.7,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    import pandas as pd\n    \n    a_sums = data['option_a_ratings'].apply(np.sum)\n    b_sums = data['option_b_ratings'].apply(np.sum)\n    \n    mask = a_sums != b_sums\n    if mask.sum() == 0:\n        return 0.5\n        \n    responses = data.loc[mask, 'response']\n    a_sums_filtered = a_sums[mask]\n    b_sums_filtered = b_sums[mask]\n    \n    tallying_choices = (b_sums_filtered > a_sums_filtered).astype(int)\n    \n    return float((responses == tallying_choices).mean())",
+            "rationale": "This metric isolates the trials where the two theories make strictly opposite deterministic predictions. Specifically, it filters for trials where one option has more positive features than the other (Trials 1 and 2). Tallying strongly prefers the option with more positive features, while the Anti-majority ensemble (dominated by the flipped majority aligning with Take The Best) strongly prefers the option with fewer features but the single highest validity cue. The metric calculates the proportion of choices that align with Tallying on these critical trials, yielding a value near 1.0 for the Advocated Theory and near 0.0 for the Competing Theory."
+          },
+          "proposer_theory": {
+            "description": "People compare two options by counting, across all features, how often one option has a higher value than the other. The option that wins on more features is chosen. Tallying discards cardinal magnitudes \u2014 only the sign of each feature-wise comparison matters \u2014 so the heuristic is robust to monotone rescaling of individual features and cannot be swayed by a single large feature difference in the way Equal-Weight can. Ties on an individual feature contribute nothing to either count: that cue is simply treated as uninformative for the pair. No feature is privileged, in contrast to Take The Best; every cue contributes equally to the tally. When the two counts are equal the heuristic has no basis for preference and the learner must guess. Response noise enters through a softmax over the two tallies with inverse temperature beta (interpolating between fully deterministic choice at large beta and uniform guessing at beta = 0), plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+            "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Tallying heuristic (Dawes 1979; Gigerenzer &\n    # Goldstein 1999). Stimulus is the pair of option feature vectors\n    # for the current trial: array-like of shape (2, n_features),\n    # with row 0 = option A, row 1 = option B. History is ignored.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"Tallying expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n\n    a, b = stim[0], stim[1]\n    # Count strict feature-wise wins; ties contribute to neither option.\n    a_wins = float(np.sum(a > b))\n    b_wins = float(np.sum(b > a))\n    scores = np.array([a_wins, b_wins])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. When\n    # a_wins == b_wins the softmax is exactly uniform regardless of\n    # beta, which is the correct behavior for an undiscriminating\n    # tally.\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]"
+            },
+            "rationale": null
+          },
+          "proposer_label": "pi_2",
+          "real_value": 0.235,
+          "real_variance": 0.04946249999999999,
+          "predicted_values": [
+            {
+              "value": 0.8491666666666666,
+              "variance": 0.011502777777777777,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.23083333333333333,
+              "variance": 0.06175069444444445,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.11083333333333334,
+              "variance": 0.0074555555555555555,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.125,
+              "variance": 0.010920138888888889,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.22458333333333333,
+              "variance": 0.016411284722222225,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.7616666666666667,
+              "variance": 0.026443750000000002,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.1125,
+              "variance": 0.008211805555555556,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_000_obs_01.jsonl"
+        }
+      ],
+      "next_theory": {
+        "description": "Anti-Tallying: Subjects systematically misinterpret the expert ratings, treating a rating of 0 as superior to 1. They tally the number of features where an option 'wins' under this reversed interpretation (i.e., has a 0 while the other has a 1) and prefer the option with more reversed wins. Choice noise is modeled via a softmax over these anti-tallies and a uniform lapse rate.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Anti-Tallying expects a (2, n_features) stimulus.\")\n\n    a, b = stim[0], stim[1]\n    \n    # Anti-Tallying: subjects treat 0 as better than 1.\n    # Thus, option A wins a feature if a < b (i.e., a=0, b=1).\n    a_anti_wins = float(np.sum(a < b))\n    b_anti_wins = float(np.sum(b < a))\n    \n    scores = np.array([a_anti_wins, b_anti_wins])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax over the anti-tallies with numerical stability\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]"
+        },
+        "rationale": "Following the arbiter's feedback, the data strongly suggests a contrarian pattern where subjects systematically prefer the option with fewer traditional 'wins' or lower cue validities. Instead of a complex flipped-majority ensemble, this model implements a much simpler 'Anti-Tallying' heuristic. It operates under the hypothesis that subjects systematically misinterpret the binary expert ratings, treating 0 as a better rank than 1. The model tallies these 'reversed wins' and applies standard softmax and lapse noise. This provides a direct, parsimonious explanation for the contrarian behavior observed across both experiments."
+      },
+      "next_theory_idx": 2,
+      "next_theory_label": "pi_3"
+    },
+    {
+      "observations": [
+        {
+          "experiment": {
+            "rationale": "To maximally dissociate the Advocated Theory (Anti-majority ensemble) from the Competing Theory (Anti-Tallying), we exploit the fact that Anti-Tallying is effectively the exact opposite of Tallying. We design trials where Tallying prefers Option A (because it has more winning features), but both Take The Best (TTB) and Weighted Additive (WADD) prefer Option B (because Option B wins on fewer but much higher-validity features). In this scenario, the majority of the three heuristics (TTB and WADD) prefer Option B. The Advocated Theory flips this majority and thus strongly predicts Option A. The Competing Theory, interpreting 0 as better than 1, counts the 'anti-wins' and strongly prefers Option B, as Option B has more 0s where Option A has 1s. This creates a stark qualitative and quantitative dissociation.",
+            "validities": [
+              1.0,
+              0.9,
+              0.6,
+              0.5,
+              0.5,
+              0.5,
+              0.5
+            ],
+            "trial_a_ratings": [
+              [
+                0,
+                0,
+                1,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1,
+                0,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                1,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1,
+                0,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    \n    a_ones = data['option_a_ratings'].apply(sum)\n    b_ones = data['option_b_ratings'].apply(sum)\n    \n    chosen_more_ones = np.where(\n        data['response'] == 0,\n        a_ones > b_ones,\n        b_ones > a_ones\n    )\n    \n    return float(np.mean(chosen_more_ones))",
+            "rationale": "Across all trials in the design, one option always has more 1s (4 ones) while the other has fewer 1s (3 ones). The Advocated Theory (Anti-majority ensemble) consistently predicts the option with more 1s, because that option loses under TTB and WADD (which prioritize the high-validity features where it has 0s) but wins under Tallying, causing a majority vote against it that the model then flips. Conversely, the Competing Theory (Anti-Tallying) explicitly treats 0 as better than 1 and tallies these 'anti-wins', so it systematically prefers the option with more 0s (and thus fewer 1s). This metric simply calculates the proportion of trials where the subject chose the option with more 1s, expecting ~1.0 for the Advocated Theory and ~0.0 for the Competing Theory."
+          },
+          "proposer_theory": {
+            "description": "People are modeled as running three classic heuristics in parallel \u2014 Take The Best (one-reason, top-validity cue), Tallying (count of feature-wise wins), and Weighted Additive (validity-weighted sum) \u2014 reading off the single option each heuristic deterministically prefers, and then leaning toward whichever option the majority of the three did NOT prefer. With three binary voters at least two always agree, so a majority option always exists; the model targets its complement. Response noise enters only at the final, ensemble level: a softmax over the binary \"flipped-majority\" score with inverse temperature beta, plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options. The individual heuristics contribute only their hard preference (their argmax) to the vote \u2014 they carry no internal noise \u2014 so beta and epsilon describe noise in the contrarian response itself, not in the constituent heuristics.\n",
+            "predict_source": "def predict(parameters, stimulus, history):\n    # Anti-majority-vote ensemble. Each of Tallying / TTB / WADD\n    # contributes a single hard preference (the argmax of its\n    # deterministic score \u2014 no per-model softmax or lapse). We take the\n    # majority vote across the three binary votes and flip it: when at\n    # least two models agree on an option, we target the other one.\n    # Choice noise (softmax over beta, lapse over epsilon) is applied\n    # ONCE here, to the flipped-majority decision.\n\n    def _pref_tallying(stimulus):\n        # Tallying (Dawes 1979; Gigerenzer & Goldstein 1999): count\n        # strict feature-wise wins; prefer the option with more wins.\n        # Ties (equal win counts) fall to option A via argmax.\n        stim = np.asarray(stimulus, dtype=float)\n        if stim.ndim != 2 or stim.shape[0] != 2:\n            raise ValueError(\n                f\"Tallying expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n            )\n        a, b = stim[0], stim[1]\n        a_wins = float(np.sum(a > b))\n        b_wins = float(np.sum(b > a))\n        return int(np.argmax(np.array([a_wins, b_wins])))\n\n    def _pref_ttb(parameters, stimulus):\n        # Take The Best (Gigerenzer & Goldstein 1996): consult cues in\n        # descending validity; the first discriminating cue decides.\n        # If no cue discriminates, the score is uniform and argmax\n        # falls to option A.\n        stim = np.asarray(stimulus, dtype=float)\n        if stim.ndim != 2 or stim.shape[0] != 2:\n            raise ValueError(\n                f\"TTB expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n            )\n        n_features = stim.shape[1]\n        val = np.asarray(parameters[\"validities\"], dtype=float)\n        if val.shape[0] != n_features:\n            raise ValueError(\n                f\"validities length {val.shape[0]} != n_features {n_features}.\"\n            )\n        # Descending validity; argsort is stable so validity ties break\n        # toward the earlier feature index.\n        cue_order = np.argsort(-val, kind=\"stable\").tolist()\n        a, b = stim[0], stim[1]\n        winner = None\n        for j in cue_order:\n            if a[j] > b[j]:\n                winner = 0\n                break\n            if b[j] > a[j]:\n                winner = 1\n                break\n        if winner is None:\n            scores = np.ones(2) / 2.0\n        else:\n            scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])\n        return int(np.argmax(scores))\n\n    def _pref_wadd(parameters, stimulus):\n        # Weighted Additive (Payne, Bettman & Johnson 1993): prefer the\n        # option with the higher validity-weighted sum. Ties fall to\n        # option A via argmax.\n        stim = np.asarray(stimulus, dtype=float)\n        if stim.ndim != 2 or stim.shape[0] != 2:\n            raise ValueError(\n                f\"WADD expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n            )\n        n_features = stim.shape[1]\n        validities = np.asarray(parameters[\"validities\"], dtype=float)\n        w = np.asarray(parameters[\"weights\"], dtype=float)\n        if w.shape[0] != n_features:\n            raise ValueError(\n                f\"weights length {w.shape[0]} != n_features {n_features}.\"\n            )\n        scores = stim @ (validities * w)\n        return int(np.argmax(scores))\n\n    # Each model's hard preference (no noise inside the models).\n    c_tallying = _pref_tallying(stimulus)\n    c_ttb = _pref_ttb(parameters, stimulus)\n    c_wadd = _pref_wadd(parameters, stimulus)\n\n    # Majority vote across the three binary votes, then flip it.\n    votes = [c_tallying, c_ttb, c_wadd]\n    majority = 0 if votes.count(0) >= 2 else 1\n    flipped = 1 - majority\n\n    # Binary score for the flipped-majority choice (winner = 1, loser = 0),\n    # then ONE softmax + lapse over the two options.\n    scores = np.array([1.0, 0.0]) if flipped == 0 else np.array([0.0, 1.0])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. For the binary\n    # flipped score this collapses to sigmoid(beta) for the targeted\n    # option (beta=0 \u2194 50/50; beta \u226b 1 \u2194 deterministic flip).\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]",
+              "validities": "validities",
+              "weights": "[(0.0, 1.0)] * n_features"
+            },
+            "rationale": null
+          },
+          "proposer_label": "pi_1",
+          "real_value": 0.5966666666666667,
+          "real_variance": 0.043632986111111105,
+          "predicted_values": [
+            {
+              "value": 0.6208333333333333,
+              "variance": 0.06563368055555556,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.13375,
+              "variance": 0.009307118055555556,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.8595833333333334,
+              "variance": 0.008577430555555555,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.17208333333333334,
+              "variance": 0.011502777777777777,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.6704166666666667,
+              "variance": 0.00986875,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.76625,
+              "variance": 0.020248090277777776,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.13645833333333332,
+              "variance": 0.005352647569444445,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_001_obs_00.jsonl"
+        },
+        {
+          "experiment": {
+            "rationale": "To maximally dissociate the Advocated Theory (Anti-Tallying) from the Competing Theory (Anti-Majority), we construct trials where Tallying prefers one option, while both Take The Best (TTB) and Weighted Additive (WADD) prefer the other. In such a scenario, the majority of the three standard heuristics (TTB and WADD) agree on an option, causing the Anti-Majority model to strongly predict the *opposite* option (which aligns with Tallying's choice). Conversely, the Anti-Tallying model, which treats 0s as wins and thus acts as the exact opposite of Tallying, will prefer the option that Tallying dislikes. This results in the two models predicting completely opposite choices.",
+            "validities": [
+              0.95,
+              0.9,
+              0.55,
+              0.55,
+              0.5
+            ],
+            "trial_a_ratings": [
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    # Anti-Tallying prefers the option with more 0s.\n    # In this design, option A has either three 1s and two 0s (A[0]=0) \n    # or three 0s and two 1s (A[0]=1).\n    # If A[0] == 0, A has two 0s and B has three 0s, so Anti-Tallying prefers B (1).\n    # If A[0] == 1, A has three 0s and B has two 0s, so Anti-Tallying prefers A (0).\n    # Thus, Anti-Tallying always predicts (1 - A[0]).\n    # Conversely, Anti-Majority always predicts A[0].\n    # We measure the proportion of choices matching Anti-Tallying.\n    a_first = data['option_a_ratings'].apply(lambda x: x[0])\n    anti_tallying_pred = 1 - a_first\n    return float((data['response'] == anti_tallying_pred).mean())",
+            "rationale": "The experimental design pits Anti-Tallying against Anti-Majority by constructing trials where the majority of standard heuristics (TTB and WADD) agree on one option, while Tallying prefers the other. Anti-Majority flips the majority choice, effectively aligning with Tallying. Anti-Tallying, by treating 0s as wins, acts as the exact opposite of Tallying. Therefore, the two models predict completely opposite choices on every single trial. This metric calculates the proportion of trials where the subject's choice matches the Anti-Tallying prediction, yielding a value near 1 for Anti-Tallying and near 0 for Anti-Majority."
+          },
+          "proposer_theory": {
+            "description": "Anti-Tallying: Subjects systematically misinterpret the expert ratings, treating a rating of 0 as superior to 1. They tally the number of features where an option 'wins' under this reversed interpretation (i.e., has a 0 while the other has a 1) and prefer the option with more reversed wins. Choice noise is modeled via a softmax over these anti-tallies and a uniform lapse rate.",
+            "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Anti-Tallying expects a (2, n_features) stimulus.\")\n\n    a, b = stim[0], stim[1]\n    \n    # Anti-Tallying: subjects treat 0 as better than 1.\n    # Thus, option A wins a feature if a < b (i.e., a=0, b=1).\n    a_anti_wins = float(np.sum(a < b))\n    b_anti_wins = float(np.sum(b < a))\n    \n    scores = np.array([a_anti_wins, b_anti_wins])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax over the anti-tallies with numerical stability\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]"
+            },
+            "rationale": "Following the arbiter's feedback, the data strongly suggests a contrarian pattern where subjects systematically prefer the option with fewer traditional 'wins' or lower cue validities. Instead of a complex flipped-majority ensemble, this model implements a much simpler 'Anti-Tallying' heuristic. It operates under the hypothesis that subjects systematically misinterpret the binary expert ratings, treating 0 as a better rank than 1. The model tallies these 'reversed wins' and applies standard softmax and lapse noise. This provides a direct, parsimonious explanation for the contrarian behavior observed across both experiments."
+          },
+          "proposer_label": "pi_3",
+          "real_value": 0.35833333333333334,
+          "real_variance": 0.11573784722222223,
+          "predicted_values": [
+            {
+              "value": 0.8572916666666667,
+              "variance": 0.009024522569444445,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.44729166666666664,
+              "variance": 0.1230312934027778,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.135,
+              "variance": 0.007569270833333332,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.856875,
+              "variance": 0.010342057291666666,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.3754166666666667,
+              "variance": 0.005650868055555556,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.21083333333333334,
+              "variance": 0.015987673611111114,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.8395833333333333,
+              "variance": 0.01416232638888889,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_001_obs_01.jsonl"
+        }
+      ],
+      "next_theory": {
+        "description": "People use a Soft Take-The-Best (Soft TTB) heuristic where they search through features in decreasing order of validity. The first discriminating feature determines the direction of the preference, but the strength of that preference is proportional to the validity of the feature that stopped the search. This means decisions made on the basis of highly valid cues are more deterministic, while decisions that fall back to lower-validity cues are noisier.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"TTB expects a (2, n_features) stimulus.\")\n\n    a, b = stim[0], stim[1]\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Take-The-Best: sort features by descending validity\n    cue_order = np.argsort(-validities, kind=\"stable\")\n    \n    score_a = 0.0\n    score_b = 0.0\n    for j in cue_order:\n        if a[j] > b[j]:\n            score_a = validities[j]\n            break\n        elif b[j] > a[j]:\n            score_b = validities[j]\n            break\n            \n    scores = np.array([score_a, score_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax over scores with numerical stability\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "To address the failure of the global WADD modifications, we revert to the successful TTB base but implement a 'Soft TTB' mechanism. Instead of a fixed deterministic score for the first discriminating cue, the score is scaled by the validity of that specific cue. This allows the model to be highly confident when a top-validity cue decides the choice, but appropriately noisier (closer to uniform guessing) when the search has to fall back to lower-validity cues, adding necessary probabilistic flexibility without losing the non-compensatory search order."
+      },
+      "next_theory_idx": 2,
+      "next_theory_label": "pi_4"
+    },
+    {
+      "observations": [
+        {
+          "experiment": {
+            "rationale": "To maximally dissociate the Advocated Theory (Anti-majority ensemble) from the Competing Theory (Soft Take-The-Best), we design trials where the majority of the three standard heuristics (Take The Best, Tallying, Weighted Additive) agree on one option, causing the Anti-majority model to deterministically flip its preference to the opposite option. In these trials, Take The Best (TTB) is always part of the majority. Because Soft TTB always predicts the option favored by the highest-validity discriminating cue (the TTB choice), it will align with the majority. Consequently, the Anti-majority model will strongly predict the exact opposite of Soft TTB.",
+            "validities": [
+              0.98,
+              0.95,
+              0.6,
+              0.55,
+              0.51
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                1
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                1,
+                0
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    a_f1 = data['option_a_ratings'].apply(lambda x: x[0])\n    b_f1 = data['option_b_ratings'].apply(lambda x: x[0])\n    chosen_f1 = (data['response'] == 0) * a_f1 + (data['response'] == 1) * b_f1\n    return float(chosen_f1.mean())",
+            "rationale": "In the chosen experimental design, the majority of the three standard heuristics (TTB, Tallying, WADD) always favors the option that is superior on the most valid feature (feature 1). The Competing Theory (Soft TTB) will thus consistently favor the option with a 1 on feature 1. The Advocated Theory (Anti-majority), by definition, will consistently flip this preference and favor the option with a 0 on feature 1. This metric calculates the proportion of trials where the subject's chosen option has a 1 on the highest-validity feature. The Competing Theory expects this value to be high (>0.5), while the Advocated Theory expects it to be low (<0.5), resulting in a maximal and highly stable contrast."
+          },
+          "proposer_theory": {
+            "description": "People are modeled as running three classic heuristics in parallel \u2014 Take The Best (one-reason, top-validity cue), Tallying (count of feature-wise wins), and Weighted Additive (validity-weighted sum) \u2014 reading off the single option each heuristic deterministically prefers, and then leaning toward whichever option the majority of the three did NOT prefer. With three binary voters at least two always agree, so a majority option always exists; the model targets its complement. Response noise enters only at the final, ensemble level: a softmax over the binary \"flipped-majority\" score with inverse temperature beta, plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options. The individual heuristics contribute only their hard preference (their argmax) to the vote \u2014 they carry no internal noise \u2014 so beta and epsilon describe noise in the contrarian response itself, not in the constituent heuristics.\n",
+            "predict_source": "def predict(parameters, stimulus, history):\n    # Anti-majority-vote ensemble. Each of Tallying / TTB / WADD\n    # contributes a single hard preference (the argmax of its\n    # deterministic score \u2014 no per-model softmax or lapse). We take the\n    # majority vote across the three binary votes and flip it: when at\n    # least two models agree on an option, we target the other one.\n    # Choice noise (softmax over beta, lapse over epsilon) is applied\n    # ONCE here, to the flipped-majority decision.\n\n    def _pref_tallying(stimulus):\n        # Tallying (Dawes 1979; Gigerenzer & Goldstein 1999): count\n        # strict feature-wise wins; prefer the option with more wins.\n        # Ties (equal win counts) fall to option A via argmax.\n        stim = np.asarray(stimulus, dtype=float)\n        if stim.ndim != 2 or stim.shape[0] != 2:\n            raise ValueError(\n                f\"Tallying expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n            )\n        a, b = stim[0], stim[1]\n        a_wins = float(np.sum(a > b))\n        b_wins = float(np.sum(b > a))\n        return int(np.argmax(np.array([a_wins, b_wins])))\n\n    def _pref_ttb(parameters, stimulus):\n        # Take The Best (Gigerenzer & Goldstein 1996): consult cues in\n        # descending validity; the first discriminating cue decides.\n        # If no cue discriminates, the score is uniform and argmax\n        # falls to option A.\n        stim = np.asarray(stimulus, dtype=float)\n        if stim.ndim != 2 or stim.shape[0] != 2:\n            raise ValueError(\n                f\"TTB expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n            )\n        n_features = stim.shape[1]\n        val = np.asarray(parameters[\"validities\"], dtype=float)\n        if val.shape[0] != n_features:\n            raise ValueError(\n                f\"validities length {val.shape[0]} != n_features {n_features}.\"\n            )\n        # Descending validity; argsort is stable so validity ties break\n        # toward the earlier feature index.\n        cue_order = np.argsort(-val, kind=\"stable\").tolist()\n        a, b = stim[0], stim[1]\n        winner = None\n        for j in cue_order:\n            if a[j] > b[j]:\n                winner = 0\n                break\n            if b[j] > a[j]:\n                winner = 1\n                break\n        if winner is None:\n            scores = np.ones(2) / 2.0\n        else:\n            scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])\n        return int(np.argmax(scores))\n\n    def _pref_wadd(parameters, stimulus):\n        # Weighted Additive (Payne, Bettman & Johnson 1993): prefer the\n        # option with the higher validity-weighted sum. Ties fall to\n        # option A via argmax.\n        stim = np.asarray(stimulus, dtype=float)\n        if stim.ndim != 2 or stim.shape[0] != 2:\n            raise ValueError(\n                f\"WADD expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n            )\n        n_features = stim.shape[1]\n        validities = np.asarray(parameters[\"validities\"], dtype=float)\n        w = np.asarray(parameters[\"weights\"], dtype=float)\n        if w.shape[0] != n_features:\n            raise ValueError(\n                f\"weights length {w.shape[0]} != n_features {n_features}.\"\n            )\n        scores = stim @ (validities * w)\n        return int(np.argmax(scores))\n\n    # Each model's hard preference (no noise inside the models).\n    c_tallying = _pref_tallying(stimulus)\n    c_ttb = _pref_ttb(parameters, stimulus)\n    c_wadd = _pref_wadd(parameters, stimulus)\n\n    # Majority vote across the three binary votes, then flip it.\n    votes = [c_tallying, c_ttb, c_wadd]\n    majority = 0 if votes.count(0) >= 2 else 1\n    flipped = 1 - majority\n\n    # Binary score for the flipped-majority choice (winner = 1, loser = 0),\n    # then ONE softmax + lapse over the two options.\n    scores = np.array([1.0, 0.0]) if flipped == 0 else np.array([0.0, 1.0])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. For the binary\n    # flipped score this collapses to sigmoid(beta) for the targeted\n    # option (beta=0 \u2194 50/50; beta \u226b 1 \u2194 deterministic flip).\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]",
+              "validities": "validities",
+              "weights": "[(0.0, 1.0)] * n_features"
+            },
+            "rationale": null
+          },
+          "proposer_label": "pi_1",
+          "real_value": 0.28208333333333335,
+          "real_variance": 0.01711736111111111,
+          "predicted_values": [
+            {
+              "value": 0.225625,
+              "variance": 0.015918446180555556,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.8572916666666667,
+              "variance": 0.007422960069444443,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.6070833333333333,
+              "variance": 0.0029776041666666666,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.389375,
+              "variance": 0.0033892795138888887,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.27541666666666664,
+              "variance": 0.012175173611111112,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.27166666666666667,
+              "variance": 0.01983871527777778,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.3729166666666667,
+              "variance": 0.001501736111111111,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_002_obs_00.jsonl"
+        },
+        {
+          "experiment": {
+            "rationale": "To maximally dissociate the Advocated Theory (Soft Take-The-Best) from the Competing Theory (Anti-majority ensemble), we design trials where the majority of the three standard heuristics (TTB, Tallying, WADD) agree on an option. Because Soft TTB aligns with standard TTB's directional preference, it will consistently predict the majority-preferred option. The Anti-majority model, however, deterministically flips the majority decision, thus predicting the exact opposite. Furthermore, by varying which feature is the first to discriminate (highest validity, second highest, or third highest), we test Soft TTB's unique prediction that the determinism of the choice scales with the validity of the stopping feature, a quantitative nuance entirely absent in the Anti-majority model.",
+            "validities": [
+              0.95,
+              0.85,
+              0.75,
+              0.6
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    \n    validities = np.array([0.95, 0.85, 0.75, 0.6])\n    cue_order = np.argsort(-validities)\n    \n    matches = 0\n    total = len(data)\n    if total == 0:\n        return 0.0\n        \n    for _, row in data.iterrows():\n        a = row['option_a_ratings']\n        b = row['option_b_ratings']\n        \n        ttb_pref = 0\n        for j in cue_order:\n            if a[j] > b[j]:\n                ttb_pref = 0\n                break\n            elif b[j] > a[j]:\n                ttb_pref = 1\n                break\n                \n        if row['response'] == ttb_pref:\n            matches += 1\n            \n    return float(matches) / total",
+            "rationale": "By design, all trials in this experiment are constructed such that the three standard heuristics (TTB, Tallying, WADD) agree on the preferred option. Soft TTB will consistently lean toward this majority-preferred option (which is the TTB option), whereas the Anti-majority model deterministically flips the majority decision and leans toward the exact opposite. Measuring the proportion of choices that align with the TTB prediction will yield a value > 0.5 for Soft TTB and < 0.5 for the Anti-majority model, providing a massive, highly robust discrimination gap."
+          },
+          "proposer_theory": {
+            "description": "People use a Soft Take-The-Best (Soft TTB) heuristic where they search through features in decreasing order of validity. The first discriminating feature determines the direction of the preference, but the strength of that preference is proportional to the validity of the feature that stopped the search. This means decisions made on the basis of highly valid cues are more deterministic, while decisions that fall back to lower-validity cues are noisier.",
+            "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"TTB expects a (2, n_features) stimulus.\")\n\n    a, b = stim[0], stim[1]\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Take-The-Best: sort features by descending validity\n    cue_order = np.argsort(-validities, kind=\"stable\")\n    \n    score_a = 0.0\n    score_b = 0.0\n    for j in cue_order:\n        if a[j] > b[j]:\n            score_a = validities[j]\n            break\n        elif b[j] > a[j]:\n            score_b = validities[j]\n            break\n            \n    scores = np.array([score_a, score_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax over scores with numerical stability\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]",
+              "validities": "validities"
+            },
+            "rationale": "To address the failure of the global WADD modifications, we revert to the successful TTB base but implement a 'Soft TTB' mechanism. Instead of a fixed deterministic score for the first discriminating cue, the score is scaled by the validity of that specific cue. This allows the model to be highly confident when a top-validity cue decides the choice, but appropriately noisier (closer to uniform guessing) when the search has to fall back to lower-validity cues, adding necessary probabilistic flexibility without losing the non-compensatory search order."
+          },
+          "proposer_label": "pi_4",
+          "real_value": 0.15125,
+          "real_variance": 0.011502777777777777,
+          "predicted_values": [
+            {
+              "value": 0.841875,
+              "variance": 0.010506467013888889,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.14604166666666665,
+              "variance": 0.011338932291666666,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.7639583333333333,
+              "variance": 0.009295182291666666,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.20354166666666668,
+              "variance": 0.004692751736111111,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.223125,
+              "variance": 0.014531640625000002,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.24875,
+              "variance": 0.024868229166666665,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.20520833333333333,
+              "variance": 0.005730251736111113,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_002_obs_01.jsonl"
+        }
+      ],
+      "next_theory": {
+        "description": "Reverse Weighted Additive (Negative Utility) Theory: Subjects systematically interpret the features or validities as negative signals (such as costs, penalties, or negative reviews) rather than positive attributes. Consequently, they compute a standard Weighted Additive (WADD) score\u2014the sum of feature values weighted by their respective validities\u2014but aim to minimize this score. Choice behavior is modeled as a softmax over the negative WADD scores, offering an elegant, single-process cognitive explanation for the choice inversions observed across experiments. The noise parameters are tuned to reflect a higher degree of stochasticity observed in human data.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Reverse WADD expects a (2, n_features) stimulus.\")\n        \n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Compute standard WADD scores (sum of features weighted by validities)\n    wadd_scores = stim @ validities\n    \n    # Reverse the scores to model negative utility (minimization)\n    scores = -wadd_scores\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax over the negative WADD scores with numerical stability\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+        "parameters": {
+          "beta": "[0.01, 5.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's feedback, the core Reverse WADD mechanism is retained, but the range of the inverse temperature parameter `beta` has been shifted from [0.1, 20.0] to [0.01, 5.0]. This minimal edit increases the baseline stochasticity of the choice process, pulling the extreme deterministic predictions closer to 0.5 to better match the variance and noise levels observed in the human data across all experiments."
+      },
+      "next_theory_idx": 2,
+      "next_theory_label": "pi_5"
+    },
+    {
+      "observations": [
+        {
+          "experiment": {
+            "rationale": "To maximally dissociate the Advocated Theory (Anti-majority ensemble) from the Competing Theory (Reverse WADD), we design trials where Standard WADD strongly disagrees with both Take The Best (TTB) and Tallying. When TTB and Tallying agree on an option (e.g., Option B), they form the majority, causing the Anti-majority model to predict the opposite (Option A). Meanwhile, since Standard WADD prefers Option A, the Reverse WADD model (which minimizes the WADD score) will prefer Option B. This creates a stark, deterministic divergence in the choices predicted by the two models.",
+            "validities": [
+              0.95,
+              0.94,
+              0.93,
+              0.92,
+              0.5,
+              0.5,
+              0.5,
+              0.5
+            ],
+            "trial_a_ratings": [
+              [
+                0,
+                1,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                1,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    def chosen_sum(row):\n        return sum(row['option_a_ratings']) if row['response'] == 0 else sum(row['option_b_ratings'])\n    return float((data.apply(chosen_sum, axis=1) == 3).mean())",
+            "rationale": "By design, the Advocated Theory (Anti-majority) consistently prefers the option with exactly 3 positive ratings, whereas the Competing Theory (Reverse WADD) consistently prefers the option with exactly 4 positive ratings across all trials. Measuring the proportion of choices where the selected option has a sum of 3 perfectly discriminates between the two models' deterministic predictions."
+          },
+          "proposer_theory": {
+            "description": "People are modeled as running three classic heuristics in parallel \u2014 Take The Best (one-reason, top-validity cue), Tallying (count of feature-wise wins), and Weighted Additive (validity-weighted sum) \u2014 reading off the single option each heuristic deterministically prefers, and then leaning toward whichever option the majority of the three did NOT prefer. With three binary voters at least two always agree, so a majority option always exists; the model targets its complement. Response noise enters only at the final, ensemble level: a softmax over the binary \"flipped-majority\" score with inverse temperature beta, plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options. The individual heuristics contribute only their hard preference (their argmax) to the vote \u2014 they carry no internal noise \u2014 so beta and epsilon describe noise in the contrarian response itself, not in the constituent heuristics.\n",
+            "predict_source": "def predict(parameters, stimulus, history):\n    # Anti-majority-vote ensemble. Each of Tallying / TTB / WADD\n    # contributes a single hard preference (the argmax of its\n    # deterministic score \u2014 no per-model softmax or lapse). We take the\n    # majority vote across the three binary votes and flip it: when at\n    # least two models agree on an option, we target the other one.\n    # Choice noise (softmax over beta, lapse over epsilon) is applied\n    # ONCE here, to the flipped-majority decision.\n\n    def _pref_tallying(stimulus):\n        # Tallying (Dawes 1979; Gigerenzer & Goldstein 1999): count\n        # strict feature-wise wins; prefer the option with more wins.\n        # Ties (equal win counts) fall to option A via argmax.\n        stim = np.asarray(stimulus, dtype=float)\n        if stim.ndim != 2 or stim.shape[0] != 2:\n            raise ValueError(\n                f\"Tallying expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n            )\n        a, b = stim[0], stim[1]\n        a_wins = float(np.sum(a > b))\n        b_wins = float(np.sum(b > a))\n        return int(np.argmax(np.array([a_wins, b_wins])))\n\n    def _pref_ttb(parameters, stimulus):\n        # Take The Best (Gigerenzer & Goldstein 1996): consult cues in\n        # descending validity; the first discriminating cue decides.\n        # If no cue discriminates, the score is uniform and argmax\n        # falls to option A.\n        stim = np.asarray(stimulus, dtype=float)\n        if stim.ndim != 2 or stim.shape[0] != 2:\n            raise ValueError(\n                f\"TTB expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n            )\n        n_features = stim.shape[1]\n        val = np.asarray(parameters[\"validities\"], dtype=float)\n        if val.shape[0] != n_features:\n            raise ValueError(\n                f\"validities length {val.shape[0]} != n_features {n_features}.\"\n            )\n        # Descending validity; argsort is stable so validity ties break\n        # toward the earlier feature index.\n        cue_order = np.argsort(-val, kind=\"stable\").tolist()\n        a, b = stim[0], stim[1]\n        winner = None\n        for j in cue_order:\n            if a[j] > b[j]:\n                winner = 0\n                break\n            if b[j] > a[j]:\n                winner = 1\n                break\n        if winner is None:\n            scores = np.ones(2) / 2.0\n        else:\n            scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])\n        return int(np.argmax(scores))\n\n    def _pref_wadd(parameters, stimulus):\n        # Weighted Additive (Payne, Bettman & Johnson 1993): prefer the\n        # option with the higher validity-weighted sum. Ties fall to\n        # option A via argmax.\n        stim = np.asarray(stimulus, dtype=float)\n        if stim.ndim != 2 or stim.shape[0] != 2:\n            raise ValueError(\n                f\"WADD expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n            )\n        n_features = stim.shape[1]\n        validities = np.asarray(parameters[\"validities\"], dtype=float)\n        w = np.asarray(parameters[\"weights\"], dtype=float)\n        if w.shape[0] != n_features:\n            raise ValueError(\n                f\"weights length {w.shape[0]} != n_features {n_features}.\"\n            )\n        scores = stim @ (validities * w)\n        return int(np.argmax(scores))\n\n    # Each model's hard preference (no noise inside the models).\n    c_tallying = _pref_tallying(stimulus)\n    c_ttb = _pref_ttb(parameters, stimulus)\n    c_wadd = _pref_wadd(parameters, stimulus)\n\n    # Majority vote across the three binary votes, then flip it.\n    votes = [c_tallying, c_ttb, c_wadd]\n    majority = 0 if votes.count(0) >= 2 else 1\n    flipped = 1 - majority\n\n    # Binary score for the flipped-majority choice (winner = 1, loser = 0),\n    # then ONE softmax + lapse over the two options.\n    scores = np.array([1.0, 0.0]) if flipped == 0 else np.array([0.0, 1.0])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. For the binary\n    # flipped score this collapses to sigmoid(beta) for the targeted\n    # option (beta=0 \u2194 50/50; beta \u226b 1 \u2194 deterministic flip).\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]",
+              "validities": "validities",
+              "weights": "[(0.0, 1.0)] * n_features"
+            },
+            "rationale": null
+          },
+          "proposer_label": "pi_1",
+          "real_value": 0.8616666666666667,
+          "real_variance": 0.006740624999999999,
+          "predicted_values": [
+            {
+              "value": 0.8460416666666667,
+              "variance": 0.01067834201388889,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.37333333333333335,
+              "variance": 0.008230729166666666,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.13520833333333335,
+              "variance": 0.008600217013888889,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.8633333333333333,
+              "variance": 0.012281423611111113,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.163125,
+              "variance": 0.008474869791666667,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.7391666666666666,
+              "variance": 0.0195484375,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.8364583333333333,
+              "variance": 0.014684244791666667,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_003_obs_00.jsonl"
+        },
+        {
+          "experiment": {
+            "rationale": "To maximally dissociate the Advocated Theory (Reverse WADD) from the Competing Theory (Anti-majority ensemble), we design trials where Standard WADD strongly disagrees with both Take The Best (TTB) and Tallying. The Anti-majority model takes a majority vote of TTB, Tallying, and Standard WADD, and then deterministically flips it. By ensuring TTB and Tallying agree on an option (e.g., Option B), they form the majority, causing the Anti-majority model to predict the opposite (Option A). Meanwhile, because Standard WADD prefers Option A, the Reverse WADD model (which seeks to minimize the WADD score) will prefer Option B. This creates a stark, deterministic divergence in the choices predicted by the two models, completely separating a negative-utility WADD process from a contrarian heuristic ensemble.",
+            "validities": [
+              0.95,
+              0.94,
+              0.93,
+              0.92,
+              0.91,
+              0.55,
+              0.54,
+              0.53,
+              0.52,
+              0.51
+            ],
+            "trial_a_ratings": [
+              [
+                0,
+                1,
+                1,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1,
+                0
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    a_first = data['option_a_ratings'].apply(lambda x: x[0])\n    b_first = data['option_b_ratings'].apply(lambda x: x[0])\n    chosen_first = np.where(data['response'] == 0, a_first, b_first)\n    return float(np.mean(chosen_first))",
+            "rationale": "In the experimental design, Reverse WADD systematically prefers the option that has a 1 on the most valid feature (feature index 0) across all trials, because it tries to minimize the overall WADD score and the competing options are constructed such that the one with a 0 on the first feature has a much higher sum of validities on the remaining features. In contrast, the Anti-majority model frequently votes against the option with a 1 on the first feature, because TTB and Tallying often form a majority that favors it, causing the contrarian ensemble to flip its choice to the option with a 0 on the first feature. Measuring the proportion of trials where the chosen option has a 1 on the first feature yields ~1.0 for Reverse WADD and ~0.25 for Anti-majority, strongly discriminating the two theories."
+          },
+          "proposer_theory": {
+            "description": "Reverse Weighted Additive (Negative Utility) Theory: Subjects systematically interpret the features or validities as negative signals (such as costs, penalties, or negative reviews) rather than positive attributes. Consequently, they compute a standard Weighted Additive (WADD) score\u2014the sum of feature values weighted by their respective validities\u2014but aim to minimize this score. Choice behavior is modeled as a softmax over the negative WADD scores, offering an elegant, single-process cognitive explanation for the choice inversions observed across experiments. The noise parameters are tuned to reflect a higher degree of stochasticity observed in human data.",
+            "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Reverse WADD expects a (2, n_features) stimulus.\")\n        \n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Compute standard WADD scores (sum of features weighted by validities)\n    wadd_scores = stim @ validities\n    \n    # Reverse the scores to model negative utility (minimization)\n    scores = -wadd_scores\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax over the negative WADD scores with numerical stability\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+            "parameters": {
+              "beta": "[0.01, 5.0]",
+              "epsilon": "[0.0, 0.5]",
+              "validities": "validities"
+            },
+            "rationale": "Following the critic's feedback, the core Reverse WADD mechanism is retained, but the range of the inverse temperature parameter `beta` has been shifted from [0.1, 20.0] to [0.01, 5.0]. This minimal edit increases the baseline stochasticity of the choice process, pulling the extreme deterministic predictions closer to 0.5 to better match the variance and noise levels observed in the human data across all experiments."
+          },
+          "proposer_label": "pi_5",
+          "real_value": 0.3129166666666667,
+          "real_variance": 0.0030597222222222215,
+          "predicted_values": [
+            {
+              "value": 0.6552083333333333,
+              "variance": 0.006055772569444446,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.26958333333333334,
+              "variance": 0.011730208333333334,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.6820833333333334,
+              "variance": 0.004050520833333334,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.3229166666666667,
+              "variance": 0.002747395833333333,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.8466666666666667,
+              "variance": 0.012556597222222222,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.254375,
+              "variance": 0.019874522569444445,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.335,
+              "variance": 0.0031092013888888888,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_003_obs_01.jsonl"
+        }
+      ],
+      "next_theory": {
+        "description": "Strict Anti-TTB (Contrarian Lexicographic) Theory with Simple Lapse Noise",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Anti-TTB expects a (2, n_features) stimulus.\")\n        \n    a, b = stim[0], stim[1]\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Sort features by validity in descending order\n    cue_order = np.argsort(-validities, kind=\"stable\").tolist()\n    \n    winner = None\n    # Find the first discriminating cue\n    for j in cue_order:\n        if a[j] > b[j]:\n            # a has 1, b has 0. Anti-TTB prefers the option with 0, which is b.\n            winner = 1\n            break\n        elif b[j] > a[j]:\n            # b has 1, a has 0. Anti-TTB prefers the option with 0, which is a.\n            winner = 0\n            break\n            \n    if winner is None:\n        p_core = np.ones(2) / 2.0\n    else:\n        p_core = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])\n        \n    epsilon = float(parameters[\"epsilon\"])\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+        "parameters": {
+          "epsilon": "[0.0, 1.0]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's advice, the noise model has been simplified by removing the redundant softmax inverse temperature (`beta`). Since the core heuristic yields deterministic binary preferences (1.0 and 0.0), applying both a softmax and a lapse rate created an unidentifiable parameter space. We now directly apply a uniform lapse rate (`epsilon`) to the deterministic choice, and have widened its range to [0.0, 1.0] to give the optimizer full flexibility to capture varying levels of stochasticity across experiments."
+      },
+      "next_theory_idx": 2,
+      "next_theory_label": "pi_6"
+    },
+    {
+      "observations": [
+        {
+          "experiment": {
+            "rationale": "To maximally dissociate the Advocated Theory (Anti-majority ensemble) from the Competing Theory (Anti-TTB), we construct trials where Take The Best (TTB) is in the minority against both Tallying and Weighted Additive (WADD). Because the Anti-majority model flips the majority decision, when Tallying and WADD agree against TTB, they form the majority. Thus, the Anti-majority model will predict the opposite of Tallying and WADD, which perfectly aligns with the TTB choice. Conversely, the Anti-TTB model deterministically chooses the exact opposite of TTB. This creates a stark, deterministic divergence where the Anti-majority model predicts the TTB choice and the Anti-TTB model predicts the opposite.",
+            "validities": [
+              0.95,
+              0.85,
+              0.75,
+              0.65
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                0,
+                0
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    ttb_choices = data.apply(lambda row: 0 if row['option_a_ratings'][0] > row['option_b_ratings'][0] else 1, axis=1)\n    return float((data['response'] == ttb_choices).mean())",
+            "rationale": "In the chosen experimental design, the Advocated Theory (Anti-majority ensemble) perfectly aligns with the Take The Best (TTB) choice because Tallying and WADD consistently agree against TTB, forming the majority that the model then flips. Conversely, the Competing Theory (Anti-TTB) deterministically predicts the exact opposite of the TTB choice. By simply calculating the proportion of trials where the subject's response matches the TTB choice (driven by the highest validity cue, which is always the first feature here), we can maximally dissociate the two theories. The Advocated Theory will produce a value close to 1 (minus noise), while the Competing Theory will produce a value close to 0 (plus noise)."
+          },
+          "proposer_theory": {
+            "description": "People are modeled as running three classic heuristics in parallel \u2014 Take The Best (one-reason, top-validity cue), Tallying (count of feature-wise wins), and Weighted Additive (validity-weighted sum) \u2014 reading off the single option each heuristic deterministically prefers, and then leaning toward whichever option the majority of the three did NOT prefer. With three binary voters at least two always agree, so a majority option always exists; the model targets its complement. Response noise enters only at the final, ensemble level: a softmax over the binary \"flipped-majority\" score with inverse temperature beta, plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options. The individual heuristics contribute only their hard preference (their argmax) to the vote \u2014 they carry no internal noise \u2014 so beta and epsilon describe noise in the contrarian response itself, not in the constituent heuristics.\n",
+            "predict_source": "def predict(parameters, stimulus, history):\n    # Anti-majority-vote ensemble. Each of Tallying / TTB / WADD\n    # contributes a single hard preference (the argmax of its\n    # deterministic score \u2014 no per-model softmax or lapse). We take the\n    # majority vote across the three binary votes and flip it: when at\n    # least two models agree on an option, we target the other one.\n    # Choice noise (softmax over beta, lapse over epsilon) is applied\n    # ONCE here, to the flipped-majority decision.\n\n    def _pref_tallying(stimulus):\n        # Tallying (Dawes 1979; Gigerenzer & Goldstein 1999): count\n        # strict feature-wise wins; prefer the option with more wins.\n        # Ties (equal win counts) fall to option A via argmax.\n        stim = np.asarray(stimulus, dtype=float)\n        if stim.ndim != 2 or stim.shape[0] != 2:\n            raise ValueError(\n                f\"Tallying expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n            )\n        a, b = stim[0], stim[1]\n        a_wins = float(np.sum(a > b))\n        b_wins = float(np.sum(b > a))\n        return int(np.argmax(np.array([a_wins, b_wins])))\n\n    def _pref_ttb(parameters, stimulus):\n        # Take The Best (Gigerenzer & Goldstein 1996): consult cues in\n        # descending validity; the first discriminating cue decides.\n        # If no cue discriminates, the score is uniform and argmax\n        # falls to option A.\n        stim = np.asarray(stimulus, dtype=float)\n        if stim.ndim != 2 or stim.shape[0] != 2:\n            raise ValueError(\n                f\"TTB expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n            )\n        n_features = stim.shape[1]\n        val = np.asarray(parameters[\"validities\"], dtype=float)\n        if val.shape[0] != n_features:\n            raise ValueError(\n                f\"validities length {val.shape[0]} != n_features {n_features}.\"\n            )\n        # Descending validity; argsort is stable so validity ties break\n        # toward the earlier feature index.\n        cue_order = np.argsort(-val, kind=\"stable\").tolist()\n        a, b = stim[0], stim[1]\n        winner = None\n        for j in cue_order:\n            if a[j] > b[j]:\n                winner = 0\n                break\n            if b[j] > a[j]:\n                winner = 1\n                break\n        if winner is None:\n            scores = np.ones(2) / 2.0\n        else:\n            scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])\n        return int(np.argmax(scores))\n\n    def _pref_wadd(parameters, stimulus):\n        # Weighted Additive (Payne, Bettman & Johnson 1993): prefer the\n        # option with the higher validity-weighted sum. Ties fall to\n        # option A via argmax.\n        stim = np.asarray(stimulus, dtype=float)\n        if stim.ndim != 2 or stim.shape[0] != 2:\n            raise ValueError(\n                f\"WADD expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n            )\n        n_features = stim.shape[1]\n        validities = np.asarray(parameters[\"validities\"], dtype=float)\n        w = np.asarray(parameters[\"weights\"], dtype=float)\n        if w.shape[0] != n_features:\n            raise ValueError(\n                f\"weights length {w.shape[0]} != n_features {n_features}.\"\n            )\n        scores = stim @ (validities * w)\n        return int(np.argmax(scores))\n\n    # Each model's hard preference (no noise inside the models).\n    c_tallying = _pref_tallying(stimulus)\n    c_ttb = _pref_ttb(parameters, stimulus)\n    c_wadd = _pref_wadd(parameters, stimulus)\n\n    # Majority vote across the three binary votes, then flip it.\n    votes = [c_tallying, c_ttb, c_wadd]\n    majority = 0 if votes.count(0) >= 2 else 1\n    flipped = 1 - majority\n\n    # Binary score for the flipped-majority choice (winner = 1, loser = 0),\n    # then ONE softmax + lapse over the two options.\n    scores = np.array([1.0, 0.0]) if flipped == 0 else np.array([0.0, 1.0])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. For the binary\n    # flipped score this collapses to sigmoid(beta) for the targeted\n    # option (beta=0 \u2194 50/50; beta \u226b 1 \u2194 deterministic flip).\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]",
+              "validities": "validities",
+              "weights": "[(0.0, 1.0)] * n_features"
+            },
+            "rationale": null
+          },
+          "proposer_label": "pi_1",
+          "real_value": 0.6704166666666667,
+          "real_variance": 0.04828888888888889,
+          "predicted_values": [
+            {
+              "value": 0.66125,
+              "variance": 0.05658958333333333,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.23166666666666666,
+              "variance": 0.021534548611111107,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.14208333333333334,
+              "variance": 0.010228993055555555,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.8647916666666666,
+              "variance": 0.007081119791666668,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.8289583333333334,
+              "variance": 0.012726085069444443,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.72125,
+              "variance": 0.015123958333333331,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.83875,
+              "variance": 0.012197222222222222,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_004_obs_00.jsonl"
+        },
+        {
+          "experiment": {
+            "rationale": "To maximally dissociate the Advocated Theory (Anti-TTB) from the Competing Theory (Anti-majority ensemble), we must construct trials where their predictions diverge deterministically. Anti-TTB always predicts the exact opposite of Take The Best (TTB). The Anti-majority model predicts the opposite of the majority of TTB, Tallying, and WADD. By creating scenarios where Tallying and WADD agree with each other but DISAGREE with TTB, we force TTB into the minority. Consequently, the Anti-majority model will flip the (Tallying + WADD) majority and end up predicting the TTB choice. This creates a stark dissociation: the Advocated Theory (Anti-TTB) predicts the opposite of TTB, while the Competing Theory (Anti-majority) predicts the TTB choice.",
+            "validities": [
+              0.95,
+              0.85,
+              0.7,
+              0.6,
+              0.55
+            ],
+            "trial_a_ratings": [
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                1
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                0,
+                1,
+                1,
+                1,
+                0
+              ],
+              [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              [
+                1,
+                0,
+                1,
+                1,
+                1
+              ],
+              [
+                0,
+                1,
+                0,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0,
+                1,
+                1
+              ],
+              [
+                1,
+                0,
+                1,
+                0,
+                0
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    matches = 0\n    total = 0\n    for _, row in data.iterrows():\n        a = row['option_a_ratings']\n        b = row['option_b_ratings']\n        for j in range(len(a)):\n            if a[j] > b[j]:\n                if row['response'] == 1:\n                    matches += 1\n                total += 1\n                break\n            elif b[j] > a[j]:\n                if row['response'] == 0:\n                    matches += 1\n                total += 1\n                break\n    return float(matches / total) if total > 0 else 0.0",
+            "rationale": "The experimental design constructs trials where the Take The Best (TTB) heuristic is always in the minority against Tallying and WADD. As a result, the Competing Theory (Anti-majority) will always invert the majority and end up predicting the TTB choice. The Advocated Theory (Anti-TTB) deterministically predicts the opposite of TTB. Therefore, measuring the proportion of trials where the subject chooses the option opposite to TTB perfectly discriminates the two theories: it will be high for Anti-TTB and low for Anti-majority."
+          },
+          "proposer_theory": {
+            "description": "Strict Anti-TTB (Contrarian Lexicographic) Theory with Simple Lapse Noise",
+            "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Anti-TTB expects a (2, n_features) stimulus.\")\n        \n    a, b = stim[0], stim[1]\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Sort features by validity in descending order\n    cue_order = np.argsort(-validities, kind=\"stable\").tolist()\n    \n    winner = None\n    # Find the first discriminating cue\n    for j in cue_order:\n        if a[j] > b[j]:\n            # a has 1, b has 0. Anti-TTB prefers the option with 0, which is b.\n            winner = 1\n            break\n        elif b[j] > a[j]:\n            # b has 1, a has 0. Anti-TTB prefers the option with 0, which is a.\n            winner = 0\n            break\n            \n    if winner is None:\n        p_core = np.ones(2) / 2.0\n    else:\n        p_core = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])\n        \n    epsilon = float(parameters[\"epsilon\"])\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+            "parameters": {
+              "epsilon": "[0.0, 1.0]",
+              "validities": "validities"
+            },
+            "rationale": "Following the critic's advice, the noise model has been simplified by removing the redundant softmax inverse temperature (`beta`). Since the core heuristic yields deterministic binary preferences (1.0 and 0.0), applying both a softmax and a lapse rate created an unidentifiable parameter space. We now directly apply a uniform lapse rate (`epsilon`) to the deterministic choice, and have widened its range to [0.0, 1.0] to give the optimizer full flexibility to capture varying levels of stochasticity across experiments."
+          },
+          "proposer_label": "pi_6",
+          "real_value": 0.26166666666666666,
+          "real_variance": 0.03046284722222222,
+          "predicted_values": [
+            {
+              "value": 0.76125,
+              "variance": 0.024552256944444448,
+              "label": "pi_6"
+            },
+            {
+              "value": 0.26666666666666666,
+              "variance": 0.026115451388888888,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.8554166666666667,
+              "variance": 0.009204166666666666,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.15645833333333334,
+              "variance": 0.009537717013888888,
+              "label": "pi_3"
+            },
+            {
+              "value": 0.16354166666666667,
+              "variance": 0.010968967013888886,
+              "label": "pi_4"
+            },
+            {
+              "value": 0.24625,
+              "variance": 0.009951215277777776,
+              "label": "pi_5"
+            },
+            {
+              "value": 0.11916666666666667,
+              "variance": 0.006728125000000001,
+              "label": "pi_7"
+            }
+          ],
+          "data_path": "data/round_004_obs_01.jsonl"
+        }
+      ],
+      "next_theory": {
+        "description": "Strict Anti-Tallying Theory: Decision makers employ a purely compensatory contrarian heuristic by simply counting the total number of positive features (expert endorsements) for each option and deterministically preferring the option with FEWER positive features. Softmax and lapse noise are applied only to this binary deterministic preference, meaning the magnitude of the difference in feature counts does not influence the confidence of the choice, contrasting with proportional anti-tallying models.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Strict Anti-Tallying expects a (2, n_features) stimulus.\")\n\n    a, b = stim[0], stim[1]\n    \n    # Count positive features for each option\n    a_count = np.sum(a)\n    b_count = np.sum(b)\n    \n    # Deterministically prefer the option with FEWER positive features\n    if a_count < b_count:\n        scores = np.array([1.0, 0.0])\n    elif b_count < a_count:\n        scores = np.array([0.0, 1.0])\n    else:\n        scores = np.array([0.5, 0.5])\n        \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax over the binary deterministic scores\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]"
+        },
+        "rationale": "Following the arbiter's suggestion, we propose a 'Strict Anti-Tallying' model. Unlike the previous Anti-Tallying model (pi_3) which applied softmax directly to the raw feature counts (making the choice probability sensitive to the magnitude of the difference in tallies), this strict version deterministically assigns a binary preference to the option with fewer positive features, and only then applies softmax and lapse noise. This mirrors the binary voting mechanism of the successful Anti-Majority ensemble (pi_1) but relies on a single, simpler contrarian heuristic, serving as a strong baseline."
+      },
+      "next_theory_idx": 2,
+      "next_theory_label": "pi_7"
+    }
+  ]
+}

@@ -1,0 +1,61 @@
+{
+  "round_idx": 5,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_7",
+      "killed": true,
+      "theory": {
+        "description": "Sequential Evidence Accumulation with Lateral Inhibition, Leak, and a Collapsing Decision Threshold: Decision-makers sample features sequentially with probability proportional to their validities. Options accumulate evidence subject to leak and lateral inhibition. To prevent indecision when evidence is mixed or tied, the decision threshold collapses over time (urgency signal). A highly valid cue can quickly cross the initially high threshold (mimicking Take-The-Best), but if early cues conflict, the threshold gradually lowers, forcing a decision based on the integrated evidence of later sampled cues (mimicking Tallying or WADD).",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    a, b = stim[0], stim[1]\n    \n    gamma = float(parameters[\"gamma\"])\n    theta = float(parameters[\"theta\"])\n    inhibition = float(parameters[\"inhibition\"])\n    leak = float(parameters[\"leak\"])\n    collapse_rate = float(parameters[\"collapse_rate\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Sampling probability based on validity\n    w = val ** gamma\n    if np.sum(w) == 0:\n        p_sample = np.ones_like(w) / len(w)\n    else:\n        p_sample = w / np.sum(w)\n        \n    n_sims = 2000\n    max_steps = 100\n    \n    # Pre-sample all cues for all sims and steps for speed\n    samples = np.random.choice(len(val), size=(n_sims, max_steps), p=p_sample)\n    \n    inc_a = a[samples]\n    inc_b = b[samples]\n    \n    ea = np.zeros(n_sims)\n    eb = np.zeros(n_sims)\n    \n    decided = np.zeros(n_sims, dtype=bool)\n    winner = np.full(n_sims, -1)\n    \n    for step in range(max_steps):\n        mask = ~decided\n        if not np.any(mask):\n            break\n            \n        curr_inc_a = inc_a[mask, step]\n        curr_inc_b = inc_b[mask, step]\n        \n        # LCA update rule with lateral inhibition and leak\n        new_ea = np.maximum(0.0, ea[mask] * (1.0 - leak) + curr_inc_a - inhibition * eb[mask])\n        new_eb = np.maximum(0.0, eb[mask] * (1.0 - leak) + curr_inc_b - inhibition * ea[mask])\n        \n        ea[mask] = new_ea\n        eb[mask] = new_eb\n        \n        # Collapsing threshold\n        curr_theta = max(0.01, theta - step * collapse_rate)\n        cross_a = new_ea >= curr_theta\n        cross_b = new_eb >= curr_theta\n        \n        just_decided = cross_a | cross_b\n        \n        if np.any(just_decided):\n            jd_indices = np.where(just_decided)[0]\n            \n            for idx in jd_indices:\n                if cross_a[idx] and not cross_b[idx]:\n                    winner_val = 0\n                elif cross_b[idx] and not cross_a[idx]:\n                    winner_val = 1\n                else:\n                    if new_ea[idx] > new_eb[idx]:\n                        winner_val = 0\n                    elif new_eb[idx] > new_ea[idx]:\n                        winner_val = 1\n                    else:\n                        winner_val = np.random.choice([0, 1])\n                \n                orig_idx = np.where(mask)[0][idx]\n                winner[orig_idx] = winner_val\n                decided[orig_idx] = True\n\n    undecided = ~decided\n    if np.any(undecided):\n        ea_un = ea[undecided]\n        eb_un = eb[undecided]\n        \n        # For those that haven't crossed threshold, highest evidence wins\n        ties = ea_un == eb_un\n        win_un = np.where(ea_un > eb_un, 0, 1)\n        if np.any(ties):\n            win_un[ties] = np.random.choice([0, 1], size=ties.sum())\n            \n        winner[undecided] = win_un\n        \n    p_A = np.sum(winner == 0) / n_sims\n    p_B = np.sum(winner == 1) / n_sims\n    \n    p = np.array([p_A, p_B])\n    return (1.0 - epsilon) * p + epsilon * np.array([0.5, 0.5])",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)",
+        "parameters": {
+          "gamma": "[0.1, 20.0]",
+          "theta": "[1.0, 15.0]",
+          "inhibition": "[0.0, 1.0]",
+          "leak": "[0.0, 1.0]",
+          "collapse_rate": "[0.0, 0.5]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's feedback on Iteration 3's rejection, we revert to the stable LCA base from Iteration 2 (avoiding excessive inhibition and noise) and introduce a 'collapsing decision threshold' via the `collapse_rate` parameter. This urgency signal forces a decision when evidence is mixed or tied (mimicking WADD/Tallying over longer deliberations), while still allowing highly valid early cues to cross the initially high threshold quickly (mimicking TTB). This minimal edit cleanly implements the requested mechanism to better capture the compensatory dynamics in Experiments 7 and 9 without destabilizing the rest of the fits."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_3",
+      "killed": false,
+      "theory": {
+        "description": "People make decisions by integrating all available information rather than stopping at the first discriminating cue or simply counting features. According to the Weighted Additive (WADD) theory, decision-makers evaluate each option by computing a sum of its features, weighted by the subjective validity of each feature. However, people may non-linearly amplify the importance of highly valid cues. To capture this, validities are exponentiated by a scaling parameter and then normalized, allowing the model to smoothly interpolate between highly compensatory (Tallying-like) and non-compensatory (TTB-like) decision strategies without shrinking the overall scale of the evidence. Choice probabilities are generated via a softmax function over the weighted sums, with an independent lapse rate for random guessing.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"WADD expects a (2, n_features) stimulus.\")\n        \n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    gamma = float(parameters[\"gamma\"])\n    val = val ** gamma\n    val = val / np.sum(val)\n    \n    a, b = stim[0], stim[1]\n    \n    # Compute weighted sum of features for each option\n    score_a = np.sum(val * a)\n    score_b = np.sum(val * b)\n    scores = np.array([score_a, score_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax over the WADD scores\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "gamma": "[1.0, 30.0]",
+          "validities": "validities"
+        },
+        "rationale": "Added a normalization step for the exponentiated validities (val = val / np.sum(val)) as suggested by the critic. Since the raw validities are fractions, raising them to a large power shrinks their absolute values, causing the weighted sums to become very small and washing out the choice probabilities. Normalizing them ensures the scale of the scores remains stable, allowing the beta parameter to properly control the determinism of the choice."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_8",
+    "slot": 1,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Evidence Dilution and Non-linear Weighting Theory (Validity-based Dilution with Amplified Penalty): Decision-makers evaluate options by integrating the validities of present features. However, instead of purely adding evidence, they partially average it. The presence of many low-validity features can paradoxically dilute the overall subjective value of an option (Evidence Dilution). This dilution is proportional to the sum of the validities of the present cues, and subjects apply a non-linear scaling to feature validities, amplifying the impact of the most valid cues. A potentially strong dilution penalty allows for severe subjective devaluation of options burdened with numerous weak features.",
+      "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    a, b = stim[0], stim[1]\n    \n    lambda_val = float(parameters[\"lambda_val\"])\n    gamma = float(parameters[\"gamma\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Non-linear weighting to capture TTB-like reliance on top cues\n    w = val ** lambda_val\n    \n    # Dilute by the sum of validities of the present cues\n    sum_val_a = np.sum(val * a)\n    sum_val_b = np.sum(val * b)\n    \n    # Calculate subjective values with a dilution factor (gamma)\n    v_a = np.sum(w * a) / (sum_val_a ** gamma) if sum_val_a > 0 else 0.0\n    v_b = np.sum(w * b) / (sum_val_b ** gamma) if sum_val_b > 0 else 0.0\n    \n    scores = np.array([v_a, v_b])\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p = e / np.sum(e)\n    \n    return (1.0 - epsilon) * p + epsilon * np.array([0.5, 0.5])\n",
+      "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+      "parameters": {
+        "lambda_val": "[1.0, 20.0]",
+        "gamma": "[0.0, 10.0]",
+        "beta": "[0.1, 20.0]",
+        "epsilon": "[0.0, 0.5]",
+        "validities": "validities"
+      },
+      "rationale": "Following the critic's advice, I reverted to the accepted Iteration 2 base (Evidence Dilution) and widened the upper bounds of the parameters, specifically increasing the upper bound of `gamma` to 10.0 and `lambda_val` to 20.0. This gives the optimizer the flexibility to apply a much stronger dilution penalty to options with many weakly-valid cues, which is necessary to capture the severe negative preference observed in Experiment 9, without fundamentally altering the mathematical formulation that successfully preserved core TTB/Tallying performance in other experiments."
+    }
+  }
+}

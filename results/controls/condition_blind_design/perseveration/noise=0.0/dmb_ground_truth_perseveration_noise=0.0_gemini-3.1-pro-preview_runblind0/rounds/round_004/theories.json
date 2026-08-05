@@ -1,0 +1,53 @@
+{
+  "round_idx": 4,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_5",
+      "killed": false,
+      "theory": {
+        "description": "Noisy Equal Weights (Tallying): Decision-makers find integrating specific cue validities too cognitively demanding. Instead, they evaluate options by simply counting the number of positive features (1s) for each option, treating all cues equally, and preferring the option with the higher total. However, their choices are dominated by an extremely high lapse rate (epsilon ~0.90-1.0), meaning they almost always guess randomly. This accounts for the observed aggregate behavior being essentially at chance across multiple experimental metrics.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be shape (2, n_features).\")\n        \n    a, b = stim[0], stim[1]\n    \n    # Count the number of positive features (1s) for each option\n    score_a = np.sum(a)\n    score_b = np.sum(b)\n    scores = np.array([score_a, score_b])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities = probabilities / probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.1, 10.0]",
+          "epsilon": "[0.9, 1.0]"
+        },
+        "rationale": "Following the critic's advice, the Noisy Tallying mechanism is kept exactly the same, but the epsilon parameter range is shifted higher to [0.90, 1.0]. This minimal edit further washes out the deterministic tallying predictions, bringing the simulated metrics closer to the near-perfectly random behavior (0.50 choice proportion / 0.0 score difference) observed in the human data across experiments."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_6",
+      "killed": true,
+      "theory": {
+        "description": "Noisy Weighted Additive (WADD): Decision-makers compute a fully compensatory, weighted sum of the features for each option, using the provided cue validities as weights. They then choose based on the difference in these weighted sums. However, the execution of this strategy is highly stochastic, characterized by a massive lapse rate. Because the observed aggregate behavior is very close to random guessing (~0.50), the theory posits that subjects frequently suffer from attentional lapses or guess uniformly, effectively washing out the deterministic WADD predictions with heavy noise.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be shape (2, n_features).\")\n        \n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Compute weighted sum of features for each option\n    scores = np.sum(stim * val, axis=1)\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n\n    n_opts = len(scores)\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    p = np.asarray(probs, dtype=np.float64)\n    p /= p.sum()\n    return np.random.choice(len(p), p=p)\n",
+        "parameters": {
+          "beta": "[0.1, 10.0]",
+          "epsilon": "[0.8, 1.0]",
+          "validities": "validities"
+        },
+        "rationale": "Following the arbiter's feedback, this theory replaces the Noisy Take-The-Best mechanism with a Noisy Weighted Additive (WADD) mechanism. It computes a fully compensatory weighted sum of features using the provided cue validities. To capture the near-random aggregate behavior observed across the experiments (where most metrics hover around 0.50), the model is constrained to have a very high lapse rate (epsilon in [0.8, 1.0]). This approach explicitly weights cues by their validity, capturing subtle deviations from 0.50 that Tallying might miss, while still respecting the heavily noise-dominated nature of the subjects' choices."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_7",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Mixture of Take-The-Best and Tallying: Decision-makers rely on a mixture of two simple heuristics rather than a fully compensatory weighted additive strategy. Depending on the trial or individual, they either use Take-The-Best (evaluating features sequentially by validity and stopping at the first discriminating cue) or Tallying (simply counting the number of positive features). The overall behavior is highly stochastic due to a large lapse rate (frequent random guessing), which effectively washes out the deterministic heuristic predictions to match the near-chance aggregate observed across experiments.",
+      "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be shape (2, n_features).\")\n        \n    a, b = stim[0], stim[1]\n    \n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    # Sort cues by descending validity\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n    \n    # TTB prediction\n    ttb_winner = None\n    for j in cue_order:\n        if a[j] > b[j]:\n            ttb_winner = 0\n            break\n        elif b[j] > a[j]:\n            ttb_winner = 1\n            break\n            \n    if ttb_winner == 0:\n        p_ttb = np.array([1.0, 0.0])\n    elif ttb_winner == 1:\n        p_ttb = np.array([0.0, 1.0])\n    else:\n        p_ttb = np.array([0.5, 0.5])\n        \n    # Tallying prediction\n    score_a = np.sum(a)\n    score_b = np.sum(b)\n    if score_a > score_b:\n        p_tally = np.array([1.0, 0.0])\n    elif score_b > score_a:\n        p_tally = np.array([0.0, 1.0])\n    else:\n        p_tally = np.array([0.5, 0.5])\n        \n    w_ttb = float(parameters[\"w_ttb\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    p_core = w_ttb * p_ttb + (1.0 - w_ttb) * p_tally\n    \n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n",
+      "policy_source": "def policy(probs):\n    import numpy as np\n    p = np.asarray(probs, dtype=np.float64)\n    p /= p.sum()\n    return np.random.choice(len(p), p=p)\n",
+      "parameters": {
+        "w_ttb": "[0.0, 1.0]",
+        "epsilon": "[0.8, 1.0]",
+        "validities": "validities"
+      },
+      "rationale": "The previous WADD theory completely failed the adversarial test in Experiment 10, predicting a compensatory signal orthogonal to Tallying that was not present in the empirical data. To resolve this, this new theory replaces WADD with a mixture of two non-compensatory/equal-weight heuristics: Take-The-Best (TTB) and Tallying. By blending these two strategies and maintaining the high lapse rate (epsilon) needed to capture the nearly random empirical choices, the model can flexibly capture the subtle deviations from chance across all experiments without predicting the flawed compensatory WADD signal."
+    }
+  }
+}

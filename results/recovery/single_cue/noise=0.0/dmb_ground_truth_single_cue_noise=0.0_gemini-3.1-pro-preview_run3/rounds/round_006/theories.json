@@ -1,0 +1,57 @@
+{
+  "round_idx": 6,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_5",
+      "killed": false,
+      "theory": {
+        "description": "Tally-then-TTB (Tally with Validity Tie-Breaker): Decision-makers first compare options by tallying the total number of winning features for each option, ignoring cue validities. If one option has strictly more wins, it is chosen. This captures the compensatory nature of decision-making when there is a clear majority of supporting cues. However, if the tally results in a tie, the decision-maker falls back to a non-compensatory 'Take-The-Best' strategy to break the tie, choosing the option that wins on the single most valid cue. This hybrid model preserves robust Tallying performance on unequal-tally trials while capturing deterministic validity-based tie-breaking on ambiguous trials.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Tallying phase: count strict feature-wise wins\n    a_wins = float(np.sum(a > b))\n    b_wins = float(np.sum(b > a))\n    \n    score_a = a_wins\n    score_b = b_wins\n    \n    # Tie-breaking phase: if tallies are equal, use TTB\n    if a_wins == b_wins:\n        cue_order = np.argsort(-val, kind=\"stable\")\n        for idx in cue_order:\n            if a[idx] > b[idx]:\n                score_a += 1.0\n                break\n            elif b[idx] > a[idx]:\n                score_b += 1.0\n                break\n                \n    scores = np.array([score_a, score_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax choice rule with max-subtraction for numerical stability\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the arbiter's feedback, this theory implements a 'Tally-then-TTB' mechanism. It evaluates options primarily by Tallying, which correctly captures human behavior on unequal-tally trials where subjects tend to prefer the option with more winning cues regardless of their validity. When Tallying results in a tie, rather than guessing randomly (which fails to capture deterministic behavior on tied trials), the model breaks the tie by defaulting to Take-The-Best, selecting the option that wins on the highest-validity cue. This directly addresses the mechanistic failures of pure Tallying and pure TTB by combining their strengths in a sequential heuristic framework."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_8",
+      "killed": true,
+      "theory": {
+        "description": "Generalized Weighted Additive Model (WADD). Decision-makers integrate all available cues simultaneously, but weight each cue according to an exponentiated function of its validity. This single continuous mechanism smoothly interpolates between three classic heuristics depending on the exponent theta: when theta = 0, it reduces to pure Tallying (all cues weighted equally); when theta = 1, it represents standard WADD; and when theta is large, it approximates Take-The-Best (lexicographic choice where the most valid cue dominates the sum of all others). This completely discards the 'Tallying-first' assumption and allows the model to flexibly capture both compensatory and non-compensatory decision-making across different subjects and experimental contexts without needing a two-stage or tie-breaking process.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    theta = float(parameters[\"theta\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Calculate weights by exponentiating validities\n    weights = val ** theta\n    \n    # Option scores based on weighted sum of winning cues\n    a_wins = (a > b).astype(float)\n    b_wins = (b > a).astype(float)\n    \n    score_a = np.sum(weights * a_wins)\n    score_b = np.sum(weights * b_wins)\n    \n    scores = np.array([score_a, score_b])\n    \n    # Softmax choice rule with max-subtraction for numerical stability\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.1, 50.0]",
+          "epsilon": "[0.0, 0.5]",
+          "theta": "[0.0, 30.0]",
+          "validities": "validities"
+        },
+        "rationale": "The previous theory (`pi_7`) relied on a two-stage 'Tallying-first' heuristic with a validity-based tie-breaker. The arbiter correctly pointed out that this mechanism fundamentally fails to capture scenarios where a single high-validity cue systematically overrides a larger tally of lower-validity cues on non-tied trials. To address this, we propose a Generalized Weighted Additive (WADD) model that completely discards the Tallying-first assumption. Instead, decision-makers integrate all cues simultaneously, weighting each cue by an exponentiated function of its validity (`validities ** theta`). This continuous parameterization elegantly subsumes three classic strategies: when `theta = 0`, it reduces to pure Tallying (equal weights); when `theta = 1`, it represents standard WADD; and for large `theta`, the highest-validity cue dominates, mimicking Take-The-Best (lexicographic choice). This allows the model to flexibly adapt to varying degrees of compensatory and non-compensatory behavior across subjects and experiments without relying on ad-hoc tie-breakers."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_9",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Rank-Based Threshold Tallying: Decision-makers do not integrate all available cues indiscriminately, nor do they rely on a single cue. Instead, they form a consideration set of the top-K most valid cues and apply a compensatory tallying heuristic strictly within this subset. If this primary tally yields a clear preference, they choose that option. If the high-validity cues result in a tie, decision-makers fall back to a secondary tally of the remaining low-validity cues to break the tie probabilistically. This captures the robust tallying behavior in most tasks while restricting integration to 'important' cues, explaining deviations in environments where unweighted tallying over all cues breaks down.",
+      "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    n_features = len(val)\n    \n    top_k_prop = float(parameters[\"top_k_prop\"])\n    k = max(1, int(np.round(top_k_prop * n_features)))\n    \n    # Rank validities: lowest = 0, highest = n_features - 1\n    ranks = np.argsort(np.argsort(val))\n    primary_mask = ranks >= (n_features - k)\n    secondary_mask = ~primary_mask\n    \n    a_wins = (a > b).astype(float)\n    b_wins = (b > a).astype(float)\n    \n    a_wins_primary = np.sum(a_wins[primary_mask])\n    b_wins_primary = np.sum(b_wins[primary_mask])\n    \n    a_wins_secondary = np.sum(a_wins[secondary_mask])\n    b_wins_secondary = np.sum(b_wins[secondary_mask])\n    \n    fallback = float(parameters[\"fallback_weight\"])\n    \n    # Normalize secondary wins by number of secondary features \n    # so its maximum contribution is strictly < 1.0, ensuring it acts only as a tie-breaker.\n    num_secondary = np.sum(secondary_mask)\n    if num_secondary > 0:\n        sec_a = a_wins_secondary / num_secondary\n        sec_b = b_wins_secondary / num_secondary\n    else:\n        sec_a = 0.0\n        sec_b = 0.0\n        \n    score_a = a_wins_primary + fallback * sec_a\n    score_b = b_wins_primary + fallback * sec_b\n    \n    scores = np.array([score_a, score_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax choice rule with max-subtraction for numerical stability\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+      "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+      "parameters": {
+        "top_k_prop": "[0.1, 1.0]",
+        "fallback_weight": "[0.0, 0.1]",
+        "beta": "[0.1, 20.0]",
+        "epsilon": "[0.0, 0.5]",
+        "validities": "validities"
+      },
+      "rationale": "Following the critic's feedback, we revert to the iteration 1 `top_k_prop` base, which successfully passed the accept gate. The only change is tightening the `fallback_weight` range from `[0.0, 0.99]` to `[0.0, 0.1]`. This ensures the secondary tally strictly acts as a tie-breaker without compressing primary score differences, which previously diluted the softmax probabilities and degraded fit on experiments where primary tallying is dominant."
+    }
+  }
+}

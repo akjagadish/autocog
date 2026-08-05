@@ -1,0 +1,62 @@
+{
+  "round_idx": 4,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_6",
+      "killed": false,
+      "theory": {
+        "description": "Probabilistic Cue Integration with Attention Lapses and Choice Inertia: Subjects integrate evidence from cues by probabilistically attending to them based on validity. To account for behavioral overdispersion and sequence effects, the final choice probability is a mixture of the evidence-based decision, random lapses, and explicit choice inertia (stickiness) from the previous trial.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Expects a (2, n_features) stimulus.\")\n    \n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    val_clipped = np.clip(val, 0.5001, 0.9999)\n    weights = np.log(val_clipped / (1.0 - val_clipped))\n    \n    attention_base = float(parameters[\"attention_base\"])\n    attention_gamma = float(parameters[\"attention_gamma\"])\n    history_bias = float(parameters[\"history_bias\"])\n    temperature = float(parameters[\"temperature\"])\n    epsilon = float(parameters[\"epsilon\"])\n    stickiness = float(parameters[\"stickiness\"])\n    \n    # Probability of attending to each cue depends on base rate and its validity\n    p_attend = np.clip(attention_base * (val ** attention_gamma), 0.0, 1.0)\n    \n    prev_resp = None\n    if history and \"response\" in history and len(history[\"response\"]) > 0:\n        prev_resp = history[\"response\"][-1]\n    \n    bias = 0.0\n    p_prev = np.array([0.5, 0.5])\n    if prev_resp == 0:\n        bias = history_bias\n        p_prev = np.array([1.0, 0.0])\n    elif prev_resp == 1:\n        bias = -history_bias\n        p_prev = np.array([0.0, 1.0])\n        \n    a, b = stim[0], stim[1]\n    n_features = len(val)\n    \n    # Monte Carlo simulation of probabilistic attention\n    n_sims = 2000\n    attend_mask = np.random.rand(n_sims, n_features) < p_attend\n    evidence = weights * (a - b)\n    \n    # Sum evidence only for attended cues and add history bias\n    total_evidence = np.sum(attend_mask * evidence, axis=1) + bias\n    \n    # Softmax conversion to probability of choosing A\n    z = total_evidence / temperature\n    z = np.clip(z, -100, 100)\n    p_A_sims = 1.0 / (1.0 + np.exp(-z))\n    \n    p_A = np.mean(p_A_sims)\n    p_B = 1.0 - p_A\n    \n    p_core = np.array([p_A, p_B])\n    \n    # Normalize weights to ensure valid probabilities even if stickiness + epsilon > 1\n    w_core = max(0.0, 1.0 - stickiness - epsilon)\n    total_w = w_core + stickiness + epsilon\n    \n    return (w_core * p_core + stickiness * p_prev + epsilon * np.array([0.5, 0.5])) / total_w\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities = probabilities / probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+        "parameters": {
+          "attention_base": "[0.1, 1.0]",
+          "attention_gamma": "[-5.0, 10.0]",
+          "history_bias": "[-10.0, 10.0]",
+          "temperature": "[0.01, 10.0]",
+          "epsilon": "[0.0, 1.0]",
+          "stickiness": "[0.0, 0.99]",
+          "validities": "validities"
+        },
+        "rationale": "Added a `stickiness` parameter to explicitly model choice inertia at the probability level, as recommended by the critic. Because the Monte Carlo integration smooths out the probabilities, directly injecting trial-by-trial auto-correlation via `stickiness` forces the output probabilities to become more polarized according to the subject's previous choices. This will naturally inflate the variance of simulated choice proportions and better capture the overdispersion (high JSD) seen in human data. I ensured that the mixture weights are properly normalized so that the output remains a valid probability distribution."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_5",
+      "killed": true,
+      "theory": {
+        "description": "Noisy Evidence Accumulation with History Bias and Leakage: Decision making is a noisy sequential sampling process where evidence from cues is accumulated in order of validity. The accumulation is subject to moment-to-moment noise and evidence decay (leakage), producing trial-to-trial variability and primacy/recency effects. The starting point of evidence accumulation is biased by the previous choice, naturally capturing sequence-aware divergence. Wide individual differences in noise, threshold, leak, and history bias account for the high variance in behavior across subjects.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Expects a (2, n_features) stimulus.\")\n    \n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    val_clipped = np.clip(val, 0.5001, 0.9999)\n    weights = np.log(val_clipped / (1.0 - val_clipped))\n    \n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n    \n    threshold = float(parameters[\"threshold\"])\n    noise_std = float(parameters[\"noise_std\"])\n    history_bias = float(parameters[\"history_bias\"])\n    epsilon = float(parameters[\"epsilon\"])\n    leak = float(parameters[\"leak\"])\n    \n    # Determine previous response to set accumulation starting bias\n    prev_resp = None\n    if history and \"response\" in history and len(history[\"response\"]) > 0:\n        prev_resp = history[\"response\"][-1]\n    \n    bias = 0.0\n    if prev_resp == 0:\n        bias = history_bias\n    elif prev_resp == 1:\n        bias = -history_bias\n        \n    a, b = stim[0], stim[1]\n    \n    # Vectorized Monte Carlo simulation of the noisy accumulation process\n    n_sims = 1000\n    accumulated = np.full(n_sims, bias)\n    decided = np.zeros(n_sims, dtype=bool)\n    choices = np.zeros(n_sims, dtype=int)\n    \n    for j in cue_order:\n        mu = weights[j] * (a[j] - b[j])\n        # Moment-to-moment noise in evidence accumulation\n        step = np.random.normal(mu, noise_std, size=n_sims)\n        \n        # Apply leakage to previously accumulated evidence before adding the new step\n        accumulated = np.where(decided, accumulated, accumulated * (1.0 - leak) + step)\n        \n        hit_A = (accumulated >= threshold) & ~decided\n        hit_B = (accumulated <= -threshold) & ~decided\n        \n        choices[hit_A] = 0\n        choices[hit_B] = 1\n        \n        decided = decided | hit_A | hit_B\n        if np.all(decided):\n            break\n            \n    # For simulations that didn't cross the threshold, decide based on final accumulated evidence\n    if not np.all(decided):\n        undecided = ~decided\n        undecided_A = undecided & (accumulated > 0)\n        undecided_B = undecided & (accumulated < 0)\n        undecided_tie = undecided & (accumulated == 0)\n        \n        choices[undecided_A] = 0\n        choices[undecided_B] = 1\n        \n        ties = np.sum(undecided_tie)\n        if ties > 0:\n            choices[undecided_tie] = np.random.choice([0, 1], size=ties)\n            \n    p_A = np.mean(choices == 0)\n    p_B = 1.0 - p_A\n    \n    p_core = np.array([p_A, p_B])\n    n_opts = len(p_core)\n    \n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities = probabilities / probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+        "parameters": {
+          "threshold": "[0.01, 10.0]",
+          "noise_std": "[0.1, 5.0]",
+          "history_bias": "[-5.0, 5.0]",
+          "epsilon": "[0.0, 0.5]",
+          "leak": "[0.0, 1.0]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's feedback, we added a `leak` parameter to represent evidence decay during the sequential accumulation process. By decaying accumulated evidence at each step before adding new evidence (`accumulated = accumulated * (1.0 - leak) + step`), the model naturally captures primacy/recency effects in cue processing. This allows for highly idiosyncratic choices without needing to artificially scale weights or restrict the general lapse rate. We also narrowed the `noise_std` upper bound to 5.0 to ensure that noise does not completely overwhelm the signal on every trial."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_7",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Mixture of Heuristics: Subjects possess a repertoire of distinct decision heuristics\u2014specifically, Take-The-Best (lexicographic, strictly ordered by validity with early stopping) and Tallying (simple unweighted counting of positive features). On any given trial, a subject probabilistically selects one of these strategies. This mixture of a strictly non-compensatory strategy and a completely flat compensatory strategy, combined with baseline random lapses and history bias (stickiness to the previous choice), captures the complex, overdispersed choice patterns observed across different cue configurations.",
+      "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Expects a (2, n_features) stimulus.\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Take-The-Best (TTB) heuristic\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n    p_ttb_A = 0.5\n    for j in cue_order:\n        if a[j] > b[j]:\n            p_ttb_A = 1.0\n            break\n        elif b[j] > a[j]:\n            p_ttb_A = 0.0\n            break\n            \n    # Tallying heuristic\n    a_wins = np.sum(a > b)\n    b_wins = np.sum(b > a)\n    if a_wins > b_wins:\n        p_tly_A = 1.0\n    elif b_wins > a_wins:\n        p_tly_A = 0.0\n    else:\n        p_tly_A = 0.5\n        \n    # Mixture of heuristics\n    p_ttb_weight = float(parameters[\"p_ttb\"])\n    p_core_A = p_ttb_weight * p_ttb_A + (1.0 - p_ttb_weight) * p_tly_A\n    p_core = np.array([p_core_A, 1.0 - p_core_A])\n    \n    # History bias (stickiness)\n    prev_resp = None\n    if history and \"response\" in history and len(history[\"response\"]) > 0:\n        prev_resp = history[\"response\"][-1]\n        \n    p_prev = np.array([0.5, 0.5])\n    if prev_resp == 0:\n        p_prev = np.array([1.0, 0.0])\n    elif prev_resp == 1:\n        p_prev = np.array([0.0, 1.0])\n        \n    epsilon = float(parameters[\"epsilon\"])\n    stickiness = float(parameters[\"stickiness\"])\n    \n    # Normalize weights to ensure valid probabilities\n    w_core = max(0.0, 1.0 - stickiness - epsilon)\n    total_w = w_core + stickiness + epsilon\n    \n    p_final = (w_core * p_core + stickiness * p_prev + epsilon * np.array([0.5, 0.5])) / total_w\n    return p_final",
+      "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities = probabilities / probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))",
+      "parameters": {
+        "p_ttb": "[0.0, 1.0]",
+        "epsilon": "[0.0, 1.0]",
+        "stickiness": "[0.0, 1.0]",
+        "validities": "validities"
+      },
+      "rationale": "Following the arbiter's guidance, this theory abandons continuous cue integration in favor of a probabilistic mixture of two discrete heuristics: Take-The-Best (non-compensatory) and Tallying (flat compensatory). By mixing these deterministic strategies at the individual level (via `p_ttb`), alongside random lapses (`epsilon`) and choice inertia (`stickiness`), the model naturally generates the complex, overdispersed choice behaviors without needing a temperature parameter. This satisfies the arbiter's mechanistic requirements while remaining highly parsimonious."
+    }
+  }
+}

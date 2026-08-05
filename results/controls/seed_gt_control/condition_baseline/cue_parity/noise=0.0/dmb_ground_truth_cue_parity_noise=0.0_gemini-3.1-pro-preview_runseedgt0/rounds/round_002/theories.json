@@ -1,0 +1,55 @@
+{
+  "round_idx": 2,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_1",
+      "killed": false,
+      "theory": {
+        "description": "People decide by the PARITY of the evidence rather than its weight or direction. They count the number of cues on which option A strictly beats option B, and prefer A when that count is ODD and B when it is EVEN (zero counts as even). This is a deliberately non-monotone, XOR-like rule: adding one more cue in A's favor flips the preference rather than strengthening it, so option dominance does NOT imply choice \u2014 an option that wins on every cue (an even count, when the cue number is even) is rejected. The rule uses no validities and no magnitudes, only the parity of feature-wise wins, which makes it an adversarially hard recovery target: it is uncorrelated with any single cue and with the validity-weighted sum, yet perfectly deterministic, much like the anti-majority ensemble. Response noise enters through a softmax over the binary score (winner = 1, loser = 0) with inverse temperature beta, plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+        "predict_source": "def predict(parameters, stimulus, history):\n    # Cue-Parity: prefer A iff the number of cues where A strictly beats B is\n    # ODD, else prefer B (zero A-wins is even -> B). Non-monotone in the\n    # evidence; uses neither validities nor magnitudes. Stimulus is the pair\n    # of option feature vectors: (2, n_features), row 0 = A, row 1 = B.\n    # History is ignored.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"Cue-Parity expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n\n    a, b = stim[0], stim[1]\n    a_wins = int(np.sum(a > b))\n    # Odd number of A-favoring cues -> A (0); even (including zero) -> B (1).\n    winner = 0 if (a_wins % 2 == 1) else 1\n\n    scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. For the binary\n    # score this collapses to sigmoid(beta) for the winner (beta=0 \u2194 50/50;\n    # beta \u226b 1 \u2194 deterministic).\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]"
+        },
+        "rationale": null
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_4",
+      "killed": true,
+      "theory": {
+        "description": "Continuous Weighted Parity (Restricted Parameter): Decision makers compute a parity-like signal, but the contribution of each cue is weighted by its validity. The evidence is integrated into a continuous sum of validity-weighted wins, which is then passed through a periodic parity function (negative cosine). To avoid chaotic phase shifts that destroy the parity signal, the influence of validity weights is kept small, allowing them to gently perturb the parity score without pushing the sum into the 'dead zones' (half-integers) of the cosine function.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Continuous Weighted Parity expects a (2, n_features) stimulus.\")\n    \n    a, b = stim[0], stim[1]\n    \n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    w_validity = float(parameters[\"w_validity\"])\n    \n    # Calculate weights for each cue based on validity\n    mean_val = np.mean(validities)\n    weights = 1.0 + w_validity * (validities - mean_val)\n    \n    # Compute weighted sum of strict A wins\n    a_wins_mask = (a > b).astype(float)\n    weighted_wins = np.sum(weights * a_wins_mask)\n    \n    # Continuous parity score: maps even integers to -1 (favoring B) and odd integers to +1 (favoring A)\n    parity_score = -np.cos(np.pi * weighted_wins)\n    \n    # Scores for A and B\n    score_a = parity_score\n    score_b = -parity_score\n    \n    scores = np.array([score_a, score_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax conversion with numerical stability\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+        "parameters": {
+          "validities": "validities",
+          "w_validity": "[0.0, 0.5]",
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]"
+        },
+        "rationale": "Following the critic's diagnosis, the Continuous Weighted Parity mechanism works well but its previous parameterization for w_validity (up to 5.0) allowed the weighted sum to deviate drastically from integers. This often caused the sum to land near half-integers where the cosine evaluates to 0, destroying the parity signal and causing chaotic oscillations. By restricting w_validity to [0.0, 0.5], the validity weights gently perturb the parity score, preserving a strong, interpretable parity signal while still allowing validities to modulate confidence."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_5",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Tallying-Biased Parity (Strict Parity Dominance): Decision makers primarily rely on a strict Cue-Parity rule (preferring the option with an odd number of winning cues). However, instead of lapsing into purely uniform random noise, their secondary considerations consist of occasionally falling back to a standard validity-weighted tallying strategy. To ensure that tallying acts only as a weak bias and does not override parity in cases of option dominance, the fallback probability is strictly bounded to a low range.",
+      "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Tallying-Biased Parity expects a (2, n_features) stimulus.\")\n    \n    a, b = stim[0], stim[1]\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Core Strategy: Strict Cue-Parity\n    a_wins = int(np.sum(a > b))\n    parity_winner = 0 if (a_wins % 2 == 1) else 1\n    parity_scores = np.array([1.0, 0.0]) if parity_winner == 0 else np.array([0.0, 1.0])\n    \n    # Fallback Strategy: Validity-weighted Tallying\n    val_a = np.sum(validities * (a > b))\n    val_b = np.sum(validities * (b > a))\n    tally_scores = np.array([val_a, val_b])\n    \n    beta_parity = float(parameters[\"beta_parity\"])\n    beta_tally = float(parameters[\"beta_tally\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Parity probabilities via softmax\n    z_p = beta_parity * (parity_scores - parity_scores.max())\n    e_p = np.exp(z_p)\n    p_parity = e_p / e_p.sum()\n    \n    # Tallying probabilities via softmax\n    z_t = beta_tally * (tally_scores - tally_scores.max())\n    e_t = np.exp(z_t)\n    p_tally = e_t / e_t.sum()\n    \n    # Mixture of the two strategies\n    return (1.0 - epsilon) * p_parity + epsilon * p_tally\n",
+      "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+      "parameters": {
+        "validities": "validities",
+        "beta_parity": "[0.1, 20.0]",
+        "beta_tally": "[0.1, 10.0]",
+        "epsilon": "[0.0, 0.3]"
+      },
+      "rationale": "Following the latest critic feedback, we tightly bounded `epsilon` to [0.0, 0.3] and restricted `beta_tally` to [0.1, 10.0]. This minimal edit ensures that the validity-weighted tallying strategy functions strictly as a weak secondary lapse, preventing it from overriding the primary Cue-Parity rule in scenarios where one option clearly dominates the raw cue count (like in Experiment 6). This preserves the strong parity invariants while still allowing validities to exert the necessary monotonic pull."
+    }
+  }
+}

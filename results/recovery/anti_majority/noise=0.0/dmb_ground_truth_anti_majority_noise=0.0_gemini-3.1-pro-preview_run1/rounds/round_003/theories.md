@@ -1,0 +1,219 @@
+# Round 3 — Theories
+
+**Verdict:** `new_theory` (slot 2 replaced)
+
+## Starting theories
+
+### slot 1 — `pi_5` — SURVIVED ✓
+
+**Description:** Averaging Model: Decision-makers evaluate options not by summing the evidence (additive) or relying on a single best cue (lexicographic), but by averaging the subjective validities of all positive features present in an option. This mechanism naturally accounts for the 'dilution effect', where adding a positive but low-validity feature to an option can actually decrease its overall subjective value and choice probability.
+
+**Rationale:** Following the latest feedback, we constrain the gamma parameter strictly to values >= 1.0 (range [1.0, 10.0]). This ensures the model continues to respect cue validities and avoids collapsing into purely random behaviour where all features are weighted equally. Concurrently, beta is bounded to a moderate range [0.1, 15.0] to prevent overly deterministic predictions that artificially inflate the TTB-consistency metrics in Exps 1 and 3. The core averaging mechanism remains untouched.
+
+**Parameters:**
+  - `gamma`: `[1.0, 10.0]`
+  - `beta`: `[0.1, 15.0]`
+  - `epsilon`: `[0.0, 0.5]`
+  - `validities`: `validities`
+
+**`predict(parameters, stimulus, history)`:**
+```python
+def predict(parameters, stimulus, history):
+    import numpy as np
+    
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError("Model expects a (2, n_features) stimulus.")
+    
+    a, b = stim[0], stim[1]
+    val = np.asarray(parameters["validities"], dtype=float)
+    
+    gamma = float(parameters["gamma"])
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+    
+    # Transform validities to subjective weights
+    w = val ** gamma
+    
+    # Count positive features
+    k_a = np.sum(a)
+    k_b = np.sum(b)
+    
+    # Calculate average validity of positive features (0 if no positive features)
+    score_a = np.sum(w * a) / k_a if k_a > 0 else 0.0
+    score_b = np.sum(w * b) / k_b if k_b > 0 else 0.0
+    
+    scores = np.array([score_a, score_b])
+    
+    # Softmax choice rule
+    z = beta * (scores - np.max(scores))
+    e = np.exp(z)
+    p_core = e / np.sum(e)
+    
+    n_opts = p_core.shape[0]
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+```
+
+**`policy(probs)`:**
+```python
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities /= probabilities.sum()
+    return np.random.choice(len(probabilities), p=probabilities)
+```
+
+
+### slot 2 — `pi_3` — KILLED ✗
+
+**Description:** Decision-makers integrate all available features to evaluate options, weighting each feature according to its subjective importance. This Weighted Additive (WADD) strategy computes a compensatory score for each option by summing the feature values multiplied by their normalized subjective weights. The subjective weights are modeled as the provided feature validities raised to a power 'gamma', which allows the model to smoothly interpolate between Tallying (gamma = 0, equal weights) and Take The Best (large gamma, where the highest validity cue dominates). Choice probabilities are then generated via a softmax function over the options' scores, subject to random lapses.
+
+**Rationale:** Implemented the critic's suggestion to increase the upper bounds of `gamma` and `beta` from 20.0 to 50.0. Because the subjective weights are normalized to sum to 1, the maximum possible difference between WADD scores is bounded by 1.0, and in practice is often much smaller. Expanding the parameter bounds allows the optimizer to find sharper step-functions for cue dominance (via higher gamma) and steeper softmax curves (via higher beta), providing the headroom needed to perfectly match the high levels of TTB conformity and low levels of Tallying conformity observed in the experimental data.
+
+**Parameters:**
+  - `gamma`: `[0.0, 50.0]`
+  - `beta`: `[0.1, 50.0]`
+  - `epsilon`: `[0.0, 0.5]`
+  - `validities`: `validities`
+
+**`predict(parameters, stimulus, history)`:**
+```python
+def predict(parameters, stimulus, history):
+    import numpy as np
+    
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError("WADD expects a (2, n_features) stimulus.")
+    
+    a, b = stim[0], stim[1]
+    val = np.asarray(parameters["validities"], dtype=float)
+    
+    gamma = float(parameters["gamma"])
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+    
+    # Compute subjective weights by raising validities to the power of gamma
+    w = val ** gamma
+    # Normalize weights to decouple gamma (cue dominance) from beta (choice determinism)
+    if np.sum(w) > 0:
+        w = w / np.sum(w)
+    
+    # Calculate Weighted Additive (WADD) scores for both options
+    score_a = np.sum(w * a)
+    score_b = np.sum(w * b)
+    scores = np.array([score_a, score_b])
+    
+    # Numerically stable softmax
+    z = beta * (scores - np.max(scores))
+    e = np.exp(z)
+    p_core = e / np.sum(e)
+    
+    n_opts = p_core.shape[0]
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+```
+
+**`policy(probs)`:**
+```python
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities /= probabilities.sum()
+    return np.random.choice(len(probabilities), p=probabilities)
+```
+
+
+## Replacement
+
+### `pi_6` → slot 2 (via `new_theory`)
+
+**Description:** Lexicographic with Fallback (Probabilistic TTB + Averaging): Decision-makers process features sequentially in order of validity. If the most valid discriminating feature provides strong enough evidence (its validity exceeds a threshold), they rely on it to make a Take-The-Best choice. However, this TTB choice is probabilistic, with its reliability scaled by the cue's validity, allowing for variance across different cue validities. If the best discriminating feature is not decisive enough, or as a probabilistic alternative, they fall back to a holistic evaluation by averaging the subjective validities of all positive features.
+
+**Rationale:** Following the latest feedback, we revert to the exact fallback mechanism and hard threshold gating from the accepted Iteration 1 base, as modifications to these components consistently degraded performance on Experiments 7 and 8. To introduce the missing variance in Experiment 5, we modify the TTB choice itself: rather than being a deterministic 1.0/0.0 choice, it is now a probabilistic choice generated by a softmax over the discriminating cue's values, scaled by the cue's validity (`v_star`) and a new parameter `beta_ttb`. This allows the reliability of the TTB choice to vary depending on the validity of the active cue, naturally creating variance across different trial types in Experiment 5 without breaking the dilution effects captured by the averaging fallback.
+
+**Parameters:**
+  - `gamma`: `[0.0, 10.0]`
+  - `beta_avg`: `[0.1, 20.0]`
+  - `beta_ttb`: `[0.1, 20.0]`
+  - `p_ttb`: `[0.0, 1.0]`
+  - `theta`: `[0.5, 1.0]`
+  - `epsilon`: `[0.0, 0.5]`
+  - `validities`: `validities`
+
+**`predict(parameters, stimulus, history)`:**
+```python
+def predict(parameters, stimulus, history):
+    import numpy as np
+    
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError("Model expects a (2, n_features) stimulus.")
+    
+    a, b = stim[0], stim[1]
+    val = np.asarray(parameters["validities"], dtype=float)
+    
+    gamma = float(parameters["gamma"])
+    beta_avg = float(parameters["beta_avg"])
+    beta_ttb = float(parameters["beta_ttb"])
+    p_ttb = float(parameters["p_ttb"])
+    theta = float(parameters["theta"])
+    epsilon = float(parameters["epsilon"])
+    
+    # Sort cues by validity descending (stable sort to preserve original order on ties)
+    cue_order = np.argsort(-val, kind="stable")
+    
+    # Find first discriminating cue
+    j_star = -1
+    for j in cue_order:
+        if a[j] != b[j]:
+            j_star = j
+            break
+            
+    # Lexicographic (TTB) Choice formulation
+    if j_star != -1:
+        v_star = val[j_star]
+        # Probabilistic TTB using softmax scaled by the discriminating cue's validity
+        z_ttb = beta_ttb * v_star * np.array([a[j_star], b[j_star]])
+        z_ttb = z_ttb - np.max(z_ttb)
+        e_ttb = np.exp(z_ttb)
+        p_core_ttb = e_ttb / np.sum(e_ttb)
+    else:
+        p_core_ttb = np.array([0.5, 0.5])
+        v_star = 0.0
+        
+    # Decide whether to use TTB based on the decisiveness (threshold) of the discriminating cue
+    if v_star >= theta:
+        w_ttb = p_ttb
+    else:
+        w_ttb = 0.0
+        
+    # Fallback Strategy: Averaging of all positive features
+    w = val ** gamma
+    k_a = np.sum(a)
+    k_b = np.sum(b)
+    
+    score_a = np.sum(w * a) / k_a if k_a > 0 else 0.0
+    score_b = np.sum(w * b) / k_b if k_b > 0 else 0.0
+    
+    scores = np.array([score_a, score_b])
+    
+    # Softmax for Averaging fallback
+    z = beta_avg * (scores - np.max(scores))
+    e = np.exp(z)
+    p_core_avg = e / np.sum(e)
+    
+    # Mixture of Lexicographic and Fallback strategies
+    p_mix = w_ttb * p_core_ttb + (1.0 - w_ttb) * p_core_avg
+    
+    # Apply lapse rate
+    n_opts = p_mix.shape[0]
+    return (1.0 - epsilon) * p_mix + epsilon * (np.ones(n_opts) / n_opts)
+```
+
+**`policy(probs)`:**
+```python
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities /= probabilities.sum()
+    return np.random.choice(len(probabilities), p=probabilities)
+```

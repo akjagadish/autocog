@@ -1,0 +1,54 @@
+{
+  "round_idx": 4,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_3",
+      "killed": false,
+      "theory": {
+        "description": "People make choices by integrating all available feature information, weighting each cue by its subjective validity. Unlike Tallying (which weights all cues equally) or Take The Best (which stops at the first discriminating cue), the Weighted Additive (WADD) model computes an overall expected value for each option by summing the products of the feature values and their validities. Choice probabilities are then generated via a softmax function over these weighted sums, allowing for graded sensitivity to both the number of supporting features and their relative importance.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"WADD expects a (2, n_features) stimulus.\")\n    \n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # WADD: compute the weighted sum of features for each option\n    score_a = np.sum(stim[0] * val)\n    score_b = np.sum(stim[1] * val)\n    scores = np.array([score_a, score_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax choice rule with max-subtraction for numerical stability\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=float)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the arbiter's suggestion, this Weighted Additive (WADD) model integrates all available features, weighting them proportionally to their validities. This provides a mechanism that accumulates evidence across all cues (unlike TTB) while remaining sensitive to the varying importance of different features (unlike Tallying). The weighted sums are translated into choice probabilities via a softmax function with a lapse rate, offering a robust parametric alternative that captures compensatory decision-making behavior."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_6",
+      "killed": true,
+      "theory": {
+        "description": "People employ a non-compensatory Take-The-Best (TTB) heuristic to make decisions under uncertainty. Instead of integrating all available features, decision-makers rank cues by their subjective validity and inspect them sequentially in descending order. The search stops at the very first cue that discriminates between the two options, and the choice is determined entirely by this single cue. If no cues discriminate after inspecting all of them, the decision-maker guesses randomly. Response stochasticity is modeled simply through a lapse rate (epsilon), rather than a softmax, reflecting a constant probability of execution error or random guessing regardless of the cue.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Rank cues by validity in descending order\n    order = np.argsort(val)[::-1]\n    \n    epsilon = float(parameters[\"epsilon\"])\n    \n    p_a = 0.5\n    p_b = 0.5\n    \n    # Sequential search for the first discriminating cue\n    for idx in order:\n        if stim[0, idx] > stim[1, idx]:\n            p_a = 1.0 - epsilon\n            p_b = epsilon\n            break\n        elif stim[1, idx] > stim[0, idx]:\n            p_a = epsilon\n            p_b = 1.0 - epsilon\n            break\n            \n    return np.array([p_a, p_b])\n",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=float)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+        "parameters": {
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's advice, the previous attempt to scale scores by cue validity was rejected because TTB is strictly non-compensatory. Moreover, the original base model used both a softmax temperature (beta) and a lapse rate (epsilon) on a fixed 1 vs 0 score difference, which is mathematically redundant and causes identifiability issues. This minimal edit removes beta and the softmax entirely. If a cue discriminates, the model deterministically favors that option modulo the lapse rate epsilon. If no cues discriminate, it outputs a uniform distribution [0.5, 0.5]."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_7",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Unweighted Threshold Evidence Accumulation Model: Decision-makers integrate feature information sequentially in order of cue validity, but they do not weight the features by their exact validities. Instead, they simply count the unweighted evidence (treating each feature as 1 or 0) and stop search early once the unweighted evidence difference between options exceeds a subjective threshold. This blends the bounded, heuristic nature of Take-The-Best with the equal-weight compensatory integration of Tallying.",
+      "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    theta = float(parameters[\"theta\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Sort features by validity in descending order\n    order = np.argsort(val)[::-1]\n    \n    score_a = 0.0\n    score_b = 0.0\n    \n    # Integrate unweighted evidence until the difference threshold is met\n    for i in order:\n        score_a += stim[0, i]\n        score_b += stim[1, i]\n        if abs(score_a - score_b) >= theta:\n            break\n            \n    scores = np.array([score_a, score_b])\n    \n    # Softmax choice rule with max-subtraction for numerical stability\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = len(p_core)\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+      "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=float)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+      "parameters": {
+        "beta": "[0.1, 20.0]",
+        "epsilon": "[0.0, 0.5]",
+        "theta": "[0.0, 5.0]",
+        "validities": "validities"
+      },
+      "rationale": "Following the critic's feedback, restricting the threshold and beta parameters degraded performance, indicating that subjects might be integrating more information or acting more deterministically. As suggested, I modified the Threshold model to integrate *unweighted* evidence difference rather than validity-weighted difference, while keeping the original broader parameter bounds. This shifts the model closer to the Tallying family (which has shown strong performance historically) while retaining the sequential, validity-ordered search and early stopping of the Threshold mechanism."
+    }
+  }
+}

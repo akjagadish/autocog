@@ -1,0 +1,54 @@
+{
+  "round_idx": 3,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_5",
+      "killed": true,
+      "theory": {
+        "description": "Weighted Additive (WADD) Strategy with log-odds cue integration.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n    \n    a, b = stim[0], stim[1]\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    clipped_vals = np.clip(validities, 1e-4, 1.0 - 1e-4)\n    weights = np.log(clipped_vals / (1.0 - clipped_vals))\n    \n    val_a = np.sum(weights * a)\n    val_b = np.sum(weights * b)\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    scores = np.array([val_a, val_b])\n    \n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = len(p_core)\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Initial logic and parameters are validated. Standard processing applied. Transformed validities to log-odds directly for principled subjective weighting."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_4",
+      "killed": false,
+      "theory": {
+        "description": "Two-Stage Heuristic (Hybrid TTB-Tallying over Remaining Cues): Decision makers use a bounded sequential search, initially relying on the most valid cues to discriminate between options (Take-The-Best). If the top 'k' cues fail to discriminate (i.e., they are tied), the decision maker falls back to a computationally simpler 'Tallying' strategy. However, instead of tallying all cues, they only tally the remaining unexamined cues, avoiding double-counting the cues that already tied. This provides a psychologically plausible sequential search process that blends lexicographic and tallying strategies.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n    \n    a, b = stim[0], stim[1]\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Rank features by validity in descending order\n    order = np.argsort(validities)[::-1]\n    \n    k = int(parameters[\"max_cues\"])\n    \n    decided = False\n    p_core = np.array([0.5, 0.5])\n    \n    # Stage 1: Take-The-Best on the top k cues\n    for idx in order[:k]:\n        if a[idx] > b[idx]:\n            p_core = np.array([1.0, 0.0])\n            decided = True\n            break\n        elif b[idx] > a[idx]:\n            p_core = np.array([0.0, 1.0])\n            decided = True\n            break\n            \n    # Stage 2: Fallback to Tallying on remaining unexamined cues if top cues tie\n    if not decided:\n        remaining_order = order[k:]\n        if len(remaining_order) > 0:\n            a_rem = a[remaining_order]\n            b_rem = b[remaining_order]\n            a_wins = float(np.sum(a_rem > b_rem))\n            b_wins = float(np.sum(b_rem > a_rem))\n            if a_wins > b_wins:\n                p_core = np.array([1.0, 0.0])\n            elif b_wins > a_wins:\n                p_core = np.array([0.0, 1.0])\n            else:\n                p_core = np.array([0.5, 0.5])\n        else:\n            p_core = np.array([0.5, 0.5])\n            \n    epsilon = float(parameters[\"epsilon\"])\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))\n",
+        "parameters": {
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities",
+          "max_cues": "{1, 2, 3, 4}"
+        },
+        "rationale": "Following the critic's advice, we refine the fallback stage of the successful Two-Stage Hybrid base. Instead of tallying all cues when the top cues tie, the model now tallies only the remaining unexamined cues (those not part of the `max_cues` searched during the TTB stage). This avoids double-counting the cues that already tied and provides a more psychologically plausible sequential search process while preserving the core mechanism that worked well in Iteration 1."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_6",
+    "slot": 1,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Final result: Validity-Gated Tallying implemented with a differentiable sigmoid threshold approximation.",
+      "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n    \n    a, b = stim[0], stim[1]\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    threshold = float(parameters[\"threshold\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    trusted_weights = 1.0 / (1.0 + np.exp(-100.0 * (validities - threshold)))\n    \n    tally_a = np.sum(a * trusted_weights)\n    tally_b = np.sum(b * trusted_weights)\n    \n    if tally_a > tally_b:\n        p_core = np.array([1.0, 0.0])\n    elif tally_b > tally_a:\n        p_core = np.array([0.0, 1.0])\n    else:\n        p_core = np.array([0.5, 0.5])\n        \n    n_opts = len(p_core)\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)",
+      "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return int(np.random.choice(len(probabilities), p=probabilities))",
+      "parameters": {
+        "threshold": "[0.0, 1.0]",
+        "epsilon": "[0.0, 0.5]",
+        "validities": "validities"
+      },
+      "rationale": "Initial logic and parameters are validated. We jump directly to the final transformation, replacing the hard threshold with a steep logistic function for continuous optimization. This provides a usable gradient while effectively preserving the tallying heuristic."
+    }
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "round_idx": 4,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_6",
+      "killed": false,
+      "theory": {
+        "description": "Decision makers evaluate options by sequentially processing features in descending order of their validity. They accumulate evidence in the form of log-odds weights for each feature. However, accumulation is not always exhaustive; it stops as soon as the absolute accumulated evidence exceeds a subjective threshold. A low threshold mimics a Take The Best heuristic (stopping at the first discriminating cue), while a high threshold mimics a Weighted Additive strategy (integrating all available cues).",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be a (2, n_features) array.\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Order cues by descending validity\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n    \n    # Convert validities to log-odds weights (Bayesian evidence)\n    val_clipped = np.clip(val, 1e-5, 1.0 - 1e-5)\n    weights = np.log(val_clipped / (1.0 - val_clipped))\n    \n    threshold = float(parameters[\"threshold\"])\n    \n    evidence = 0.0\n    for j in cue_order:\n        diff = a[j] - b[j]\n        if diff != 0:\n            evidence += weights[j] * diff\n            # Stop accumulating if evidence exceeds the subjective threshold\n            if abs(evidence) >= threshold:\n                break\n                \n    # The accumulated evidence represents the log-odds favoring option A over B\n    scores = np.array([evidence, 0.0])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax choice rule\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    p = np.asarray(probabilities, dtype=np.float64)\n    p /= p.sum()\n    return int(np.random.choice(len(p), p=p))\n",
+        "parameters": {
+          "beta": "[0.1, 50.0]",
+          "epsilon": "[0.0, 0.5]",
+          "threshold": "[0.0, 5.0]",
+          "validities": "validities"
+        },
+        "rationale": "Applying the minimal-diff edit suggested by the critic: narrowing the threshold range to [0.0, 5.0] to provide higher resolution for the fitter, and widening the beta range to [0.1, 50.0] to allow for more deterministic choices. The mechanism remains exactly the same, as it was already correctly implementing Sequential Evidence Accumulation with Threshold."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_5",
+      "killed": true,
+      "theory": {
+        "description": "Decision makers use a Weighted Additive (WADD) strategy to evaluate options, integrating all available features. Instead of raw validities or linear shifts, they weight each feature by its log-odds, which is the mathematically principled way to linearly accumulate independent evidence (equivalent to Naive Bayes). The total score for each option is the sum of these log-odds weights for the features it possesses. The option with the higher total score is chosen probabilistically via a softmax function over the scores, subject to a baseline lapse rate.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"WADD expects a (2, n_features) stimulus.\")\n\n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Calculate log-odds of validities to represent the true Bayesian weight of evidence.\n    val_clipped = np.clip(val, 1e-5, 1.0 - 1e-5)\n    weights = np.log(val_clipped / (1.0 - val_clipped))\n    \n    score_a = np.dot(a, weights)\n    score_b = np.dot(b, weights)\n    scores = np.array([score_a, score_b])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax choice rule with numerical stability\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.1, 25.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's advice, we replace the linear shift (val - 0.5) with the theoretically principled log-odds transformation. This corresponds to the correct Bayesian method for linearly integrating independent cues, scaling the evidence more aggressively for highly predictive cues. This minimal edit keeps the theory firmly within the WADD compensatory family while addressing the under-prediction of variance in several experiments."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_7",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Strategy Selection (Blended Evidence of Take-The-Best and Tallying): Decision-makers do not invariably use exhaustive, weighted integration (like WADD). Instead, they rely on a repertoire of fast-and-frugal heuristics. On any given decision, rather than discretely switching between strategies, they integrate the evidence from a non-compensatory 'Take-The-Best' (TTB) strategy and a compensatory but unweighted 'Tallying' strategy. The unified evidence is then evaluated probabilistically. The weight placed on TTB versus Tallying is a subject-specific parameter that naturally adapts to the environment's cue validity dispersion and the subject's cognitive constraints.",
+      "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be a (2, n_features) array.\")\n        \n    a, b = stim[0], stim[1]\n    n_features = len(a)\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # 1. Take-The-Best (TTB) Strategy\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n    winner_ttb = None\n    for j in cue_order:\n        if a[j] > b[j]:\n            winner_ttb = 0\n            break\n        elif b[j] > a[j]:\n            winner_ttb = 1\n            break\n            \n    if winner_ttb == 0:\n        s_ttb = np.array([1.0, 0.0])\n    elif winner_ttb == 1:\n        s_ttb = np.array([0.0, 1.0])\n    else:\n        s_ttb = np.array([0.5, 0.5])\n        \n    # 2. Tallying Strategy (unweighted feature counting)\n    # Normalized by n_features so the score difference is at most 1, \n    # keeping it on a similar scale to TTB for the softmax beta.\n    s_tally = np.array([np.sum(a), np.sum(b)]) / n_features\n    \n    beta = float(parameters[\"beta\"])\n    w_ttb = float(parameters[\"w_ttb\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Mix pre-softmax scores instead of post-softmax probabilities\n    s_mix = w_ttb * s_ttb + (1.0 - w_ttb) * s_tally\n    \n    # Apply softmax to the blended evidence\n    z = beta * s_mix\n    z -= np.max(z)\n    e = np.exp(z)\n    p_mix = e / np.sum(e)\n    \n    # Apply baseline lapse rate\n    n_opts = len(p_mix)\n    return (1.0 - epsilon) * p_mix + epsilon * (np.ones(n_opts) / n_opts)\n",
+      "policy_source": "def policy(probabilities):\n    import numpy as np\n    p = np.asarray(probabilities, dtype=np.float64)\n    p /= p.sum()\n    return int(np.random.choice(len(p), p=p))\n",
+      "parameters": {
+        "beta": "[0.1, 20.0]",
+        "w_ttb": "[0.0, 1.0]",
+        "epsilon": "[0.0, 0.5]",
+        "validities": "validities"
+      },
+      "rationale": "Following the critic's advice, this edit modifies the PREVIOUS CANDIDATE (Iteration 1 base) by mixing the pre-softmax scores (evidence) of the Take-The-Best and Tallying strategies, rather than their post-softmax probabilities. This 'blended' approach avoids the bimodal distributions and overly extreme probabilities caused by discretely flipping between two strategies trial-by-trial. By applying a single softmax over the unified evidence, the model can more smoothly capture intermediate levels of determinism, which should better predict the empirical JSD metric (behavioral variance) without introducing any new parameters."
+    }
+  }
+}

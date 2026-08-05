@@ -1,0 +1,272 @@
+# feedback_iter_02
+
+## System Prompt
+
+You are a renowned cognitive scientist critiquing a freshly proposed candidate theory and model in the Decision Making (Binary Features) domain.
+
+The candidate has been simulated on every previously run experiment. For each experiment you are shown the design, the metric, the value the metric takes on real (human / ground-truth) data, and the value it takes on the candidate's simulated data.
+
+Each metric value below is shown as `point_estimate (var=X)`, where `point_estimate` is `metric(data)` evaluated on the full pooled dataset and `var` is the population (between-subject) variance of the same metric re-applied per `subject_id`. The point estimate is the canonical scalar; `var` reports how consistent that estimate is across subjects (lower = more consistent). `var=n/a` means the metric could not be applied to a single-subject slice.
+
+The goal of the feedback is to SURFACE theories that are EXPERIMENT-INVARIANT: that is,theories that explain data across multiple experiments. 
+Your task is to determine whether the candidate captures the human/real behavior well enough across these experiments. Return a verdict:
+  * "continue"   — the candidate is good enough; carry on.
+  * "regenerate" — the candidate fails to capture the empirical pattern; the proposing agent must produce a new candidate, taking your rationale into account.
+
+Justify the verdict with a concrete diagnosis (which experiments fail, in what direction, what mechanism is likely missing or miscalibrated).
+
+## SCOPE OF YOUR CRITIQUE — STAY INSIDE THE ARBITER'S MECHANISM FAMILY
+When an "## ARBITER RECOMMENDATION" block is present below, the proposer was explicitly instructed to implement the mechanism family the arbiter prescribed. Your job is to grade FIT QUALITY *within that prescribed family*, not to relitigate which family should be used — that is the arbiter's call, made one level above this loop.
+
+Concretely:
+  * If the candidate misses the data, you may push for MINOR ADJUSTMENTS that keep the prescribed mechanism intact: tightening / widening parameter ranges, adding a temperature, swapping a normalization scheme, fixing a softmax / distance metric, re-balancing attention weights, fixing a learning-rate sign, correcting a bug in the gating or recurrence, etc.
+  * You MUST NOT recommend switching to a different mechanism family. Such a switch is the arbiter's prerogative; recommending it here will mislead the proposer into oscillating between families across iterations.
+  * Also grade FAITHFULNESS to the recommendation explicitly: if the candidate has clearly drifted into a different family than the one prescribed, say so in the rationale and ask for a return to the prescribed family — again, with minor adjustments, not a re-design.
+
+## ACCEPT GATE — HOW THE LOOP DECIDES WHAT TO BUILD ON NEXT
+This propose-loop has a programmatic accept gate. After every iteration the candidate's `aggregate_loss` is compared against the running-best loss (`accepted_loss`):
+  * `loss < accepted_loss` → ACCEPTED. The candidate becomes the new running-best base; the next iteration's proposer will build on THIS candidate.
+  * `loss >= accepted_loss` → REJECTED. The base is unchanged; the next iteration's proposer will build on the SAME `accepted` candidate again, with your new feedback on top. Rejected candidates are discarded — the loop guarantees the base never regresses, so you do NOT need to ask the proposer to "revert" anything; that already happens for free.
+
+Two consequences for your verdict:
+  * If the candidate you are grading was REJECTED by the gate, returning `"continue"` is silently downgraded to `"regenerate"` (returning a worse candidate would defeat the gate). Spend your rationale on a NEW direction the proposer should try on top of the unchanged accepted base, not on defending the rejected attempt.
+  * If the candidate was ACCEPTED, you can return `"continue"` to stop the loop and ship this candidate, or `"regenerate"` to keep tuning further.
+
+## LEARN FROM YOUR OWN PAST ADVICE
+When a "## YOUR PRIOR CRITIQUES" block is present below, each prior iteration ends with an "Outcome of your advice" line that says whether the next candidate the proposer produced was ACCEPTED (your advice helped — its loss strictly beat the running best) or REJECTED (your advice didn't help — the proposer discarded the result and reset to the previous accepted base). This is the loop's ground-truth signal on whether *your own previous critique was good*. Use it explicitly:
+  * If a previous piece of advice was ACCEPTED, it is OK to repeat / extend it. Reinforce in the same direction.
+  * If a previous piece of advice was REJECTED, do NOT repeat the same recommendation; in your new rationale, briefly acknowledge that the previous push in that direction was rejected by the gate and try a different in-family knob (or a smaller step in the same direction) instead.
+  * If you find yourself oscillating (e.g. iter 1 said "increase α", iter 2 said "decrease α", iter 3 about to say "increase α" again), STOP and recommend a value between the two flanking iterations instead.
+  * The "## LOSS TRAJECTORY" block at the top of the user prompt summarises the same information at the loop level — consult it before issuing a new regenerate-with-direction recommendation.
+
+
+## User Prompt
+
+## EXPERIMENTAL DOMAIN
+Subjects repeatedly choose between two fictitious products, A and B. Each option is described by a vector of binary expert ratings (each 0 or 1). Every experiment fixes its own feature count (via `validities` length) and per-expert validities; both are LLM-proposed. The validities are communicated to the subject in the instructions. Subjects pick whichever product they believe is of higher quality. There is no trial-by-trial correctness feedback.
+
+## ARBITER RECOMMENDATION (mechanism family the proposer was told to implement)
+The arbiter labelled this round's two theories in its recommendation as follows:
+- THEORY 1 = `pi_1`
+- THEORY 2 = `pi_2`
+- The recommendation below acts on THEORY 1 (= `pi_1`).
+
+Propose a Weighted Additive (WADD) theory. Unlike Tallying (which weights all features equally) and TTB (which only uses the single best discriminating feature), WADD computes a weighted sum of all features, where the weights are derived from the feature validities (e.g., log-odds or directly proportional to validity). This provides a natural compensatory alternative that still utilizes validity information, distinguishing it from both Tallying and TTB.
+
+
+## CANDIDATE THEORY
+People compare two options by computing a weighted sum of all features for each option, where the weights are directly equal to the feature validities. Because all validities are bounded between 0.5 and 1.0, using them directly restricts the maximum weight ratio between cues, allowing multiple weaker cues to easily outvote a single strong cue. This Weighted Additive (WADD) rule is a fully compensatory strategy that captures the human tendency to integrate all available information while still giving a slight edge to more valid cues. Response noise enters through a softmax over the two options' weighted scores, along with an independent lapse probability.
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, stimulus, history):
+    import numpy as np
+    
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError("WADD expects a (2, n_features) stimulus.")
+        
+    a, b = stim[0], stim[1]
+    
+    # Retrieve validities and use them directly as weights
+    val = np.asarray(parameters["validities"], dtype=float)
+    weights = val
+    
+    # Compute weighted sum for each option
+    score_a = np.sum(weights * a)
+    score_b = np.sum(weights * b)
+    scores = np.array([score_a, score_b])
+    
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+    
+    # Softmax with max-subtraction for numerical stability
+    z = beta * (scores - np.max(scores))
+    e = np.exp(z)
+    p_core = e / np.sum(e)
+    
+    n_opts = len(p_core)
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+
+
+`policy(probs) -> int`:
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=float)
+    probabilities /= np.sum(probabilities)
+    return int(np.random.choice(len(probabilities), p=probabilities))
+
+
+`parameters`:
+- beta: [0.1, 20.0]
+- epsilon: [0.0, 0.5]
+- validities: validities
+
+`rationale`:
+Following the critic's feedback, the weight calculation is simplified to use the raw validities directly (weights = validities). Subtracting 0.5 in the previous iteration inadvertently exaggerated the relative differences between cue weights (e.g., 0.9 vs 0.6 became a 4:1 ratio instead of 1.5:1), making the model too non-compensatory. Using the raw validities restricts the maximum weight ratio, naturally allowing multiple weaker cues to outvote a single strong cue. This softer weighting scheme better captures the strongly compensatory (Tallying-like) behavior seen in the human data while remaining within the prescribed WADD family.
+
+## LOSS TRAJECTORY (this propose-loop)
+Aggregate loss across iterations of THIS propose-loop (lower = better, 0 = perfect, `+inf` = unscorable). The ACCEPTED / REJECTED tag is the loop's programmatic accept-gate decision: `loss < accepted_loss` -> ACCEPTED (becomes new base), else REJECTED (base unchanged). Use this together with the per-experiment values below to grade fit-quality AND your own past advice (see `## YOUR PRIOR CRITIQUES` below).
+
+- iter 1: loss=0.5355 -> ACCEPTED
+- iter 2: loss=0.3720 -> ACCEPTED
+- iter 3 (current candidate you are grading): loss=0.0448 -> ACCEPTED
+Running-best (last accepted) base: iter 3 at loss=0.0448.
+
+## EXPERIMENTAL RESULTS (candidate vs real, per experiment)
+### Experiment 1
+**Design**
+  A=[1, 0, 0, 0]  B=[0, 1, 1, 1]
+  A=[0, 1, 1, 1]  B=[1, 0, 0, 0]
+  A=[1, 1, 0, 0]  B=[0, 0, 1, 1]
+  A=[0, 0, 1, 1]  B=[1, 1, 0, 0]
+  A=[1, 1, 0, 0]  B=[1, 0, 1, 1]
+  A=[1, 0, 1, 1]  B=[1, 1, 0, 0]
+  A=[0, 1, 0, 0]  B=[0, 0, 1, 1]
+  A=[0, 0, 1, 1]  B=[0, 1, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    
+    a_mat = np.array(data['option_a_ratings'].tolist())
+    b_mat = np.array(data['option_b_ratings'].tolist())
+    resp = data['response'].values
+    
+    ttb_choices = np.zeros(len(data))
+    mask = np.zeros(len(data), dtype=bool)
+    
+    for i in range(len(data)):
+        a = a_mat[i]
+        b = b_mat[i]
+        
+        # TTB choice (first discriminating cue)
+        ttb_c = -1
+        for j in range(len(a)):
+            if a[j] > b[j]:
+                ttb_c = 0
+                break
+            elif b[j] > a[j]:
+                ttb_c = 1
+                break
+                
+        # Tallying choice (most feature wins)
+        a_wins = np.sum(a > b)
+        b_wins = np.sum(b > a)
+        tally_c = -1
+        if a_wins > b_wins:
+            tally_c = 0
+        elif b_wins > a_wins:
+            tally_c = 1
+            
+        # Only consider trials where TTB and Tallying make strictly opposing predictions
+        if ttb_c != -1 and tally_c != -1 and ttb_c != tally_c:
+            mask[i] = True
+            ttb_choices[i] = ttb_c
+            
+    if not np.any(mask):
+        return 0.5
+        
+    return float(np.mean(resp[mask] == ttb_choices[mask]))
+```
+
+**Observed (real) value:** 0.1383 (var=0.0087)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.5267 (var=0.0035) (Δ vs real +0.3883)
+  - iter 2: 0.3981 (var=0.0041) (Δ vs real +0.2597)
+  - iter 3 (current): 0.1750 (var=0.0074) (Δ vs real +0.0367)
+**Other theories' values on this metric (for reference):**
+- pi_1: 0.8742 (var=0.0109)
+- pi_2: 0.1297 (var=0.0093)
+
+### Experiment 2
+**Design**
+  A=[0, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1]
+  A=[1, 0, 1, 1, 1]  B=[1, 1, 0, 0, 0]
+  A=[1, 1, 0, 0, 0]  B=[1, 0, 1, 1, 1]
+  A=[0, 1, 1, 0, 0]  B=[1, 0, 0, 0, 0]
+  A=[0, 0, 1, 1, 1]  B=[1, 0, 0, 0, 0]
+  A=[0, 1, 0, 0, 0]  B=[1, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0]  B=[1, 1, 0, 1, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    
+    matches = []
+    for _, row in data.iterrows():
+        a = np.array(row['option_a_ratings'])
+        b = np.array(row['option_b_ratings'])
+        
+        a_wins = np.sum(a > b)
+        b_wins = np.sum(b > a)
+        
+        if a_wins > b_wins:
+            tally_pred = 0
+        elif b_wins > a_wins:
+            tally_pred = 1
+        else:
+            continue
+            
+        matches.append(row['response'] == tally_pred)
+        
+    if not matches:
+        return 0.5
+    return float(np.mean(matches))
+```
+
+**Observed (real) value:** 0.8286 (var=0.0105)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.4471 (var=0.0024) (Δ vs real -0.3814)
+  - iter 2: 0.5543 (var=0.0027) (Δ vs real -0.2743)
+  - iter 3 (current): 0.8569 (var=0.0085) (Δ vs real +0.0283)
+**Other theories' values on this metric (for reference):**
+- pi_2: 0.8479 (var=0.0103)
+- pi_1: 0.1536 (var=0.0070)
+
+## YOUR PRIOR CRITIQUES (for this propose-loop)
+Each block is one of YOUR previous critique iterations: the verdict you returned, the interpretation and rationale you wrote, and an **Outcome of your advice** line that says whether the candidate the proposer produced AFTER following your advice was ACCEPTED (your advice helped — its loss strictly beat the running-best) or REJECTED (your advice didn't help — the gate discarded the candidate). Use this self-history to (a) reinforce advice that was ACCEPTED, (b) avoid repeating advice that was REJECTED, and (c) detect your own oscillation across iterations.
+
+### Iteration 1
+Verdict: regenerate
+Interpretation: The candidate model implements a Weighted Additive (WADD) strategy using log-odds of the cue validities. However, the simulation results show that the candidate is predicting at chance level (~0.5) for both Experiment 1 and Experiment 2. The human data in Experiment 1 strongly opposes Take-The-Best (0.1383) in favor of Tallying, and Experiment 2 strongly matches Tallying (0.8286). The log-odds transformation might be over-weighting the most valid cue for some parameter fits and under-weighting for others, averaging out to chance, or the softmax temperature scale is mismatched with the log-odds scores.
+Rationale: The log-odds transformation for weights is failing to capture the strong compensatory (Tallying-like) behavior seen in the human data, resulting in chance-level predictions. Please regenerate the WADD model but simplify the weight calculation. Instead of log-odds, try using the validities directly as weights (e.g., `weights = validities` or `weights = validities - 0.5`), which provides a softer weighting scheme that avoids the extreme values of log-odds and may better capture the compensatory nature of the subjects' choices. Keep the softmax and lapse mechanisms.
+
+**Outcome of your advice:** iter 1 candidate loss=0.5355 -> iter 2 candidate loss=0.3720 -> the gate marked it ACCEPTED.
+
+### Iteration 2 (most recent)
+Verdict: regenerate
+Interpretation: The shift from log-odds to `validities - 0.5` successfully improved the model's fit, reducing the aggregate loss and moving predictions closer to the human data. However, the model is still not compensatory enough: in Experiment 2, the candidate's match to Tallying is only 0.5543 compared to the human 0.8286, and in Experiment 1, its match to TTB is 0.3981 compared to the human 0.1383. Subtracting 0.5 from the validities inadvertently increases the relative weighting gap between the highest validity cue and the rest (e.g., validities of 0.9 and 0.6 become weights of 0.4 and 0.1, a 4x difference), which allows the best cue to still dominate too often.
+Rationale: To capture the strongly compensatory (Tallying-like) behavior seen in the human data while remaining within the prescribed WADD family, the weights need to be even softer. Please regenerate the model using the validities directly as weights without subtracting 0.5 (`weights = validities`). Because all validities are bounded between 0.5 and 1.0, using them directly restricts the maximum weight ratio (e.g., 0.9 vs 0.6 is only a 1.5x difference), which will naturally allow multiple weaker cues to outvote a single strong cue, better aligning with the empirical results. Keep the softmax and lapse mechanisms intact.
+
+**Outcome of your advice:** iter 2 candidate loss=0.3720 -> CURRENT candidate loss=0.0448 -> the gate marked it ACCEPTED.
+
+## RESPONSE FORMAT
+
+Return a JSON object with the following fields:
+- interpretation: Freeform analysis of the model simulation results on existing experiments and how they do or do not support the proposed model/theory.
+- verdict: Either 'regenerate' (regenerate a new model/theory) or 'continue' (keep the current model/theory).
+- rationale: If verdict='regenerate', why the current predict / policy / parameter-ranges should be revised. If verdict='continue', a sketch of why the current theory should be kept.
+
+
+## Response
+
+```json
+{
+  "interpretation": "The latest candidate model, which uses raw validities as weights in the WADD framework, has achieved an excellent fit to the empirical data. In Experiment 1, the candidate's match to TTB (where TTB and Tallying oppose) is 0.1750, very closely matching the human value of 0.1383. In Experiment 2, the candidate's match to Tallying is 0.8569, effectively mirroring the human value of 0.8286. By avoiding the subtraction of 0.5, the model correctly restricts the maximum weight ratio between cues, yielding the soft compensatory behavior that characterizes human choices in these tasks.",
+  "verdict": "continue",
+  "rationale": "The current WADD implementation with raw validity weighting successfully captures the human tendency to integrate all cues (Tallying-like behavior) while still giving a slight edge to more valid cues. The aggregate loss is extremely low (0.0448), and the predictions align tightly with both experiments. No further adjustments are needed."
+}
+```
+
+## Usage
+
+```json
+{
+  "prompt_token_count": 4833,
+  "candidates_token_count": 238,
+  "total_token_count": 5261
+}
+```

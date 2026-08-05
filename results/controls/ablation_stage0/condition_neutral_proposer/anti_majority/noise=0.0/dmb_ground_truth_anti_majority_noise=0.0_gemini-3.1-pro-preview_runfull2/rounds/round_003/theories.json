@@ -1,0 +1,58 @@
+{
+  "round_idx": 3,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_4",
+      "killed": false,
+      "theory": {
+        "description": "Strategy Mixture Theory (TTB + WADD): Decision makers do not universally adopt a single monolithic strategy. Instead, choices are generated from a probabilistic mixture of decision rules. On any given trial, an individual uses a non-compensatory heuristic (Take The Best) with probability 'alpha', and a compensatory strategy (Weighted Additive - WADD) with probability '1 - alpha'. Mixing these strategies captures intermediate rates of compensatory and non-compensatory choices, while WADD leverages cue validities for a more nuanced compensatory evaluation.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    beta = float(parameters[\"beta\"])\n    alpha = float(parameters[\"alpha\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Strategy 1: Take The Best (TTB)\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n    winner_ttb = None\n    for j in cue_order:\n        if a[j] > b[j]:\n            winner_ttb = 0\n            break\n        if b[j] > a[j]:\n            winner_ttb = 1\n            break\n            \n    if winner_ttb is None:\n        p_ttb = np.array([0.5, 0.5])\n    else:\n        scores_ttb = np.array([1.0, 0.0]) if winner_ttb == 0 else np.array([0.0, 1.0])\n        z_ttb = beta * (scores_ttb - scores_ttb.max())\n        e_ttb = np.exp(z_ttb)\n        p_ttb = e_ttb / e_ttb.sum()\n        \n    # Strategy 2: WADD (Weighted Additive)\n    score_a_wadd = np.sum(a * val)\n    score_b_wadd = np.sum(b * val)\n    scores_wadd = np.array([score_a_wadd, score_b_wadd])\n    \n    z_wadd = beta * (scores_wadd - scores_wadd.max())\n    e_wadd = np.exp(z_wadd)\n    p_wadd = e_wadd / e_wadd.sum()\n    \n    # Mixture of the two strategies\n    p_mix = alpha * p_ttb + (1.0 - alpha) * p_wadd\n    \n    # Apply lapse rate\n    n_opts = p_mix.shape[0]\n    p_final = (1.0 - epsilon) * p_mix + epsilon * (np.ones(n_opts) / n_opts)\n    \n    return p_final\n",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+        "parameters": {
+          "alpha": "[0.5, 1.0]",
+          "beta": "[1.0, 20.0]",
+          "epsilon": "[0.0, 0.2]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's advice, I shifted the `alpha` parameter range from [0.0, 1.0] to [0.5, 1.0] to reflect the strong empirical bias toward non-compensatory choices (TTB-like behavior) observed in the data. I also increased the lower bound of `beta` from 0.1 to 1.0 to reduce baseline noise in the softmax functions and prevent the choice probabilities from flattening too much toward 0.5."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_5",
+      "killed": true,
+      "theory": {
+        "description": "Cue Difference Threshold Theory: Decision-makers evaluate options lexicographically but demand that the best discriminating cue provides a decisive advantage. A cue is deemed decisive if its validity exceeds the best opposing cue by a sufficient threshold, or if the sheer number of opposing cues is small enough (below a tallying deficit limit). If the top cue's advantage is challenged by a concentrated block of moderately high opposing cues (failing both conditions), the decision-maker abandons the non-compensatory heuristic and falls back to a compensatory Weighted Additive (WADD) process to resolve the choice.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    threshold = float(parameters[\"threshold\"])\n    deficit_limit = int(parameters[\"deficit_limit\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Identify which cues favor which option\n    favor_a = (a > b)\n    favor_b = (b > a)\n    \n    max_val_a = np.max(val[favor_a]) if np.any(favor_a) else 0.0\n    max_val_b = np.max(val[favor_b]) if np.any(favor_b) else 0.0\n    \n    winner_ttb = 0 if max_val_a > max_val_b else (1 if max_val_b > max_val_a else None)\n    \n    if winner_ttb is not None:\n        # Number of cues favoring the TTB loser\n        num_opposing = np.sum(favor_b) if winner_ttb == 0 else np.sum(favor_a)\n        \n        # Two conditions for TTB to be considered decisive:\n        # 1. The validity difference between the best cues of each option is large enough.\n        # 2. The number of opposing cues is within the acceptable deficit limit.\n        cue_diff_decisive = abs(max_val_a - max_val_b) >= threshold\n        deficit_ok = num_opposing <= deficit_limit\n        \n        if cue_diff_decisive or deficit_ok:\n            # Decisive advantage: stick to TTB\n            scores = np.array([1.0, 0.0]) if winner_ttb == 0 else np.array([0.0, 1.0])\n        else:\n            # Not decisive: fall back to compensatory WADD\n            val_clipped = np.clip(val, 0.5001, 0.9999)\n            log_odds = np.log(val_clipped / (1.0 - val_clipped))\n            score_a = np.sum(log_odds * a)\n            score_b = np.sum(log_odds * b)\n            \n            # Normalize compensatory scores by total weight to keep the scale \n            # comparable to the [0, 1] TTB scores for the softmax temperature.\n            total_w = np.sum(log_odds)\n            scores = np.array([score_a, score_b]) / total_w if total_w > 0 else np.array([0.5, 0.5])\n    else:\n        scores = np.array([0.5, 0.5])\n        \n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = p_core.shape[0]\n    p_final = (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n    \n    return p_final",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))",
+        "parameters": {
+          "threshold": "[0.0, 1.0]",
+          "deficit_limit": "{0, 1, 2, 3, 4, 5}",
+          "beta": "[0.1, 25.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Reverting to the exact hard-gating mechanism from the accepted Iteration 1 base, which performed best so far. We retain the WADD fallback and boolean switch (cue difference decisive OR deficit OK). To give the optimizer more flexibility to fit the hard thresholds without breaking the mechanism family, the parameter ranges for `beta` and `threshold` are widened, while preserving the random lapse rate (`epsilon`) at the end of the calculation."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_6",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Rank-Dependent Tallying: Decision-makers primarily evaluate options based on the sheer number of positive features (a tallying-like process), but the weight of each feature is subject to rank-based discounting. Rather than scaling exponentially with log-odds, a feature's weight decays as a power law of its validity rank. This ensures a strong compensatory mechanism where multiple moderate cues can easily overpower a single high-validity cue, and tallying differences dominate choice probabilities unless the validity rank differences are extreme.",
+      "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    gamma = float(parameters[\"gamma\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Assign ranks to features based on validity (1 = highest validity)\n    n_features = len(val)\n    order = np.argsort(-val, kind=\"stable\")\n    ranks = np.zeros(n_features)\n    ranks[order] = np.arange(1, n_features + 1)\n    \n    # Rank-based discounting: weight decays as an inverse power of rank\n    w = 1.0 / (ranks ** gamma)\n    \n    # Compute weighted tally for each option\n    score_a = np.sum(w * a)\n    score_b = np.sum(w * b)\n    scores = np.array([score_a, score_b])\n    \n    # Softmax choice rule\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = p_core.shape[0]\n    p_final = (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n    \n    return p_final\n",
+      "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+      "parameters": {
+        "gamma": "[2.0, 8.0]",
+        "beta": "[0.1, 20.0]",
+        "epsilon": "[0.0, 0.5]",
+        "validities": "validities"
+      },
+      "rationale": "Shifted the `gamma` parameter range even higher to `[2.0, 8.0]` as suggested by the critic. This further steepens the power-law decay of cue weights, penalizing lower-ranked cues more heavily. This reduces the still slightly excessive compensatory behavior observed in the previous iteration and brings the model's predictions closer to the empirical data in Experiments 2 and 4."
+    }
+  }
+}

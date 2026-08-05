@@ -1,0 +1,391 @@
+# feedback_iter_03
+
+## System Prompt
+
+You are a renowned cognitive scientist critiquing a freshly proposed candidate theory and model in the Decision Making (Binary Features) domain.
+
+The candidate has been simulated on every previously run experiment. For each experiment you are shown the design, the metric, the value the metric takes on real (human / ground-truth) data, and the value it takes on the candidate's simulated data.
+
+Each metric value below is shown as `point_estimate (var=X)`, where `point_estimate` is `metric(data)` evaluated on the full pooled dataset and `var` is the population (between-subject) variance of the same metric re-applied per `subject_id`. The point estimate is the canonical scalar; `var` reports how consistent that estimate is across subjects (lower = more consistent). `var=n/a` means the metric could not be applied to a single-subject slice.
+
+The goal of the feedback is to SURFACE theories that are EXPERIMENT-INVARIANT: that is,theories that explain data across multiple experiments. 
+Your task is to determine whether the candidate captures the human/real behavior well enough across these experiments. Return a verdict:
+  * "continue"   — the candidate is good enough; carry on.
+  * "regenerate" — the candidate fails to capture the empirical pattern; the proposing agent must produce a new candidate, taking your rationale into account.
+
+Justify the verdict with a concrete diagnosis (which experiments fail, in what direction, what mechanism is likely missing or miscalibrated).
+
+## SCOPE OF YOUR CRITIQUE — STAY INSIDE THE ARBITER'S MECHANISM FAMILY
+When an "## ARBITER RECOMMENDATION" block is present below, the proposer was explicitly instructed to implement the mechanism family the arbiter prescribed. Your job is to grade FIT QUALITY *within that prescribed family*, not to relitigate which family should be used — that is the arbiter's call, made one level above this loop.
+
+Concretely:
+  * If the candidate misses the data, you may push for MINOR ADJUSTMENTS that keep the prescribed mechanism intact: tightening / widening parameter ranges, adding a temperature, swapping a normalization scheme, fixing a softmax / distance metric, re-balancing attention weights, fixing a learning-rate sign, correcting a bug in the gating or recurrence, etc.
+  * You MUST NOT recommend switching to a different mechanism family. Such a switch is the arbiter's prerogative; recommending it here will mislead the proposer into oscillating between families across iterations.
+  * Also grade FAITHFULNESS to the recommendation explicitly: if the candidate has clearly drifted into a different family than the one prescribed, say so in the rationale and ask for a return to the prescribed family — again, with minor adjustments, not a re-design.
+
+## ACCEPT GATE — HOW THE LOOP DECIDES WHAT TO BUILD ON NEXT
+This propose-loop has a programmatic accept gate. After every iteration the candidate's `aggregate_loss` is compared against the running-best loss (`accepted_loss`):
+  * `loss < accepted_loss` → ACCEPTED. The candidate becomes the new running-best base; the next iteration's proposer will build on THIS candidate.
+  * `loss >= accepted_loss` → REJECTED. The base is unchanged; the next iteration's proposer will build on the SAME `accepted` candidate again, with your new feedback on top. Rejected candidates are discarded — the loop guarantees the base never regresses, so you do NOT need to ask the proposer to "revert" anything; that already happens for free.
+
+Two consequences for your verdict:
+  * If the candidate you are grading was REJECTED by the gate, returning `"continue"` is silently downgraded to `"regenerate"` (returning a worse candidate would defeat the gate). Spend your rationale on a NEW direction the proposer should try on top of the unchanged accepted base, not on defending the rejected attempt.
+  * If the candidate was ACCEPTED, you can return `"continue"` to stop the loop and ship this candidate, or `"regenerate"` to keep tuning further.
+
+## LEARN FROM YOUR OWN PAST ADVICE
+When a "## YOUR PRIOR CRITIQUES" block is present below, each prior iteration ends with an "Outcome of your advice" line that says whether the next candidate the proposer produced was ACCEPTED (your advice helped — its loss strictly beat the running best) or REJECTED (your advice didn't help — the proposer discarded the result and reset to the previous accepted base). This is the loop's ground-truth signal on whether *your own previous critique was good*. Use it explicitly:
+  * If a previous piece of advice was ACCEPTED, it is OK to repeat / extend it. Reinforce in the same direction.
+  * If a previous piece of advice was REJECTED, do NOT repeat the same recommendation; in your new rationale, briefly acknowledge that the previous push in that direction was rejected by the gate and try a different in-family knob (or a smaller step in the same direction) instead.
+  * If you find yourself oscillating (e.g. iter 1 said "increase α", iter 2 said "decrease α", iter 3 about to say "increase α" again), STOP and recommend a value between the two flanking iterations instead.
+  * The "## LOSS TRAJECTORY" block at the top of the user prompt summarises the same information at the loop level — consult it before issuing a new regenerate-with-direction recommendation.
+
+
+## User Prompt
+
+## EXPERIMENTAL DOMAIN
+Subjects repeatedly choose between two fictitious products, A and B. Each option is described by a vector of binary expert ratings (each 0 or 1). Every experiment fixes its own feature count (via `validities` length) and per-expert validities; both are LLM-proposed. The validities are communicated to the subject in the instructions. Subjects pick whichever product they believe is of higher quality. There is no trial-by-trial correctness feedback.
+
+## ARBITER RECOMMENDATION (mechanism family the proposer was told to implement)
+The arbiter labelled this round's two theories in its recommendation as follows:
+- THEORY 1 = `pi_3`
+- THEORY 2 = `pi_2`
+- The recommendation below acts on THEORY 1 (= `pi_3`).
+
+Propose a 'Tallying with Validity Tie-Breaker' theory. The theory should state that people primarily compare options by counting feature wins (Tallying). If one option clearly has more wins, it is chosen. However, if the tallies are tied, the decision-maker falls back to using the feature validities (for instance, by picking the option that wins on the single most valid feature, or by computing a weighted sum). This new theory replaces the purely compensatory WADD model and directly accommodates the strong Tallying signal in Exp 2 and 4, while successfully explaining the validity-driven tie-breaking observed in Exp 1.
+
+
+## CANDIDATE THEORY
+People primarily compare multi-attribute options using a Tallying heuristic, counting the number of features on which each option is strictly better. The option with the higher tally is chosen. However, if the tallies are tied, the decision-maker falls back to a non-compensatory tie-breaking mechanism, specifically Take-The-Best (TTB), where they pick the option that wins on the single most valid discriminating feature. Decision noise reflects human variability in applying this two-stage heuristic.
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, stimulus, history):
+    import numpy as np
+    
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(f"Expected a (2, n_features) stimulus; got shape {stim.shape}.")
+        
+    a, b = stim[0], stim[1]
+    
+    # Primary stage: Tallying feature wins
+    a_wins = float(np.sum(a > b))
+    b_wins = float(np.sum(b > a))
+    
+    if a_wins != b_wins:
+        scores = np.array([a_wins, b_wins])
+    else:
+        # Secondary stage: Take-The-Best tie-breaker
+        val = np.asarray(parameters["validities"], dtype=float)
+        cue_order = np.argsort(-val, kind="stable").tolist()
+        
+        tie_margin = float(parameters["tie_margin"])
+        winner = None
+        for j in cue_order:
+            if a[j] > b[j]:
+                winner = 0
+                break
+            if b[j] > a[j]:
+                winner = 1
+                break
+                
+        if winner == 0:
+            scores = np.array([tie_margin, 0.0])
+        elif winner == 1:
+            scores = np.array([0.0, tie_margin])
+        else:
+            scores = np.array([0.0, 0.0])
+        
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+    
+    # Softmax with max-subtraction for numerical stability
+    z = beta * (scores - np.max(scores))
+    e = np.exp(z)
+    p_core = e / np.sum(e)
+    
+    n_opts = p_core.shape[0]
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+
+
+`policy(probs) -> int`:
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities /= probabilities.sum()
+    return np.random.choice(len(probabilities), p=probabilities)
+
+
+`parameters`:
+- beta: [0.0, 5.0]
+- epsilon: [0.0, 0.8]
+- tie_margin: [1.0, 20.0]
+- validities: validities
+
+`rationale`:
+Following the critic's advice, we revert to the successful noise parameters from Iteration 2 (beta [0.0, 5.0], epsilon [0.0, 0.8]) which prevented massive overpredictions in Experiments 2 and 3. However, we structurally modify the tie-breaking stage: instead of using a compensatory weighted sum, the model now applies a Take-The-Best (TTB) strategy to resolve tally ties. It finds the single most valid feature where the options differ and assigns the win based on that cue alone. A `tie_margin` parameter scales this binary win so the softmax function can process it appropriately.
+
+## LOSS TRAJECTORY (this propose-loop)
+Aggregate loss across iterations of THIS propose-loop (lower = better, 0 = perfect, `+inf` = unscorable). The ACCEPTED / REJECTED tag is the loop's programmatic accept-gate decision: `loss < accepted_loss` -> ACCEPTED (becomes new base), else REJECTED (base unchanged). Use this together with the per-experiment values below to grade fit-quality AND your own past advice (see `## YOUR PRIOR CRITIQUES` below).
+
+- iter 1: loss=0.3890 -> ACCEPTED
+- iter 2: loss=0.2784 -> ACCEPTED
+- iter 3: loss=0.3937 -> REJECTED
+- iter 4 (current candidate you are grading): loss=0.2998 -> REJECTED
+Running-best (last accepted) base: iter 2 at loss=0.2784.
+
+## EXPERIMENTAL RESULTS (candidate vs real, per experiment)
+### Experiment 1
+**Design**
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 1, 0]
+  A=[0, 1, 0, 0, 0]  B=[0, 0, 1, 1, 1]
+  A=[1, 0, 1, 0, 0]  B=[0, 1, 0, 1, 1]
+  A=[0, 1, 1, 0, 0]  B=[1, 0, 0, 0, 0]
+  A=[0, 0, 1, 1, 0]  B=[0, 1, 0, 0, 0]
+  A=[1, 0, 0, 0, 1]  B=[0, 1, 1, 0, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1]
+  A=[0, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0]
+  A=[0, 0, 1, 1, 1]  B=[0, 1, 0, 0, 0]
+  A=[1, 0, 0, 0, 1]  B=[0, 1, 1, 1, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    
+    matches = []
+    for _, row in data.iterrows():
+        a = row['option_a_ratings']
+        b = row['option_b_ratings']
+        resp = row['response']
+        
+        ttb_winner = None
+        for i in range(len(a)):
+            if a[i] > b[i]:
+                ttb_winner = 0
+                break
+            elif b[i] > a[i]:
+                ttb_winner = 1
+                break
+                
+        if ttb_winner is not None:
+            matches.append(1.0 if resp == ttb_winner else 0.0)
+            
+    if not matches:
+        return 0.5
+    return float(np.mean(matches))
+```
+
+**Observed (real) value:** 0.5711 (var=0.0014)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.1244 (var=0.0080) (Δ vs real -0.4467)
+  - iter 2: 0.2522 (var=0.0203) (Δ vs real -0.3189)
+  - iter 3: 0.1729 (var=0.0167) (Δ vs real -0.3982)
+  - iter 4 (current): 0.2873 (var=0.0109) (Δ vs real -0.2838)
+**Other theories' values on this metric (for reference):**
+- pi_1: 0.8500 (var=0.0114)
+- pi_2: 0.1771 (var=0.0092)
+- pi_3: 0.5142 (var=0.0156)
+
+### Experiment 2
+**Design**
+  A=[0, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0]
+  A=[0, 1, 0, 1, 1]  B=[1, 0, 1, 0, 0]
+  A=[1, 0, 0, 0, 1]  B=[0, 1, 1, 1, 0]
+  A=[0, 0, 1, 1, 1]  B=[0, 1, 0, 0, 0]
+  A=[1, 1, 0, 0, 0]  B=[0, 0, 1, 1, 1]
+  A=[0, 1, 1, 0, 0]  B=[0, 0, 0, 1, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    
+    a_ratings = np.array(data['option_a_ratings'].tolist())
+    b_ratings = np.array(data['option_b_ratings'].tolist())
+    
+    a_wins = np.sum(a_ratings > b_ratings, axis=1)
+    b_wins = np.sum(b_ratings > a_ratings, axis=1)
+    
+    valid_mask = a_wins != b_wins
+    if not np.any(valid_mask):
+        return 0.5
+        
+    tally_preds = np.where(a_wins > b_wins, 0, 1)
+    responses = np.array(data['response'].tolist())
+    
+    matches = (responses[valid_mask] == tally_preds[valid_mask])
+    return float(np.mean(matches))
+
+```
+
+**Observed (real) value:** 0.6890 (var=0.0042)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.8468 (var=0.0087) (Δ vs real +0.1578)
+  - iter 2: 0.7425 (var=0.0169) (Δ vs real +0.0535)
+  - iter 3: 0.8373 (var=0.0109) (Δ vs real +0.1483)
+  - iter 4 (current): 0.7105 (var=0.0178) (Δ vs real +0.0215)
+**Other theories' values on this metric (for reference):**
+- pi_2: 0.8565 (var=0.0079)
+- pi_1: 0.1787 (var=0.0103)
+- pi_3: 0.4655 (var=0.0215)
+
+### Experiment 3
+**Design**
+  A=[1, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1]
+  A=[1, 1, 0, 0, 0]  B=[0, 0, 1, 1, 0]
+  A=[0, 1, 0, 1, 1]  B=[1, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0]  B=[0, 0, 0, 1, 1]
+  A=[0, 0, 0, 1, 1]  B=[0, 1, 1, 0, 0]
+  A=[0, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0]
+  A=[1, 0, 1, 0, 0]  B=[0, 1, 0, 1, 1]
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 0, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    
+    val = np.array([0.95, 0.7, 0.65, 0.6, 0.55])
+    w = val - 0.5
+    
+    match_count = 0
+    total = 0
+    
+    for _, row in data.iterrows():
+        a = np.array(row['option_a_ratings'])
+        b = np.array(row['option_b_ratings'])
+        
+        a_wins = np.sum(a > b)
+        b_wins = np.sum(b > a)
+        
+        # Isolate trials where Tallying sees a tie
+        if a_wins == b_wins:
+            score_a = np.sum(a * w)
+            score_b = np.sum(b * w)
+            
+            if score_a > score_b:
+                target = 0
+            elif score_b > score_a:
+                target = 1
+            else:
+                continue
+                
+            if row['response'] == target:
+                match_count += 1
+            total += 1
+            
+    if total == 0:
+        return 0.5
+        
+    return match_count / total
+```
+
+**Observed (real) value:** 0.6200 (var=0.0045)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.8672 (var=0.0089) (Δ vs real +0.2472)
+  - iter 2: 0.7339 (var=0.0211) (Δ vs real +0.1139)
+  - iter 3: 0.8461 (var=0.0159) (Δ vs real +0.2261)
+  - iter 4 (current): 0.8117 (var=0.0219) (Δ vs real +0.1917)
+**Other theories' values on this metric (for reference):**
+- pi_3: 0.6611 (var=0.0165)
+- pi_2: 0.5033 (var=0.0060)
+- pi_1: 0.8411 (var=0.0219)
+
+### Experiment 4
+**Design**
+  A=[0, 1, 1, 1, 0]  B=[1, 0, 0, 0, 0]
+  A=[0, 0, 1, 1, 1]  B=[0, 1, 0, 0, 0]
+  A=[1, 0, 0, 0, 1]  B=[0, 1, 1, 1, 0]
+  A=[1, 1, 0, 0, 0]  B=[0, 0, 1, 1, 0]
+  A=[0, 1, 0, 1, 1]  B=[1, 0, 1, 0, 0]
+  A=[1, 0, 0, 1, 0]  B=[0, 1, 1, 0, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import pandas as pd
+    a_str = data['option_a_ratings'].apply(lambda x: ''.join(map(str, x)))
+    b_str = data['option_b_ratings'].apply(lambda x: ''.join(map(str, x)))
+    
+    t3 = (a_str == '10001') & (b_str == '01110')
+    t5 = (a_str == '01011') & (b_str == '10100')
+    t6 = (a_str == '10010') & (b_str == '01101')
+    
+    score = 0.0
+    count = 0
+    
+    if t3.any():
+        score += data.loc[t3, 'response'].mean()
+        count += 1
+    if t5.any():
+        score += (1 - data.loc[t5, 'response']).mean()
+        count += 1
+    if t6.any():
+        score += data.loc[t6, 'response'].mean()
+        count += 1
+        
+    return score / count if count > 0 else 0.5
+```
+
+**Observed (real) value:** 0.8542 (var=0.0086)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.8346 (var=0.0085) (Δ vs real -0.0196)
+  - iter 2: 0.6983 (var=0.0214) (Δ vs real -0.1558)
+  - iter 3: 0.7787 (var=0.0170) (Δ vs real -0.0754)
+  - iter 4 (current): 0.7300 (var=0.0214) (Δ vs real -0.1242)
+**Other theories' values on this metric (for reference):**
+- pi_2: 0.8442 (var=0.0115)
+- pi_3: 0.4475 (var=0.0249)
+- pi_1: 0.1571 (var=0.0118)
+
+## YOUR PRIOR CRITIQUES (for this propose-loop)
+Each block is one of YOUR previous critique iterations: the verdict you returned, the interpretation and rationale you wrote, and an **Outcome of your advice** line that says whether the candidate the proposer produced AFTER following your advice was ACCEPTED (your advice helped — its loss strictly beat the running-best) or REJECTED (your advice didn't help — the gate discarded the candidate). Use this self-history to (a) reinforce advice that was ACCEPTED, (b) avoid repeating advice that was REJECTED, and (c) detect your own oscillation across iterations.
+
+### Iteration 1
+Verdict: regenerate
+Interpretation: The candidate theory faithfully implements the arbiter's prescribed 'Tallying with Validity Tie-Breaker' mechanism. However, the model is currently far too deterministic compared to human behavior. In Experiment 1, the observed TTB match rate is 0.5711, whereas the candidate predicts 0.1244 because it strongly favors the Tallying winner. In Experiments 2 and 3, the candidate predicts match rates of ~0.85-0.86, while human data is much noisier (0.68 and 0.62 respectively). The strict lexicographic nature of the model combined with a high `beta` parameter range allows the model to make overly confident predictions.
+Rationale: The candidate correctly implements the requested mechanism family but needs parameter tuning to account for the high level of noise in human choices. Decrease the upper bound of the `beta` parameter range (e.g., [0.0, 5.0]) so that score differences do not immediately saturate the softmax function. Additionally, consider widening the `epsilon` range (e.g., [0.0, 0.8]) to allow the model to reach closer to chance levels, which will help pull the extreme predictions in Exp 1, 2, and 3 back toward the observed human averages.
+
+**Outcome of your advice:** iter 1 candidate loss=0.3890 -> iter 2 candidate loss=0.2784 -> the gate marked it ACCEPTED.
+
+### Iteration 2
+Verdict: regenerate
+Interpretation: The candidate model successfully reduced the overall loss (from 0.3890 to 0.2784) by introducing more noise, which helped pull the overly deterministic predictions in Experiments 2 and 3 closer to the observed human data. However, the wider epsilon range (up to 0.8) forced the model to become too noisy for Experiment 4, where the candidate's prediction dropped to 0.6983 compared to the highly consistent human behavior of 0.8542. Meanwhile, Experiment 1 remains underpredicted (0.2522 vs 0.5711), likely because the Tallying stage strongly opposes the TTB-based metric in those specific trials.
+Rationale: The previous suggestion to widen epsilon and lower beta successfully improved overall fit, but went slightly too far, hurting the model's ability to capture the high consistency observed in Experiment 4. Regenerate the model with a slightly tightened epsilon range (e.g., [0.0, 0.5]) to allow the model to reach the ~0.85 accuracy seen in Exp 4. Additionally, increase the upper bound of beta back to around 10.0 so that the model can still make sharp predictions when the evidence (either from Tallying or the validity tie-breaker) strongly favors one option.
+
+**Outcome of your advice:** iter 2 candidate loss=0.2784 -> iter 3 candidate loss=0.3937 -> the gate marked it REJECTED.
+
+### Iteration 3 (most recent)
+Verdict: regenerate
+Interpretation: The most recent candidate (Iter 3) was REJECTED by the accept gate because tightening the epsilon range and raising beta caused massive overpredictions in Experiments 2 and 3 (reaching ~0.84, far above the human averages of 0.68 and 0.62). The loop has safely reverted to the Iter 2 base model. Since tweaking the noise parameters (beta/epsilon) in this direction failed, we need a structural tweak within the prescribed 'Tallying with Validity Tie-Breaker' family. Specifically, the model currently struggles to capture Experiment 1 (TTB matches) and Experiment 3 (tie-breaker matches).
+Rationale: Instead of oscillating on the noise parameters, let's modify the secondary stage (tie-breaker) while keeping the Iter 2 parameter ranges for beta and epsilon. The arbiter explicitly suggested that the tie-breaker could be 'picking the option that wins on the single most valid feature' (a Take-The-Best approach) rather than a weighted sum. Regenerate the model so that when a tie occurs in the Tallying stage, the model finds the single feature with the highest validity where the two options differ, and assigns the win to the option with the '1' on that feature. Keep the beta [0.0, 5.0] and epsilon [0.0, 0.8] ranges from the accepted Iter 2 base, but add a `tie_margin` parameter to scale the tie-breaker score difference so the softmax can process it properly.
+
+**Outcome of your advice:** iter 3 candidate loss=0.3937 -> CURRENT candidate loss=0.2998 -> the gate marked it REJECTED.
+
+## RESPONSE FORMAT
+
+Return a JSON object with the following fields:
+- interpretation: Freeform analysis of the model simulation results on existing experiments and how they do or do not support the proposed model/theory.
+- verdict: Either 'regenerate' (regenerate a new model/theory) or 'continue' (keep the current model/theory).
+- rationale: If verdict='regenerate', why the current predict / policy / parameter-ranges should be revised. If verdict='continue', a sketch of why the current theory should be kept.
+
+
+## Response
+
+```json
+{
+  "interpretation": "The current candidate (Iter 4) attempted to use a Take-The-Best (TTB) tie-breaker, but it was REJECTED by the accept gate, meaning its loss (0.2998) was worse than the Iter 2 base (0.2784) which used a weighted sum tie-breaker. The TTB tie-breaker failed to improve the fit, particularly underpredicting Experiment 4 and overpredicting Experiment 3. Since the loop automatically reverts to the Iter 2 base, we should abandon the TTB tie-breaker and return to the weighted sum approach for resolving Tallying ties, but refine how the weighted sum is computed to better capture the variance in Experiments 1 and 3.",
+  "verdict": "regenerate",
+  "rationale": "The attempt to use a strict TTB tie-breaker was rejected by the gate, so we will build on the weighted sum tie-breaker from Iter 2. To improve the fit on Experiments 3 and 4 without causing the massive overpredictions seen in Iter 3, keep the Iter 2 noise ranges (beta [0.0, 5.0], epsilon [0.0, 0.8]) but refine the weighted sum tie-breaker. Specifically, center the validities (e.g., by subtracting 0.5) before computing the weighted sum in the tie-breaker stage. This aligns the tie-breaker scores with the relative predictive power of each feature (penalizing features with validity < 0.5 and rewarding those > 0.5) and provides a more naturally scaled score difference for the softmax function."
+}
+```
+
+## Usage
+
+```json
+{
+  "prompt_token_count": 7042,
+  "candidates_token_count": 355,
+  "total_token_count": 8472
+}
+```

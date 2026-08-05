@@ -1,0 +1,56 @@
+{
+  "round_idx": 9,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_11",
+      "killed": true,
+      "theory": {
+        "description": "Soft Weighted Additive (Soft WADD) Model with Convex Mixture: Decision-makers evaluate options by computing a continuous weighted sum of features. The weight of each feature is a convex combination of a baseline uniform weight (representing a default Tallying tendency) and the explicitly provided expert validities, plus a position-dependent bias (capturing primacy or recency effects). This continuous, bounded integration allows the model to act predominantly like Tallying when validities are similar or the mixture weight is low, while smoothly transitioning to more compensatory or validity-driven behavior without causing the overall scores to explode.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    a, b = stim[0], stim[1]\n    n_features = len(a)\n    \n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    w_mix = float(parameters[\"w_mix\"])\n    w_pos = float(parameters[\"w_pos\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Normalize position to [0, 1] where 0 is the first feature and 1 is the last\n    if n_features > 1:\n        pos = np.arange(n_features, dtype=float) / (n_features - 1)\n    else:\n        pos = np.zeros(n_features, dtype=float)\n        \n    # Feature weights: Convex combination of Tallying (1.0) and validities + position bias\n    w = (1.0 - w_mix) * 1.0 + w_mix * validities + w_pos * pos\n    \n    score_a = np.sum(w * a)\n    score_b = np.sum(w * b)\n    \n    scores = np.array([score_a, score_b])\n    \n    # Softmax choice probability\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    probs = e / np.sum(e)\n    \n    # Apply lapse rate\n    return (1.0 - epsilon) * probs + epsilon * np.array([0.5, 0.5])",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))",
+        "parameters": {
+          "validities": "validities",
+          "w_mix": "[0.0, 1.0]",
+          "w_pos": "[-5.0, 5.0]",
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]"
+        },
+        "rationale": "Following the critic's advice, we replaced the unbounded linear addition of validities with a convex combination between a uniform weight of 1.0 (Tallying) and the feature validities, controlled by a new parameter w_mix in [0.0, 1.0]. This provides a mathematically stable way for the model to smoothly transition from pure Tallying to pure WADD without causing the absolute magnitude of the scores to explode, avoiding the issues seen in previous iterations while preserving the position bias."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_2",
+      "killed": false,
+      "theory": {
+        "description": "People compare two options by counting, across all features, how often one option has a higher value than the other. The option that wins on more features is chosen. Tallying discards cardinal magnitudes \u2014 only the sign of each feature-wise comparison matters \u2014 so the heuristic is robust to monotone rescaling of individual features and cannot be swayed by a single large feature difference in the way Equal-Weight can. Ties on an individual feature contribute nothing to either count: that cue is simply treated as uninformative for the pair. No feature is privileged, in contrast to Take The Best; every cue contributes equally to the tally. When the two counts are equal the heuristic has no basis for preference and the learner must guess. Response noise enters through a softmax over the two tallies with inverse temperature beta (interpolating between fully deterministic choice at large beta and uniform guessing at beta = 0), plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+        "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Tallying heuristic (Dawes 1979; Gigerenzer &\n    # Goldstein 1999). Stimulus is the pair of option feature vectors\n    # for the current trial: array-like of shape (2, n_features),\n    # with row 0 = option A, row 1 = option B. History is ignored.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"Tallying expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n\n    a, b = stim[0], stim[1]\n    # Count strict feature-wise wins; ties contribute to neither option.\n    a_wins = float(np.sum(a > b))\n    b_wins = float(np.sum(b > a))\n    scores = np.array([a_wins, b_wins])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. When\n    # a_wins == b_wins the softmax is exactly uniform regardless of\n    # beta, which is the correct behavior for an undiscriminating\n    # tally.\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]"
+        },
+        "rationale": null
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_12",
+    "slot": 1,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Tallying with Strict Validity Tie-Breaking: Decision-makers primarily evaluate options by counting feature-wise wins (Tallying). To resolve ties in the tally counts, they employ a secondary, compensatory evaluation based on the explicitly provided validities of the winning features. Crucially, this secondary validity component is strictly bounded so that it can never override a strict tallying win, ensuring that the decision is lexicographic: Tallying always dominates, and validities only influence the choice when tally counts are exactly equal.",
+      "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    a, b = stim[0], stim[1]\n    \n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    w_val = float(parameters[\"w_val\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Identify winning features for each option\n    a_wins = (a > b).astype(float)\n    b_wins = (b > a).astype(float)\n    \n    # Primary component: Tallying (count of wins)\n    tally_a = np.sum(a_wins)\n    tally_b = np.sum(b_wins)\n    \n    # Secondary component: Validity score of winning features\n    # Normalize validities so the secondary component is strictly bounded\n    norm_validities = validities / np.sum(validities)\n    val_a = np.sum(norm_validities * a_wins)\n    val_b = np.sum(norm_validities * b_wins)\n    \n    # Compute final scores\n    # Because w_val < 1.0 and the max difference in val is <= 1.0,\n    # the validity component can never exceed 1.0, preserving Tallying dominance.\n    score_a = tally_a + w_val * val_a\n    score_b = tally_b + w_val * val_b\n    \n    scores = np.array([score_a, score_b])\n    \n    # Softmax choice probability\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    probs = e / np.sum(e)\n    \n    # Apply random lapse rate\n    return (1.0 - epsilon) * probs + epsilon * np.array([0.5, 0.5])\n",
+      "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+      "parameters": {
+        "validities": "validities",
+        "w_val": "[0.0, 0.99]",
+        "beta": "[0.1, 20.0]",
+        "epsilon": "[0.0, 0.5]"
+      },
+      "rationale": "Applying the critic's recommendation: To preserve the model's core Tallying dominance (which is critical for fitting Experiments 2 and 4), the validity component must be strictly constrained so it acts ONLY as a tie-breaker. By restricting the `w_val` parameter to strictly less than 1.0 ([0.0, 0.99]) and using normalized validities, the maximum possible difference contributed by the secondary component is strictly less than 1.0. This mathematical guarantee ensures that a tally difference of 1 or more will always determine the choice, while allowing validities to perfectly break exact tally ties, satisfying the Lexicographic Tallying requirement."
+    }
+  }
+}

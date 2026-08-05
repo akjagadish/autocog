@@ -1,0 +1,308 @@
+{
+  "rounds": [
+    {
+      "observations": [
+        {
+          "experiment": {
+            "rationale": "To dissociate Take The Best (TTB) from Tallying, we use a 4-feature design where the most valid cue (or the first discriminating cue) points to one option, while the simple majority of features point to the other. TTB decides solely based on the highest-validity discriminating cue, ignoring all others. Tallying, on the other hand, ignores validities and simply counts the number of features on which each option is superior. We include trials where TTB and Tallying make strictly opposing predictions, as well as trials where the top cue ties and the conflict cascades to the second cue.",
+            "validities": [
+              0.95,
+              0.85,
+              0.75,
+              0.65
+            ],
+            "rating_max": 5,
+            "trial_a_ratings": [
+              [
+                4,
+                1,
+                1,
+                1
+              ],
+              [
+                2,
+                3,
+                3,
+                3
+              ],
+              [
+                5,
+                5,
+                1,
+                1
+              ],
+              [
+                3,
+                2,
+                4,
+                4
+              ],
+              [
+                4,
+                2,
+                1,
+                1
+              ],
+              [
+                1,
+                4,
+                4,
+                4
+              ],
+              [
+                5,
+                4,
+                1,
+                1
+              ],
+              [
+                2,
+                2,
+                4,
+                4
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                3,
+                2,
+                2,
+                2
+              ],
+              [
+                3,
+                1,
+                1,
+                1
+              ],
+              [
+                5,
+                4,
+                2,
+                2
+              ],
+              [
+                3,
+                3,
+                1,
+                1
+              ],
+              [
+                3,
+                3,
+                2,
+                2
+              ],
+              [
+                2,
+                2,
+                2,
+                2
+              ],
+              [
+                5,
+                3,
+                2,
+                2
+              ],
+              [
+                2,
+                3,
+                1,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    ttb_match = 0\n    total = 0\n    for _, row in data.iterrows():\n        a = row['option_a_ratings']\n        b = row['option_b_ratings']\n        ttb_choice = None\n        # Features are implicitly ordered by validity (highest to lowest)\n        for i in range(len(a)):\n            if a[i] > b[i]:\n                ttb_choice = 0\n                break\n            elif b[i] > a[i]:\n                ttb_choice = 1\n                break\n        if ttb_choice is not None:\n            if row['response'] == ttb_choice:\n                ttb_match += 1\n            total += 1\n    return ttb_match / total if total > 0 else 0.5",
+            "rationale": "The experimental design consists entirely of conflict trials where Take The Best (TTB) and Tallying make strictly opposing predictions. By computing the proportion of trials where the subject's choice aligns with the TTB prediction, we can perfectly discriminate the two heuristics. Under TTB, this metric will be close to 1.0 (subject to noise), whereas under Tallying it will be close to 0.0."
+          },
+          "proposer_theory": {
+            "description": "People compare two options by consulting cues one at a time in order of validity, stopping at the first cue that discriminates between the two options. That cue alone determines the choice: the option with the higher value on the discriminating cue wins, and no other cue is consulted. Cues with lower validity are never reached when a higher-validity cue already discriminates, so Take The Best is a \"one-reason\" decision rule \u2014 only a single feature is ever used on any given choice. Because only the sign of the comparison on the top discriminating cue matters, TTB ignores both the magnitude of that difference and all information on lower-validity cues, making it maximally frugal in the use of evidence. Cue validities are subjective and can be learned, inferred from instructions, or fixed by task structure. When no cue discriminates (all feature-wise comparisons tie) the learner has no basis for preference and must guess. Response noise enters through a softmax over the binary TTB score (winner = 1, loser = 0) with inverse temperature beta, plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+            "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Take The Best (Gigerenzer & Goldstein 1996).\n    # Stimulus is the pair of option feature vectors for the current\n    # trial: array-like of shape (2, n_features), row 0 = option A,\n    # row 1 = option B. Cue cascade: features are consulted in order\n    # of descending validity; the first discriminating cue (strict\n    # inequality) determines the winner; if no cue discriminates,\n    # the model guesses uniformly. History is ignored.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"TTB expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n    n_features = stim.shape[1]\n\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    if val.shape[0] != n_features:\n        raise ValueError(\n            f\"validities length {val.shape[0]} != n_features {n_features}.\"\n        )\n    # Descending validity; argsort is stable so validity ties break\n    # toward the earlier feature index.\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n\n    a, b = stim[0], stim[1]\n    winner = None\n    for j in cue_order:\n        if a[j] > b[j]:\n            winner = 0\n            break\n        if b[j] > a[j]:\n            winner = 1\n            break\n\n    if winner is None:\n        # No discriminating cue \u2014 pure guess.\n        return np.ones(2) / 2.0\n\n    scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. For the\n    # binary TTB score this collapses to sigmoid(beta) for the winner,\n    # giving a direct mapping from beta onto the paper's flip-noise\n    # levels (beta=0 \u2194 50/50; beta \u226b 1 \u2194 deterministic).\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    return int(np.argmax(probabilities))\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]",
+              "validities": "validities"
+            },
+            "rationale": null
+          },
+          "proposer_label": "pi_1",
+          "real_value": null,
+          "real_variance": null,
+          "predicted_values": [
+            {
+              "value": 1.0,
+              "variance": 0.0,
+              "label": "pi_1"
+            },
+            {
+              "value": 0.0,
+              "variance": 0.0,
+              "label": "pi_2"
+            }
+          ]
+        },
+        {
+          "experiment": {
+            "rationale": "To quantitatively dissociate Tallying from Take The Best (TTB), we present a 5-feature design using cardinal ratings (0-5 scale). TTB is a non-compensatory, one-reason decision rule that stops at the first discriminating feature, ordered by validity. Tallying ignores both the feature validities and the cardinal magnitude of the differences, counting only the number of features on which an option is strictly better. We construct trials where the highest-validity discriminating cue points to one option, but a simple majority of the remaining lower-validity cues point to the other option. By including trials where the top cue discriminates, as well as trials where the top cues tie and the conflict cascades to the 2nd or 3rd cue, we can isolate whether subjects are using a single-feature TTB strategy or a multi-feature Tallying strategy.",
+            "validities": [
+              0.95,
+              0.85,
+              0.75,
+              0.65,
+              0.55
+            ],
+            "rating_max": 5,
+            "trial_a_ratings": [
+              [
+                5,
+                2,
+                2,
+                2,
+                2
+              ],
+              [
+                2,
+                5,
+                5,
+                5,
+                2
+              ],
+              [
+                5,
+                5,
+                2,
+                2,
+                2
+              ],
+              [
+                4,
+                4,
+                4,
+                2,
+                2
+              ],
+              [
+                3,
+                2,
+                5,
+                5,
+                5
+              ],
+              [
+                4,
+                3,
+                3,
+                3,
+                3
+              ],
+              [
+                1,
+                5,
+                1,
+                1,
+                1
+              ],
+              [
+                5,
+                1,
+                5,
+                5,
+                5
+              ]
+            ],
+            "trial_b_ratings": [
+              [
+                2,
+                5,
+                5,
+                5,
+                2
+              ],
+              [
+                5,
+                2,
+                2,
+                2,
+                2
+              ],
+              [
+                5,
+                2,
+                5,
+                5,
+                5
+              ],
+              [
+                4,
+                4,
+                2,
+                5,
+                5
+              ],
+              [
+                3,
+                5,
+                2,
+                2,
+                2
+              ],
+              [
+                3,
+                4,
+                4,
+                4,
+                4
+              ],
+              [
+                1,
+                1,
+                5,
+                5,
+                5
+              ],
+              [
+                1,
+                5,
+                1,
+                1,
+                1
+              ]
+            ]
+          },
+          "metric": {
+            "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    def tally_predicts(row):\n        a = row['option_a_ratings']\n        b = row['option_b_ratings']\n        a_wins = sum(x > y for x, y in zip(a, b))\n        b_wins = sum(y > x for x, y in zip(a, b))\n        if a_wins > b_wins:\n            return 0\n        elif b_wins > a_wins:\n            return 1\n        return -1\n    predictions = data.apply(tally_predicts, axis=1)\n    return float(np.mean(data['response'] == predictions))",
+            "rationale": "This metric calculates the proportion of trials where the subject's choice aligns with the Tallying heuristic. In 7 out of the 8 unique trial pairs in this experimental design, Tallying and Take The Best (TTB) predict opposite choices. Therefore, data generated by the Tallying theory will yield a metric value close to 1.0, while data generated by the TTB theory will yield a value close to 0.125 (since it only agrees on 1 out of 8 trial types). This creates a massive mean difference with low between-subject variance."
+          },
+          "proposer_theory": {
+            "description": "People compare two options by counting, across all features, how often one option has a higher value than the other. The option that wins on more features is chosen. Tallying discards cardinal magnitudes \u2014 only the sign of each feature-wise comparison matters \u2014 so the heuristic is robust to monotone rescaling of individual features and cannot be swayed by a single large feature difference in the way Equal-Weight can. Ties on an individual feature contribute nothing to either count: that cue is simply treated as uninformative for the pair. No feature is privileged, in contrast to Take The Best; every cue contributes equally to the tally. When the two counts are equal the heuristic has no basis for preference and the learner must guess. Response noise enters through a softmax over the two tallies with inverse temperature beta (interpolating between fully deterministic choice at large beta and uniform guessing at beta = 0), plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+            "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Tallying heuristic (Dawes 1979; Gigerenzer &\n    # Goldstein 1999). Stimulus is the pair of option feature vectors\n    # for the current trial: array-like of shape (2, n_features),\n    # with row 0 = option A, row 1 = option B. History is ignored.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"Tallying expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n\n    a, b = stim[0], stim[1]\n    # Count strict feature-wise wins; ties contribute to neither option.\n    a_wins = float(np.sum(a > b))\n    b_wins = float(np.sum(b > a))\n    scores = np.array([a_wins, b_wins])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. When\n    # a_wins == b_wins the softmax is exactly uniform regardless of\n    # beta, which is the correct behavior for an undiscriminating\n    # tally.\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+            "policy_source": "def policy(probabilities):\n    return int(np.argmax(probabilities))\n",
+            "parameters": {
+              "beta": "[0.1, 20.0]",
+              "epsilon": "[0.0, 0.5]"
+            },
+            "rationale": null
+          },
+          "proposer_label": "pi_2",
+          "real_value": null,
+          "real_variance": null,
+          "predicted_values": [
+            {
+              "value": 1.0,
+              "variance": 0.0,
+              "label": "pi_2"
+            },
+            {
+              "value": 0.125,
+              "variance": 0.0,
+              "label": "pi_1"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,55 @@
+{
+  "round_idx": 7,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_1",
+      "killed": false,
+      "theory": {
+        "description": "People compare two options by consulting cues one at a time in order of validity, stopping at the first cue that discriminates between the two options. That cue alone determines the choice: the option with the higher value on the discriminating cue wins, and no other cue is consulted. Cues with lower validity are never reached when a higher-validity cue already discriminates, so Take The Best is a \"one-reason\" decision rule \u2014 only a single feature is ever used on any given choice. Because only the sign of the comparison on the top discriminating cue matters, TTB ignores both the magnitude of that difference and all information on lower-validity cues, making it maximally frugal in the use of evidence. Cue validities are subjective and can be learned, inferred from instructions, or fixed by task structure. When no cue discriminates (all feature-wise comparisons tie) the learner has no basis for preference and must guess. Response noise enters through a softmax over the binary TTB score (winner = 1, loser = 0) with inverse temperature beta, plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+        "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Take The Best (Gigerenzer & Goldstein 1996).\n    # Stimulus is the pair of option feature vectors for the current\n    # trial: array-like of shape (2, n_features), row 0 = option A,\n    # row 1 = option B. Cue cascade: features are consulted in order\n    # of descending validity; the first discriminating cue (strict\n    # inequality) determines the winner; if no cue discriminates,\n    # the model guesses uniformly. History is ignored.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"TTB expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n    n_features = stim.shape[1]\n\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    if val.shape[0] != n_features:\n        raise ValueError(\n            f\"validities length {val.shape[0]} != n_features {n_features}.\"\n        )\n    # Descending validity; argsort is stable so validity ties break\n    # toward the earlier feature index.\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n\n    a, b = stim[0], stim[1]\n    winner = None\n    for j in cue_order:\n        if a[j] > b[j]:\n            winner = 0\n            break\n        if b[j] > a[j]:\n            winner = 1\n            break\n\n    if winner is None:\n        # No discriminating cue \u2014 pure guess.\n        return np.ones(2) / 2.0\n\n    scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. For the\n    # binary TTB score this collapses to sigmoid(beta) for the winner,\n    # giving a direct mapping from beta onto the paper's flip-noise\n    # levels (beta=0 \u2194 50/50; beta \u226b 1 \u2194 deterministic).\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": null
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_9",
+      "killed": true,
+      "theory": {
+        "description": "Decision-makers evaluate options by integrating all available cues, but they heavily discount the influence of lower-validity cues. Instead of using a discrete mixture of distinct heuristics, individuals employ an exponential decay weighting scheme based on cue validity rank. The majority of individuals have a very steep decay rate (effectively mimicking Take The Best), while a small minority have a shallower decay rate, allowing multiple aligned lower-validity cues to outweigh a single higher-validity cue (producing compensatory behavior).",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Sort cues by validity descending to determine rank\n    cue_order = np.argsort(-val, kind=\"stable\")\n    \n    # Skew the distribution of decay rates so the majority are low (TTB-like)\n    decay_rate = float(parameters[\"decay_rate\"]) ** 3\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Calculate rank-dependent weights: w_r = decay_rate ^ r\n    ranks = np.arange(len(val))\n    weights = decay_rate ** ranks\n    \n    # Apply weights to the sorted cues\n    score_a = np.sum(weights * a[cue_order])\n    score_b = np.sum(weights * b[cue_order])\n    \n    scores = np.array([score_a, score_b])\n    \n    # Convert to probabilities via softmax\n    z = beta * scores\n    z -= np.max(z)\n    p_core = np.exp(z) / np.sum(np.exp(z))\n    \n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+        "parameters": {
+          "decay_rate": "[0.0, 1.0]",
+          "beta": "[1.0, 50.0]",
+          "epsilon": "[0.0, 0.2]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's advice, we skew the distribution of the decay rate parameter programmatically. By sampling a base parameter uniformly from [0.0, 1.0] and cubing it inside the `predict` function, we ensure that the vast majority of simulated subjects exhibit very low decay rates (mimicking pure Take-The-Best), preserving the strong non-compensatory fits on Exps 3 and 7. At the same time, the long tail allows a small minority of subjects to have higher decay rates, capturing the compensatory behavior needed to improve fits on Exps 5 and 8 without pushing too many subjects into the compensatory regime."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_10",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Decision-makers do not integrate all cues on every trial. Instead, they maintain a repertoire of distinct heuristics\u2014specifically Take The Best (TTB) and Tallying\u2014and select one to strictly apply on each decision. On any given trial, an individual either completely relies on TTB (basing their choice solely on the single most valid discriminating cue), falls back to Tallying (counting the number of positive features for each option while ignoring validities), or simply guesses randomly due to lapses in attention. This discrete strategy selection captures bimodal response patterns without predicting the systematic compensatory shifts that cue-integration models enforce.",
+      "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # 1. Take The Best (TTB) prediction\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n    ttb_winner = -1\n    for j in cue_order:\n        if a[j] > b[j]:\n            ttb_winner = 0\n            break\n        elif b[j] > a[j]:\n            ttb_winner = 1\n            break\n            \n    if ttb_winner == 0:\n        ttb_probs = np.array([1.0, 0.0])\n    elif ttb_winner == 1:\n        ttb_probs = np.array([0.0, 1.0])\n    else:\n        ttb_probs = np.array([0.5, 0.5])\n        \n    # 2. Tallying prediction\n    a_wins = np.sum(a > b)\n    b_wins = np.sum(b > a)\n    if a_wins > b_wins:\n        tally_probs = np.array([1.0, 0.0])\n    elif b_wins > a_wins:\n        tally_probs = np.array([0.0, 1.0])\n    else:\n        tally_probs = np.array([0.5, 0.5])\n        \n    # 3. Strategy mixture weights\n    w_ttb = float(parameters[\"w_ttb\"])\n    w_tally_rel = float(parameters[\"w_tally_rel\"])\n    \n    w_tally = (1.0 - w_ttb) * w_tally_rel\n    w_rand = (1.0 - w_ttb) * (1.0 - w_tally_rel)\n    \n    # Final probability is a discrete mixture of the strategies\n    p = w_ttb * ttb_probs + w_tally * tally_probs + w_rand * np.array([0.5, 0.5])\n    \n    return p\n",
+      "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+      "parameters": {
+        "w_ttb": "[0.0, 1.0]",
+        "w_tally_rel": "[0.0, 1.0]",
+        "validities": "validities"
+      },
+      "rationale": "Following the arbiter's feedback, this theory abandons cue integration (like the exponential decay in Theory 2) in favor of a strict discrete mixture of heuristics. On any given trial, the subject probabilistically selects a strategy: strictly applying Take The Best (TTB), strictly applying Tallying, or guessing randomly. When a heuristic is chosen, it is applied deterministically without any compensatory leakage or softmax noise. This correctly models human behavior as a mixture of distinct, non-compensatory and unweighted-compensatory decision rules, capturing the bimodal nature of responses and avoiding the monotonic compensatory shifts predicted by continuous integration models."
+    }
+  }
+}

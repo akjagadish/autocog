@@ -1,0 +1,61 @@
+{
+  "round_idx": 8,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_8",
+      "killed": false,
+      "theory": {
+        "description": "Conflict-Driven Strategy Selection: Decision-makers adaptively select their decision strategy based on the dissimilarity of the options' total cue counts. When options are highly dissimilar in the number of positive cues (indicating high conflict or complexity), individuals abandon compensatory processing and fall back entirely on a simple non-compensatory heuristic (Take The Best). Conversely, when the total cue counts are similar, individuals attempt to integrate all available information using a compensatory strategy (Tallying). This is modeled as a probabilistic mixture of TTB and Tallying, where the probability of using TTB scales directly with the absolute difference in total cue counts.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n\n    stim = np.asarray(stimulus, dtype=float)\n    a, b = stim[0], stim[1]\n    n_features = len(a)\n    \n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n    \n    # Take The Best (TTB) Strategy\n    winner_ttb = None\n    for j in cue_order:\n        if a[j] > b[j]:\n            winner_ttb = 0\n            break\n        if b[j] > a[j]:\n            winner_ttb = 1\n            break\n            \n    if winner_ttb == 0:\n        scores_ttb = np.array([1.0, 0.0])\n    elif winner_ttb == 1:\n        scores_ttb = np.array([0.0, 1.0])\n    else:\n        scores_ttb = np.array([0.5, 0.5])\n        \n    # Tallying Strategy\n    a_wins = float(np.sum(a > b))\n    b_wins = float(np.sum(b > a))\n    scores_tally = np.array([a_wins, b_wins]) / max(1.0, float(n_features))\n    \n    beta_ttb = float(parameters[\"beta_ttb\"])\n    beta_tally = float(parameters[\"beta_tally\"])\n    \n    # TTB Probabilities\n    z_ttb = beta_ttb * scores_ttb\n    e_ttb = np.exp(z_ttb - np.max(z_ttb))\n    p_ttb_dist = e_ttb / e_ttb.sum()\n    \n    # Tallying Probabilities\n    z_tally = beta_tally * scores_tally\n    e_tally = np.exp(z_tally - np.max(z_tally))\n    p_tally_dist = e_tally / e_tally.sum()\n    \n    # Conflict-Driven Weight\n    gamma = float(parameters[\"gamma\"])\n    \n    # Dissimilarity in total cue counts\n    diff_cues = abs(np.sum(a) - np.sum(b))\n    \n    # Probability of using TTB increases linearly with diff_cues\n    w_ttb = min(1.0, gamma * diff_cues / max(1.0, float(n_features)))\n    \n    epsilon = float(parameters[\"epsilon\"])\n    \n    p_core = w_ttb * p_ttb_dist + (1.0 - w_ttb) * p_tally_dist\n    \n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta_ttb": "[0.1, 10.0]",
+          "beta_tally": "[0.1, 10.0]",
+          "gamma": "[0.0, 10.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's advice, we revert to the exact Iteration 2 mechanism but adjust the parameter ranges to find a better global compromise. We constrain `beta_ttb` and `beta_tally` to `[0.1, 10.0]` to ensure both strategies maintain reasonable stochasticity and do not collapse into pure determinism. We also increase the upper bound of `epsilon` to `0.5` to allow for a higher baseline lapse rate. This gentle retuning preserves the stable core formulation of Iteration 2 while preventing the destructive extremes observed in Iteration 6."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_10",
+      "killed": true,
+      "theory": {
+        "description": "Rank-Dependent Discriminating Weighting (RDDW): Decision-makers first simplify the choice by performing feature-wise comparisons, completely canceling out cues where both options have the same value. They then rank the remaining discriminating cues by their subjective validity. Evidence is accumulated for each option using a rank-dependent weighting scheme, where the impact of each subsequent cue diminishes geometrically. This allows the strategy to smoothly interpolate between a purely non-compensatory Take-The-Best approach (steep decay) and a fully compensatory WADD or Tallying approach (no decay), naturally explaining why multiple weaker cues can sometimes override a single highly valid cue.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    a, b = stim[0], stim[1]\n    \n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    gamma = float(parameters[\"gamma\"])\n    alpha = float(parameters[\"alpha\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Feature-wise comparison: isolate discriminating cues\n    diff = a - b\n    discrim_indices = np.where(diff != 0)[0]\n    \n    if len(discrim_indices) == 0:\n        return np.array([0.5, 0.5])\n        \n    # Rank discriminating cues by validity\n    discrim_vals = val[discrim_indices]\n    sorted_order = np.argsort(-discrim_vals, kind=\"stable\")\n    sorted_indices = discrim_indices[sorted_order]\n    \n    ev_a = 0.0\n    ev_b = 0.0\n    \n    # Accumulate evidence with rank-dependent diminishing returns\n    for k, idx in enumerate(sorted_indices):\n        v = val[idx]\n        # Weight depends on scaled validity and rank k\n        w = (max(0.0, v - 0.5)) ** alpha * (gamma ** k)\n        \n        if diff[idx] > 0:\n            ev_a += w\n        elif diff[idx] < 0:\n            ev_b += w\n            \n    # Convert evidence to choice probabilities\n    scores = np.array([ev_a, ev_b])\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "gamma": "[0.0, 1.0]",
+          "alpha": "[0.0, 5.0]",
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.2]",
+          "validities": "validities"
+        },
+        "rationale": "The new theory, 'Rank-Dependent Discriminating Weighting (RDDW)', directly implements the arbiter's suggestion to use feature-wise comparison (cancellation) followed by integration with diminishing marginal impact. By filtering out non-discriminating cues and ranking the remaining ones by validity, the model applies a geometric decay (gamma^k) to the weight of each subsequent cue. This allows the model to flexibly capture pure Take-The-Best (gamma near 0), pure Tallying (gamma near 1, alpha near 0), and intermediate compensatory behaviors where multiple moderately valid cues can outweigh a single highly valid cue, while naturally handling high-conflict scenarios."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_11",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Rightward/Recency Biased Compensatory Processing (Piecewise): Decision-makers use a two-regime evaluation strategy. In standard situations where one option has more positive cues than the other, they rely on a strictly decreasing, validity-based weight vector, prioritizing early, highly valid cues. However, when the options are tied in their total number of positive cues (zero-conflict), they discard strict validity prioritization and instead rely on a recency-biased weight vector, systematically preferring options supported by later cues.",
+      "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    a, b = stim[0], stim[1]\n    \n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    n = len(val)\n    \n    val_weight = float(parameters[\"val_weight\"])\n    pos_weight = float(parameters[\"pos_weight\"])\n    decay = float(parameters[\"decay\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    sum_a = np.sum(a)\n    sum_b = np.sum(b)\n    \n    w = np.zeros(n)\n    if sum_a == sum_b:\n        # Zero-conflict (tied cue count) scenario: use recency-biased weights\n        for i in range(n):\n            w[i] = pos_weight * (i / max(1, n - 1))\n    else:\n        # Standard scenario: use strictly decreasing validity-based weights\n        for i in range(n):\n            w[i] = val_weight * (decay ** i)\n            \n    ev_a = np.sum(a * w)\n    ev_b = np.sum(b * w)\n    \n    scores = np.array([ev_a, ev_b])\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])",
+      "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)",
+      "parameters": {
+        "val_weight": "[1.0, 10.0]",
+        "pos_weight": "[0.0, 10.0]",
+        "decay": "[0.1, 1.0]",
+        "beta": "[0.1, 10.0]",
+        "epsilon": "[0.0, 0.5]",
+        "validities": "validities"
+      },
+      "rationale": "Following the critic's diagnosis, the model now explicitly separates the evaluation of standard trials and tied-cue trials. By implementing a piecewise function based on whether `sum_a == sum_b`, the model can apply a steep, exponential validity decay (`val_weight * (decay ** i)`) to correctly predict standard non-compensatory-like trials (Exps 1-4), while cleanly applying a recency/rightward bias (`pos_weight * (i / max(1, n - 1))`) to tied-cue trials (Exps 13-18) without the two regimes mathematically conflicting with one another."
+    }
+  }
+}

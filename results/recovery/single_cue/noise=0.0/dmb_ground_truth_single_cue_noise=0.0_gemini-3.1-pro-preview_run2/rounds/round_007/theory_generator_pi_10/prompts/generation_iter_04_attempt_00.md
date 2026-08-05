@@ -1,0 +1,1356 @@
+# generation_iter_04_attempt_00
+
+## System Prompt
+
+You are a renowned cognitive scientist and an expert Python programmer.
+
+Your job is to propose a new theory and its model instantiation in the Decision Making (Binary Features) domain based on the feedback provided by an arbiter. The feedback contains diagnoses of mechanistic failures of the previous theory along with suggestions for a new theory family that overcomes those failures. The newly proposed theory and model should display human-like behavior when simulated on experiment(s). 
+The goal of the theory generation process is to SURFACE theories that are EXPERIMENT-INVARIANT: that is,theories that explain data across the majority of experiments. 
+You will see a list of theories that have been proposed in the past but you should only use them as inspiration and not to choose from them. Propose a new theory that is different. 
+If they fail to do so, you will receive feedback on their performance on the same experiment(s) and you will have to propose another new theory and model that meet the requirements, iterating until you succeed.
+
+If you think the failure to capture human behavior is due to arbiter feedback that is inaccurate or unhelpful, you can propose a new theory and model that ignore the feedback, but you must provide rationale for why you are ignoring it and how your proposal overcomes the identified mechanistic failures.
+
+## ACCEPT GATE & LOSS TRAJECTORY — HOW THE LOOP HANDLES YOUR EDITS
+This propose-loop has a programmatic accept gate: after every iteration the candidate's `aggregate_loss` is compared against the running-best loss; strict improvement -> ACCEPTED (the candidate becomes the new running-best base); otherwise -> REJECTED (the candidate is discarded and the base is unchanged). You do NOT need to manually "revert" a regressed edit — the gate already does that for you.
+
+The block rendered below as `## PREVIOUS CANDIDATE (this loop)` is ALWAYS the running-best (last ACCEPTED) candidate, NEVER your most recent attempt if it was rejected. So:
+  * Treat `## PREVIOUS CANDIDATE` as a known-good base. Build on it.
+  * The `## LOSS TRAJECTORY` block tags every iteration ACCEPTED or REJECTED. Use this as ground truth on which past critic advice actually moved the loop forward and which didn't.
+  * The `## PRIOR FEEDBACK ITERATIONS` block annotates each prior critique with the same ACCEPTED/REJECTED tag of the candidate it elicited. Down-weight critic advice whose previous candidates were REJECTED, and reinforce / extend advice whose candidates were ACCEPTED.
+  * Treat the best ACCEPTED iteration's loss as a soft floor — the next edit should plausibly land at-or-below it, otherwise the gate will reject your attempt and the base stays put.
+
+Each metric value below is shown as `point_estimate (var=X)`, where `point_estimate` is `metric(data)` evaluated on the full pooled dataset and `var` is the population (between-subject) variance of the same metric re-applied per `subject_id`. The point estimate is the canonical scalar; `var` reports how consistent that estimate is across subjects (lower = more consistent). `var=n/a` means the metric could not be applied to a single-subject slice.
+
+## PARAMETER NOTATION
+`parameters` is a JSON object mapping each parameter name (snake_case string) to a *string* value that specifies its domain. Every value MUST be a string — never a bare list, number, tuple, or expression. Use exactly one of these notations per parameter:
+
+1. Continuous interval — square brackets, two numeric bounds:
+   "[min, max]"
+   Examples: "[0, 1]", "[1.0, 10.0]", "[10, 1000]"
+
+2. Discrete set — curly braces, comma-separated values:
+   "{v1, v2, ...}"
+   Example: "{1, 2}"
+
+3. Vector of intervals whose length is set by the experiment — a bracketed tuple repeated by a symbolic length variable:
+   "[(min, max)] * length_var"
+   Example: "[(0, 1)] * n_features"
+
+4. Symbolic reference — a bare variable name (no brackets, no angle brackets), used when the parameter takes its value from an experiment-defined constant rather than a range:
+   "variable_name"
+   Example: "n_features"
+
+Rules:
+- Do not use parentheses for intervals; square brackets only. Tuples `(a, b)` are reserved for the vector-of-intervals notation in (3).
+- Do not mix notations within a single value (e.g., no "[0, 1] or {2, 3}").
+- Do not quote numbers inside the notation (write "[0, 1]", not "['0', '1']").
+- Every parameter referenced by `predict` or `policy` must appear as a key in `parameters`, and vice versa.
+- Notations 3 and 4 may ONLY reference the experiment-defined symbolic identifiers listed under "ALLOWED SYMBOLIC IDENTIFIERS" below. Do not invent new identifier names. If a parameter's shape doesn't fit any of those variables, fall back to a literal interval (notation 1) or discrete set (notation 2). Use these names so the model adapts to any experiment in this domain instead of hardcoding shapes.
+
+## ALLOWED SYMBOLIC IDENTIFIERS (for notations 3 and 4 above)
+- n_features: Number of expert ratings per option (LLM-proposed via `validities` length).
+- validities: Per-expert validities (LLM-proposed; each in [0.5, 1.0]); fixed across all trials.
+
+## AVAILABLE IMPORTS inside `predict` and `policy`
+- numpy as np
+- pandas as pd
+- scipy and its submodules
+- torch and torch.nn.functional as F
+- sklearn and its submodules
+- math, random, and other standard Python libraries
+
+## RUNTIME CONTRACT (function signatures and argument shapes)
+`predict(parameters, state, history) -> np.ndarray`:
+- `parameters`: dict[str, value]. One sample drawn from your declared `parameters` ranges, applied for the entire subject run.
+- `state`: the per-trial input delivered by the experiment (shape is domain-specific — see the experiment description above and the `history` key list below, which mirrors the per-trial variables carried in `state`). Convert to an array with `np.asarray(state)` if you need array ops.
+- `history`: dict-of-lists for past trials in this subject's run, NOT a list-of-dicts. The per-trial keys are:
+  Each value below is a Python list in trial order; entry `i` is the value for trial `i`. On the first trial all lists are empty.
+  - `"option_a_ratings"`: List of n_features binary expert ratings (each 0 or 1) for option A on this trial.
+  - `"option_b_ratings"`: List of n_features binary expert ratings (each 0 or 1) for option B on this trial.
+  - `"response"`: 0 if subject chose A, 1 if subject chose B.
+Iterating `for x in history:` iterates the dict KEYS (strings); to walk trials index the lists in lock-step, e.g. `for i in range(len(next(iter(history.values())))): ...`.
+- Returns: 1-D `np.ndarray` of choice probabilities over the experiment's discrete action set, summing to 1.
+
+`policy(probs) -> int`:
+- Receives the probability vector produced by `predict`.
+- Returns: integer index in `[0, len(probs))` identifying the chosen action. If you sample with `np.random.choice(..., p=probs)`, normalise first (`probs = np.asarray(probs, dtype=np.float64); probs /= probs.sum()`) to avoid the "probabilities do not sum to 1" ValueError from float drift.
+
+
+## User Prompt
+
+## EXPERIMENTAL DOMAIN
+Subjects repeatedly choose between two fictitious products, A and B. Each option is described by a vector of binary expert ratings (each 0 or 1). Every experiment fixes its own feature count (via `validities` length) and per-expert validities; both are LLM-proposed. The validities are communicated to the subject in the instructions. Subjects pick whichever product they believe is of higher quality. There is no trial-by-trial correctness feedback.
+
+Each subject completes ~96 trials in a single block, with order randomized independently per subject. On every trial the subject sees two options A and B, each described by `n_features` binary expert ratings (each 0 or 1). The per-feature validities and n_features are fixed per experiment (design-time choices). Validities are communicated to the subject in the instructions. Both `n_features` and `validities` are exposed to your `predict` via the `parameters` dict. The subject chooses A or B; no correctness feedback is provided after the choice.
+
+## ARBITER GUIDE
+The arbiter labelled this round's two theories in its recommendation as follows:
+- THEORY 1 = `pi_9`
+- THEORY 2 = `pi_2`
+- The recommendation below acts on THEORY 1 (= `pi_9`).
+
+Propose a 'Heuristic Mixture' theory. Instead of integrating tallying and weighted-additive scores within a single evaluation phase, postulate that decision-makers are heterogeneous: a proportion of the population uses Pure Tallying (ignoring validities), while the rest uses Take-The-Best (relying entirely on the single most valid discriminating cue). The model should introduce a parameter 'p_ttb' representing the probability of using the TTB heuristic versus Tallying. Response noise (softmax or lapse) should be applied to the chosen heuristic's output.
+
+## THEORY LEADERBOARD
+A small set of prior picked theories shown for reference. Overall score is in `[0, 1]`, higher = better, computed as `1 - L2_norm(normalized_per_experiment_distances) / max_L2_norm`. 1.0 means closest to the real value on every experiment+metric pair; 0.0 means farthest. Each entry below carries the same depth of detail as the PREVIOUS MODEL INSTANCE above so you can borrow concrete mechanisms when useful.
+
+### `pi_9` (overall score: 0.589)
+
+**Description**
+Tallying with Salience-Biased Tie-Breaking (Normalized Mixture with Flexible Scaling): Decision-makers evaluate options by integrating two separate signals. The primary signal is a pure Tally (counting the number of winning features for each option). The secondary signal is a non-linear validity-weighted score that can either penalize missing top-validity features or, conversely, over-weight lower-validity features depending on the individual's cognitive strategy. Both signals are normalized to a [0, 1] scale before being linearly mixed by an individual-specific parameter 'alpha'. Allowing the non-linear scaling parameter 'gamma' to take negative values captures the empirical phenomenon where some subjects strongly prefer options that win on lower-validity features when the tally is tied.
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, stimulus, history):
+    import numpy as np
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError("Model expects a (2, n_features) stimulus.")
+
+    a, b = stim[0], stim[1]
+    val = np.asarray(parameters["validities"], dtype=float)
+    
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+    gamma = float(parameters["gamma"])
+    alpha = float(parameters["alpha"])
+    
+    # Apply non-linear exponential scaling to validities for the tie-breaking component
+    w = val ** gamma
+    
+    # Only count features where one option strictly beats the other
+    a_wins = (a > b).astype(float)
+    b_wins = (b > a).astype(float)
+    
+    # Pure Tallying component (normalized)
+    n_feat = len(val)
+    tally_a = np.sum(a_wins) / n_feat
+    tally_b = np.sum(b_wins) / n_feat
+    
+    # Non-linear validity-weighted component (normalized)
+    sum_w = np.sum(w)
+    if sum_w == 0:
+        sum_w = 1.0
+    wadd_a = np.sum(w * a_wins) / sum_w
+    wadd_b = np.sum(w * b_wins) / sum_w
+    
+    # Linear mixture of Normalized Tallying and Salience-Biased WADD
+    score_a = alpha * tally_a + (1.0 - alpha) * wadd_a
+    score_b = alpha * tally_b + (1.0 - alpha) * wadd_b
+    scores = np.array([score_a, score_b])
+    
+    # Softmax choice rule with max-subtraction for numerical stability
+    z = beta * (scores - np.max(scores))
+    e = np.exp(z)
+    p_core = e / np.sum(e)
+    
+    n_opts = len(p_core)
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+
+
+`policy(probs) -> int`:
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities /= probabilities.sum()
+    return np.random.choice(len(probabilities), p=probabilities)
+
+
+`parameters`:
+- beta: [0.1, 20.0]
+- epsilon: [0.0, 0.5]
+- gamma: [-5.0, 5.0]
+- alpha: [0.0, 1.0]
+- validities: validities
+
+**Per-experiment fit (real vs this theory's metric value):**
+- Experiment 1: real=0.2467 (var=0.0072) vs this=0.1933 (var=0.0120)
+- Experiment 2: real=0.8444 (var=0.0148) vs this=0.7689 (var=0.0229)
+- Experiment 3: real=0.1317 (var=0.0093) vs this=0.3733 (var=0.0806)
+- Experiment 4: real=0.6933 (var=0.0487) vs this=0.2450 (var=0.3518)
+- Experiment 5: real=0.4850 (var=0.0026) vs this=0.5325 (var=0.0115)
+- Experiment 6: real=0.5283 (var=0.0043) vs this=0.5042 (var=0.0188)
+- Experiment 7: real=0.3475 (var=0.0033) vs this=0.3075 (var=0.0064)
+- Experiment 8: real=0.4975 (var=0.0028) vs this=0.7608 (var=0.0199)
+- Experiment 9: real=0.1163 (var=0.0129) vs this=0.3619 (var=0.0638)
+- Experiment 10: real=0.1495 (var=0.0219) vs this=0.3726 (var=0.0891)
+- Experiment 11: real=0.8075 (var=0.0287) vs this=0.0550 (var=0.0253)
+- Experiment 12: real=0.5208 (var=0.0051) vs this=0.5079 (var=0.0188)
+- Experiment 13: real=0.1832 (var=0.0124) vs this=0.4747 (var=0.0853)
+- Experiment 14: real=0.1762 (var=0.0166) vs this=0.5006 (var=0.0642)
+- Experiment 15: real=0.1591 (var=0.0033) vs this=0.0426 (var=0.0019)
+- Experiment 16: real=0.4773 (var=0.0539) vs this=0.1796 (var=0.0754)
+
+
+---
+
+### `pi_8` (overall score: 0.579)
+
+**Description**
+Frugal Threshold Heuristic: Decision-makers evaluate cues in descending order of their validities, keeping a running tally of the net evidence (the difference in the number of winning cues between the two options). Rather than strictly stopping at the first discriminating cue (Take-The-Best) or exhaustively integrating all cues (Pure Tallying), subjects stop searching as soon as the absolute evidence difference reaches a subject-specific cognitive threshold. A threshold of 1 perfectly recovers Take-The-Best, while a high threshold recovers Pure Tallying. Intermediate thresholds represent boundedly rational strategies that compute tallies over a frugal subset of cues.
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, stimulus, history):
+    import numpy as np
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError("Frugal Threshold model expects a (2, n_features) stimulus.")
+
+    a, b = stim[0], stim[1]
+    
+    val = np.asarray(parameters["validities"], dtype=float)
+    # Sort cues in descending order of validity
+    order = np.argsort(-val, kind="stable")
+    
+    theta = int(parameters["theta"])
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+    
+    diff = 0.0
+    # Accumulate evidence until the threshold is met
+    for idx in order:
+        if a[idx] > b[idx]:
+            diff += 1.0
+        elif b[idx] > a[idx]:
+            diff -= 1.0
+            
+        if abs(diff) >= theta:
+            break
+            
+    # The scores represent the net evidence favoring each option
+    scores = np.array([diff, -diff])
+    
+    # Softmax choice rule
+    z = beta * (scores - np.max(scores))
+    e = np.exp(z)
+    p_core = e / np.sum(e)
+    
+    n_opts = len(p_core)
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+
+`policy(probs) -> int`:
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities /= probabilities.sum()
+    return np.random.choice(len(probabilities), p=probabilities)
+
+`parameters`:
+- beta: [0.1, 20.0]
+- epsilon: [0.0, 0.5]
+- theta: {1, 2, 3, 4, 5, 6}
+- validities: validities
+
+**Per-experiment fit (real vs this theory's metric value):**
+- Experiment 1: real=0.2467 (var=0.0072) vs this=0.2549 (var=0.0873)
+- Experiment 2: real=0.8444 (var=0.0148) vs this=0.7028 (var=0.0956)
+- Experiment 3: real=0.1317 (var=0.0093) vs this=0.4567 (var=0.1517)
+- Experiment 4: real=0.6933 (var=0.0487) vs this=0.2767 (var=0.4504)
+- Experiment 5: real=0.4850 (var=0.0026) vs this=0.5500 (var=0.0252)
+- Experiment 6: real=0.5283 (var=0.0043) vs this=0.6083 (var=0.0321)
+- Experiment 7: real=0.3475 (var=0.0033) vs this=0.4254 (var=0.0791)
+- Experiment 8: real=0.4975 (var=0.0028) vs this=0.7362 (var=0.0759)
+- Experiment 9: real=0.1163 (var=0.0129) vs this=0.3113 (var=0.1057)
+- Experiment 10: real=0.1495 (var=0.0219) vs this=0.3400 (var=0.1222)
+- Experiment 11: real=0.8075 (var=0.0287) vs this=0.1600 (var=0.0927)
+- Experiment 12: real=0.5208 (var=0.0051) vs this=0.5854 (var=0.0272)
+- Experiment 13: real=0.1832 (var=0.0124) vs this=0.6695 (var=0.0510)
+- Experiment 14: real=0.1762 (var=0.0166) vs this=0.6819 (var=0.0374)
+- Experiment 15: real=0.1591 (var=0.0033) vs this=0.0558 (var=0.0047)
+- Experiment 16: real=0.4773 (var=0.0539) vs this=0.2073 (var=0.1036)
+
+
+---
+
+### `pi_7` (overall score: 0.543)
+
+**Description**
+Decision-makers in binary choice tasks employ a mixture of strategies, primarily relying on the compensatory Tallying heuristic, with a smaller fraction using the non-compensatory Take-The-Best (TTB) heuristic. TTB processes cues lexicographically, searching through features in descending order of their validities and stopping at the first feature that discriminates between the options. Tallying counts the total number of winning features for each option regardless of validity. By skewing the population mixture heavily toward Tallying, the model captures the dominant compensatory behavior observed in human data while retaining enough lexicographic influence to explain subtle choice variances.
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, stimulus, history):
+    import numpy as np
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError("Mixture model expects a (2, n_features) stimulus.")
+
+    a, b = stim[0], stim[1]
+    
+    val = np.asarray(parameters["validities"], dtype=float)
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+    w_ttb = float(parameters["w_ttb"])
+    
+    # Take-The-Best (TTB) component
+    order = np.argsort(-val, kind="stable")
+    ttb_score = np.array([0.5, 0.5])
+    for idx in order:
+        if a[idx] > b[idx]:
+            ttb_score = np.array([1.0, 0.0])
+            break
+        elif b[idx] > a[idx]:
+            ttb_score = np.array([0.0, 1.0])
+            break
+            
+    # Tallying component
+    a_wins = float(np.sum(a > b))
+    b_wins = float(np.sum(b > a))
+    score_tally = np.array([a_wins, b_wins])
+    
+    z = beta * (score_tally - np.max(score_tally))
+    e = np.exp(z)
+    p_tally = e / np.sum(e)
+    
+    # Mixture of TTB and Tallying
+    p_core = w_ttb * ttb_score + (1.0 - w_ttb) * p_tally
+    
+    n_opts = p_core.shape[0]
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+
+
+`policy(probs) -> int`:
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities /= probabilities.sum()
+    return np.random.choice(len(probabilities), p=probabilities)
+
+
+`parameters`:
+- beta: [0.1, 20.0]
+- epsilon: [0.0, 0.5]
+- w_ttb: [0.0, 0.3]
+- validities: validities
+
+**Per-experiment fit (real vs this theory's metric value):**
+- Experiment 1: real=0.2467 (var=0.0072) vs this=0.2602 (var=0.0119)
+- Experiment 2: real=0.8444 (var=0.0148) vs this=0.7444 (var=0.0100)
+- Experiment 3: real=0.1317 (var=0.0093) vs this=0.2492 (var=0.0139)
+- Experiment 4: real=0.6933 (var=0.0487) vs this=0.4567 (var=0.0840)
+- Experiment 5: real=0.4850 (var=0.0026) vs this=0.5642 (var=0.0070)
+- Experiment 6: real=0.5283 (var=0.0043) vs this=0.5158 (var=0.0175)
+- Experiment 7: real=0.3475 (var=0.0033) vs this=0.3556 (var=0.0058)
+- Experiment 8: real=0.4975 (var=0.0028) vs this=0.7312 (var=0.0112)
+- Experiment 9: real=0.1163 (var=0.0129) vs this=0.2544 (var=0.0136)
+- Experiment 10: real=0.1495 (var=0.0219) vs this=0.2821 (var=0.0197)
+- Experiment 11: real=0.8075 (var=0.0287) vs this=0.1038 (var=0.0224)
+- Experiment 12: real=0.5208 (var=0.0051) vs this=0.5750 (var=0.0066)
+- Experiment 13: real=0.1832 (var=0.0124) vs this=0.5789 (var=0.0160)
+- Experiment 14: real=0.1762 (var=0.0166) vs this=0.5531 (var=0.0093)
+- Experiment 15: real=0.1591 (var=0.0033) vs this=0.0178 (var=0.0002)
+- Experiment 16: real=0.4773 (var=0.0539) vs this=0.0456 (var=0.0056)
+
+
+## LOSS TRAJECTORY (this propose-loop)
+Aggregate loss across iterations of THIS propose-loop (lower = better, 0 = perfect, `+inf` = unscorable). The ACCEPTED / REJECTED tag is the loop's programmatic accept-gate decision — only ACCEPTED candidates have ever been used as the base for a subsequent iteration. Use this together with PRIOR FEEDBACK ITERATIONS below to grade which past critic advice actually paid off.
+
+- iter 1: loss=0.4754 -> ACCEPTED
+- iter 2: loss=0.4779 -> REJECTED
+- iter 3: loss=0.4826 -> REJECTED
+- iter 4: loss=0.4983 -> REJECTED
+Running-best (last ACCEPTED) base: iter 1 at loss=0.4754 — this is the source shown verbatim below under `## PREVIOUS CANDIDATE (this loop)`. Push the next edit's loss strictly below that floor or the gate will reject it.
+
+## EXPERIMENTAL RESULTS
+### Experiment 1
+**Design**
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 1, 0]
+  A=[0, 1, 0, 0, 0]  B=[0, 0, 1, 1, 1]
+  A=[0, 0, 1, 0, 0]  B=[0, 0, 0, 1, 1]
+  A=[1, 0, 1, 1, 1]  B=[1, 1, 0, 0, 0]
+  A=[0, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0]
+
+**Metric**
+```python
+import pandas as pd
+import numpy as np
+
+def metric(data: pd.DataFrame) -> float:
+    ttb_aligned = 0
+    total = len(data)
+    for _, row in data.iterrows():
+        a = row['option_a_ratings']
+        b = row['option_b_ratings']
+        resp = row['response']
+        
+        ttb_pred = None
+        # The features are already ordered by validity in the design (0 is highest)
+        for i in range(len(a)):
+            if a[i] > b[i]:
+                ttb_pred = 0
+                break
+            elif b[i] > a[i]:
+                ttb_pred = 1
+                break
+                
+        if ttb_pred == resp:
+            ttb_aligned += 1
+            
+    return float(ttb_aligned / total) if total > 0 else 0.5
+```
+
+**Observed (real) value:** 0.2467 (var=0.0072)
+**Previous candidate values (this loop):**
+  - iter 1: 0.5488 (var=0.0465) (Δ vs real +0.3021)
+  - iter 2: 0.6133 (var=0.0385) (Δ vs real +0.3665)
+  - iter 3: 0.4585 (var=0.0380) (Δ vs real +0.2118)
+  - iter 4 (most recent): 0.4756 (var=0.0613) (Δ vs real +0.2288)
+**Other theories' values on this metric (for reference):**
+- pi_1: 0.8617 (var=0.0108)
+- pi_2: 0.1503 (var=0.0075)
+- pi_3: 0.1480 (var=0.0090)
+- pi_4: 0.1509 (var=0.0105)
+- pi_5: 0.8669 (var=0.0074)
+- pi_6: 0.1665 (var=0.0100)
+- pi_7: 0.2602 (var=0.0119)
+- pi_8: 0.2549 (var=0.0873)
+- pi_9: 0.1933 (var=0.0120)
+
+### Experiment 2
+**Design**
+  A=[0, 1, 1, 1]  B=[1, 0, 0, 0]
+  A=[1, 0, 0, 0]  B=[0, 1, 1, 1]
+  A=[1, 1, 0, 0]  B=[1, 0, 1, 1]
+  A=[1, 0, 1, 1]  B=[1, 1, 0, 0]
+  A=[0, 0, 1, 1]  B=[0, 1, 0, 0]
+  A=[0, 1, 0, 0]  B=[0, 0, 1, 1]
+  A=[0, 1, 1, 0]  B=[0, 1, 0, 1]
+  A=[1, 0, 1, 0]  B=[0, 1, 0, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    
+    a_ratings = np.vstack(data['option_a_ratings'].values)
+    b_ratings = np.vstack(data['option_b_ratings'].values)
+    
+    a_wins = np.sum(a_ratings > b_ratings, axis=1)
+    b_wins = np.sum(b_ratings > a_ratings, axis=1)
+    
+    mask = a_wins != b_wins
+    if not np.any(mask):
+        return 0.5
+        
+    tally_choices = np.where(a_wins > b_wins, 0, 1)
+    matches = (data['response'].values[mask] == tally_choices[mask])
+    
+    return float(np.mean(matches))
+```
+
+**Observed (real) value:** 0.8444 (var=0.0148)
+**Previous candidate values (this loop):**
+  - iter 1: 0.5042 (var=0.0419) (Δ vs real -0.3403)
+  - iter 2: 0.4819 (var=0.0511) (Δ vs real -0.3625)
+  - iter 3: 0.4811 (var=0.0374) (Δ vs real -0.3633)
+  - iter 4 (most recent): 0.4547 (var=0.0611) (Δ vs real -0.3897)
+**Other theories' values on this metric (for reference):**
+- pi_2: 0.8617 (var=0.0104)
+- pi_1: 0.1264 (var=0.0102)
+- pi_3: 0.8314 (var=0.0122)
+- pi_4: 0.8647 (var=0.0082)
+- pi_5: 0.1311 (var=0.0060)
+- pi_6: 0.8183 (var=0.0129)
+- pi_7: 0.7444 (var=0.0100)
+- pi_8: 0.7028 (var=0.0956)
+- pi_9: 0.7689 (var=0.0229)
+
+### Experiment 3
+**Design**
+  A=[1, 1, 0, 0, 0]  B=[0, 0, 1, 1, 1]
+  A=[1, 0, 1, 0, 0]  B=[0, 1, 0, 1, 0]
+  A=[0, 1, 1, 1, 0]  B=[1, 0, 0, 0, 1]
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 0, 0]
+  A=[0, 0, 1, 1, 1]  B=[1, 1, 0, 0, 0]
+  A=[0, 1, 0, 1, 0]  B=[1, 0, 1, 0, 0]
+  A=[1, 1, 1, 0, 0]  B=[0, 0, 0, 1, 1]
+  A=[0, 0, 0, 1, 1]  B=[1, 1, 1, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    # Identify critical trials where WADD and Tallying make strictly opposite predictions.
+    # Trial 1: A has fewer but higher-validity features, B has more but lower-validity features.
+    # WADD prefers A, Tallying prefers B.
+    is_t1 = (data['option_a_ratings'].apply(tuple) == (1, 1, 0, 0, 0)) & (data['option_b_ratings'].apply(tuple) == (0, 0, 1, 1, 1))
+    
+    # Trial 5: The reversed version of Trial 1.
+    # WADD prefers B, Tallying prefers A.
+    is_t5 = (data['option_a_ratings'].apply(tuple) == (0, 0, 1, 1, 1)) & (data['option_b_ratings'].apply(tuple) == (1, 1, 0, 0, 0))
+    
+    # Count choices that align with the WADD model's predictions
+    wadd_aligned_t1 = (data.loc[is_t1, 'response'] == 0).sum()
+    wadd_aligned_t5 = (data.loc[is_t5, 'response'] == 1).sum()
+    
+    total_critical = is_t1.sum() + is_t5.sum()
+    
+    if total_critical == 0:
+        return 0.5
+        
+    return float((wadd_aligned_t1 + wadd_aligned_t5) / total_critical)
+```
+
+**Observed (real) value:** 0.1317 (var=0.0093)
+**Previous candidate values (this loop):**
+  - iter 1: 0.4842 (var=0.0599) (Δ vs real +0.3525)
+  - iter 2: 0.5200 (var=0.0615) (Δ vs real +0.3883)
+  - iter 3: 0.5300 (var=0.0431) (Δ vs real +0.3983)
+  - iter 4 (most recent): 0.5275 (var=0.0540) (Δ vs real +0.3958)
+**Other theories' values on this metric (for reference):**
+- pi_3: 0.5825 (var=0.0118)
+- pi_2: 0.1833 (var=0.0123)
+- pi_1: 0.8325 (var=0.0186)
+- pi_4: 0.2008 (var=0.0207)
+- pi_5: 0.8567 (var=0.0102)
+- pi_6: 0.5517 (var=0.0100)
+- pi_7: 0.2492 (var=0.0139)
+- pi_8: 0.4567 (var=0.1517)
+- pi_9: 0.3733 (var=0.0806)
+
+### Experiment 4
+**Design**
+  A=[1, 1, 0, 0, 0]  B=[0, 0, 1, 1, 1]
+  A=[1, 0, 1, 0, 0]  B=[0, 1, 0, 1, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 0, 0, 0]
+  A=[0, 1, 1, 1, 0]  B=[1, 0, 0, 0, 1]
+  A=[1, 0, 0, 1, 1]  B=[0, 1, 1, 0, 0]
+  A=[0, 0, 1, 1, 1]  B=[1, 1, 0, 0, 0]
+  A=[0, 1, 0, 1, 0]  B=[1, 0, 1, 0, 0]
+  A=[0, 1, 0, 0, 0]  B=[1, 0, 0, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    # Identify trial 1: A=[1, 1, 0, 0, 0], B=[0, 0, 1, 1, 1]
+    is_trial_1 = data['option_a_ratings'].apply(lambda x: tuple(x) == (1, 1, 0, 0, 0)) & \
+                 data['option_b_ratings'].apply(lambda x: tuple(x) == (0, 0, 1, 1, 1))
+    
+    # Identify trial 6: A=[0, 0, 1, 1, 1], B=[1, 1, 0, 0, 0]
+    is_trial_6 = data['option_a_ratings'].apply(lambda x: tuple(x) == (0, 0, 1, 1, 1)) & \
+                 data['option_b_ratings'].apply(lambda x: tuple(x) == (1, 1, 0, 0, 0))
+    
+    # Calculate the proportion of choosing option B on these trials
+    p_b_trial_1 = data.loc[is_trial_1, 'response'].mean()
+    p_b_trial_6 = data.loc[is_trial_6, 'response'].mean()
+    
+    # Handle cases where a subject might not have these trials (though with 12 reps it's very unlikely)
+    if pd.isna(p_b_trial_1) or pd.isna(p_b_trial_6):
+        return 0.0
+        
+    # Return the difference in preference for B between Trial 1 and Trial 6
+    return float(p_b_trial_1 - p_b_trial_6)
+
+```
+
+**Observed (real) value:** 0.6933 (var=0.0487)
+**Previous candidate values (this loop):**
+  - iter 1: -0.0383 (var=0.1937) (Δ vs real -0.7317)
+  - iter 2: 0.0367 (var=0.2514) (Δ vs real -0.6567)
+  - iter 3: -0.0633 (var=0.1854) (Δ vs real -0.7567)
+  - iter 4 (most recent): 0.0450 (var=0.2101) (Δ vs real -0.6483)
+**Other theories' values on this metric (for reference):**
+- pi_2: 0.7350 (var=0.0538)
+- pi_3: -0.6200 (var=0.0595)
+- pi_1: -0.7233 (var=0.0396)
+- pi_4: 0.5700 (var=0.0895)
+- pi_5: -0.7833 (var=0.0275)
+- pi_6: -0.5183 (var=0.0715)
+- pi_7: 0.4567 (var=0.0840)
+- pi_8: 0.2767 (var=0.4504)
+- pi_9: 0.2450 (var=0.3518)
+
+### Experiment 5
+**Design**
+  A=[1, 0, 1, 0]  B=[0, 1, 0, 1]
+  A=[0, 1, 1, 0]  B=[1, 0, 0, 1]
+  A=[1, 0, 0, 1]  B=[0, 1, 1, 0]
+  A=[0, 1, 0, 1]  B=[1, 0, 1, 0]
+  A=[1, 1, 0, 0]  B=[1, 0, 1, 0]
+  A=[0, 1, 1, 1]  B=[1, 0, 0, 0]
+  A=[1, 0, 0, 0]  B=[0, 1, 1, 1]
+  A=[0, 0, 1, 1]  B=[0, 1, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    
+    top_cue_chosen = []
+    for _, row in data.iterrows():
+        a = np.array(row['option_a_ratings'])
+        b = np.array(row['option_b_ratings'])
+        
+        a_wins = np.sum(a > b)
+        b_wins = np.sum(b > a)
+        
+        # Focus on trials where the tally is tied and the top cue (index 0) breaks the tie
+        if a_wins == b_wins and a[0] != b[0]:
+            if a[0] > b[0]:
+                top_cue_chosen.append(1 if row['response'] == 0 else 0)
+            else:
+                top_cue_chosen.append(1 if row['response'] == 1 else 0)
+                
+    if len(top_cue_chosen) == 0:
+        return 0.5
+    return float(np.mean(top_cue_chosen))
+```
+
+**Observed (real) value:** 0.4850 (var=0.0026)
+**Previous candidate values (this loop):**
+  - iter 1: 0.6867 (var=0.0211) (Δ vs real +0.2017)
+  - iter 2: 0.6829 (var=0.0180) (Δ vs real +0.1979)
+  - iter 3: 0.6775 (var=0.0185) (Δ vs real +0.1925)
+  - iter 4 (most recent): 0.7200 (var=0.0185) (Δ vs real +0.2350)
+**Other theories' values on this metric (for reference):**
+- pi_4: 0.7842 (var=0.0231)
+- pi_2: 0.5117 (var=0.0065)
+- pi_1: 0.8729 (var=0.0103)
+- pi_3: 0.6488 (var=0.0060)
+- pi_5: 0.8508 (var=0.0077)
+- pi_6: 0.6212 (var=0.0054)
+- pi_7: 0.5642 (var=0.0070)
+- pi_8: 0.5500 (var=0.0252)
+- pi_9: 0.5325 (var=0.0115)
+
+### Experiment 6
+**Design**
+  A=[1, 1, 0, 0, 0]  B=[0, 0, 1, 1, 0]
+  A=[0, 1, 0, 1, 0]  B=[1, 0, 1, 0, 0]
+  A=[0, 1, 1, 0, 0]  B=[1, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 0, 0]
+  A=[1, 1, 0, 0, 0]  B=[0, 0, 1, 0, 0]
+  A=[0, 0, 1, 0, 0]  B=[1, 1, 0, 0, 0]
+  A=[1, 1, 0, 0, 0]  B=[1, 0, 1, 0, 0]
+  A=[0, 1, 0, 0, 0]  B=[0, 0, 1, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    
+    a_ratings = np.stack(data['option_a_ratings'].values)
+    b_ratings = np.stack(data['option_b_ratings'].values)
+    
+    a_wins = (a_ratings > b_ratings).sum(axis=1)
+    b_wins = (b_ratings > a_ratings).sum(axis=1)
+    
+    a_top = a_ratings[:, 0] > b_ratings[:, 0]
+    b_top = b_ratings[:, 0] > a_ratings[:, 0]
+    
+    is_tie = (a_wins == b_wins)
+    
+    target_trials = is_tie & (a_top | b_top)
+    
+    if not np.any(target_trials):
+        return 0.5
+        
+    responses = data['response'].values[target_trials]
+    a_top_target = a_top[target_trials]
+    b_top_target = b_top[target_trials]
+    
+    match = ( (responses == 0) & a_top_target ) | ( (responses == 1) & b_top_target )
+    
+    return float(np.mean(match))
+```
+
+**Observed (real) value:** 0.5283 (var=0.0043)
+**Previous candidate values (this loop):**
+  - iter 1: 0.6600 (var=0.0226) (Δ vs real +0.1317)
+  - iter 2: 0.6650 (var=0.0237) (Δ vs real +0.1367)
+  - iter 3: 0.6875 (var=0.0209) (Δ vs real +0.1592)
+  - iter 4 (most recent): 0.6800 (var=0.0243) (Δ vs real +0.1517)
+**Other theories' values on this metric (for reference):**
+- pi_2: 0.5117 (var=0.0105)
+- pi_4: 0.7600 (var=0.0240)
+- pi_1: 0.8392 (var=0.0150)
+- pi_3: 0.7867 (var=0.0160)
+- pi_5: 0.8750 (var=0.0093)
+- pi_6: 0.7400 (var=0.0208)
+- pi_7: 0.5158 (var=0.0175)
+- pi_8: 0.6083 (var=0.0321)
+- pi_9: 0.5042 (var=0.0188)
+
+### Experiment 7
+**Design**
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1]
+  A=[0, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0]
+  A=[1, 0, 1, 0, 0]  B=[0, 1, 0, 1, 0]
+  A=[1, 1, 1, 0, 0]  B=[1, 1, 0, 1, 1]
+  A=[0, 1, 0, 0, 1]  B=[0, 0, 1, 1, 0]
+  A=[1, 0, 0, 1, 0]  B=[0, 1, 1, 0, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    matches = []
+    for _, row in data.iterrows():
+        a = row['option_a_ratings']
+        b = row['option_b_ratings']
+        resp = row['response']
+        ttb_pred = None
+        for i in range(5):
+            if a[i] > b[i]:
+                ttb_pred = 0
+                break
+            elif b[i] > a[i]:
+                ttb_pred = 1
+                break
+        if ttb_pred is not None:
+            matches.append(1 if resp == ttb_pred else 0)
+    if not matches:
+        return 0.5
+    return float(np.mean(matches))
+```
+
+**Observed (real) value:** 0.3475 (var=0.0033)
+**Previous candidate values (this loop):**
+  - iter 1: 0.5508 (var=0.0258) (Δ vs real +0.2033)
+  - iter 2: 0.5346 (var=0.0323) (Δ vs real +0.1871)
+  - iter 3: 0.6021 (var=0.0227) (Δ vs real +0.2546)
+  - iter 4 (most recent): 0.5758 (var=0.0359) (Δ vs real +0.2283)
+**Other theories' values on this metric (for reference):**
+- pi_5: 0.8777 (var=0.0070)
+- pi_2: 0.2592 (var=0.0055)
+- pi_1: 0.8442 (var=0.0098)
+- pi_3: 0.3094 (var=0.0026)
+- pi_4: 0.3042 (var=0.0035)
+- pi_6: 0.3167 (var=0.0054)
+- pi_7: 0.3556 (var=0.0058)
+- pi_8: 0.4254 (var=0.0791)
+- pi_9: 0.3075 (var=0.0064)
+
+### Experiment 8
+**Design**
+  A=[0, 1, 1, 1, 0]  B=[1, 0, 0, 0, 1]
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 1, 0]
+  A=[1, 0, 1, 0, 0]  B=[0, 1, 0, 1, 0]
+  A=[0, 1, 1, 0, 0]  B=[1, 0, 0, 1, 0]
+  A=[0, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0]  B=[0, 0, 0, 1, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    
+    # Extract ratings into 2D numpy arrays
+    a_ratings = np.stack(data['option_a_ratings'].values)
+    b_ratings = np.stack(data['option_b_ratings'].values)
+    
+    # Tallying predictions: count features where one option strictly beats the other
+    tally_a = np.sum(a_ratings > b_ratings, axis=1)
+    tally_b = np.sum(b_ratings > a_ratings, axis=1)
+    tally_c = np.where(tally_a > tally_b, 0, np.where(tally_b > tally_a, 1, -1))
+    
+    # Take-The-Best predictions: purely determined by the highest-validity feature (index 0)
+    ttb_c = np.where(a_ratings[:, 0] > b_ratings[:, 0], 0, 1)
+    
+    # Isolate trials where the two heuristics make deterministic, opposite predictions
+    mask = (tally_c != -1) & (tally_c != ttb_c)
+    
+    if not np.any(mask):
+        return 0.5
+        
+    # Calculate the proportion of choices that align with the Tallying heuristic
+    responses = data['response'].values[mask]
+    tally_choices = tally_c[mask]
+    
+    return float(np.mean(responses == tally_choices))
+```
+
+**Observed (real) value:** 0.4975 (var=0.0028)
+**Previous candidate values (this loop):**
+  - iter 1: 0.5487 (var=0.0520) (Δ vs real +0.0512)
+  - iter 2: 0.5058 (var=0.0406) (Δ vs real +0.0083)
+  - iter 3: 0.4883 (var=0.0362) (Δ vs real -0.0092)
+  - iter 4 (most recent): 0.4567 (var=0.0570) (Δ vs real -0.0408)
+**Other theories' values on this metric (for reference):**
+- pi_2: 0.8458 (var=0.0099)
+- pi_5: 0.1275 (var=0.0089)
+- pi_1: 0.1500 (var=0.0080)
+- pi_3: 0.8446 (var=0.0136)
+- pi_4: 0.8583 (var=0.0051)
+- pi_6: 0.8508 (var=0.0110)
+- pi_7: 0.7312 (var=0.0112)
+- pi_8: 0.7362 (var=0.0759)
+- pi_9: 0.7608 (var=0.0199)
+
+### Experiment 9
+**Design**
+  A=[1, 1, 0, 0, 0]  B=[0, 0, 1, 1, 1]
+  A=[0, 0, 1, 1, 1]  B=[1, 1, 0, 0, 0]
+  A=[1, 1, 0, 0, 0]  B=[0, 0, 1, 1, 0]
+  A=[1, 0, 1, 0, 0]  B=[0, 1, 0, 1, 1]
+  A=[0, 1, 1, 1, 0]  B=[1, 0, 0, 0, 1]
+  A=[1, 1, 1, 0, 0]  B=[0, 0, 0, 1, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    wadd_choices = 0
+    conflict_trials = 0
+    for a, b, resp in zip(data['option_a_ratings'], data['option_b_ratings'], data['response']):
+        a_tup = tuple(a)
+        b_tup = tuple(b)
+        if a_tup == (1, 1, 0, 0, 0) and b_tup == (0, 0, 1, 1, 1):
+            conflict_trials += 1
+            if resp == 0:
+                wadd_choices += 1
+        elif a_tup == (0, 0, 1, 1, 1) and b_tup == (1, 1, 0, 0, 0):
+            conflict_trials += 1
+            if resp == 1:
+                wadd_choices += 1
+    return wadd_choices / conflict_trials if conflict_trials > 0 else 0.5
+```
+
+**Observed (real) value:** 0.1163 (var=0.0129)
+**Previous candidate values (this loop):**
+  - iter 1: 0.5663 (var=0.0439) (Δ vs real +0.4500)
+  - iter 2: 0.4719 (var=0.0546) (Δ vs real +0.3556)
+  - iter 3: 0.5244 (var=0.0357) (Δ vs real +0.4081)
+  - iter 4 (most recent): 0.5269 (var=0.0665) (Δ vs real +0.4106)
+**Other theories' values on this metric (for reference):**
+- pi_6: 0.7206 (var=0.0130)
+- pi_2: 0.1650 (var=0.0156)
+- pi_1: 0.8550 (var=0.0103)
+- pi_3: 0.7400 (var=0.0153)
+- pi_4: 0.2362 (var=0.0291)
+- pi_5: 0.8812 (var=0.0105)
+- pi_7: 0.2544 (var=0.0136)
+- pi_8: 0.3113 (var=0.1057)
+- pi_9: 0.3619 (var=0.0638)
+
+### Experiment 10
+**Design**
+  A=[1, 1, 0, 0, 0]  B=[0, 0, 1, 1, 1]
+  A=[1, 0, 1, 0, 0]  B=[0, 1, 0, 1, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 0, 0, 0]
+  A=[0, 1, 1, 1, 0]  B=[1, 0, 0, 0, 1]
+  A=[1, 1, 0, 0, 0]  B=[0, 0, 1, 1, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    
+    target_chosen = []
+    for _, row in data.iterrows():
+        a = tuple(int(x) for x in row['option_a_ratings'])
+        b = tuple(int(x) for x in row['option_b_ratings'])
+        
+        # Identify the strict conflict trial
+        is_A_target = (a == (1, 1, 0, 0, 0) and b == (0, 0, 1, 1, 1))
+        is_B_target = (b == (1, 1, 0, 0, 0) and a == (0, 0, 1, 1, 1))
+        
+        if is_A_target or is_B_target:
+            chose_A = (row['response'] == 0)
+            if (is_A_target and chose_A) or (is_B_target and not chose_A):
+                target_chosen.append(1)
+            else:
+                target_chosen.append(0)
+                
+    if len(target_chosen) == 0:
+        return 0.5
+    return float(np.mean(target_chosen))
+```
+
+**Observed (real) value:** 0.1495 (var=0.0219)
+**Previous candidate values (this loop):**
+  - iter 1: 0.4884 (var=0.0413) (Δ vs real +0.3389)
+  - iter 2: 0.4916 (var=0.0547) (Δ vs real +0.3421)
+  - iter 3: 0.5095 (var=0.0467) (Δ vs real +0.3600)
+  - iter 4 (most recent): 0.5221 (var=0.0641) (Δ vs real +0.3726)
+**Other theories' values on this metric (for reference):**
+- pi_2: 0.1589 (var=0.0143)
+- pi_6: 0.7200 (var=0.0169)
+- pi_1: 0.8579 (var=0.0133)
+- pi_3: 0.7474 (var=0.0227)
+- pi_4: 0.2305 (var=0.0287)
+- pi_5: 0.8737 (var=0.0141)
+- pi_7: 0.2821 (var=0.0197)
+- pi_8: 0.3400 (var=0.1222)
+- pi_9: 0.3726 (var=0.0891)
+
+### Experiment 11
+**Design**
+  A=[1, 0, 0, 1, 0]  B=[0, 1, 1, 0, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 0, 0]
+  A=[0, 1, 1, 1, 0]  B=[1, 0, 0, 0, 1]
+  A=[1, 1, 0, 0, 0]  B=[0, 0, 1, 1, 1]
+  A=[0, 1, 0, 1, 0]  B=[0, 0, 1, 0, 1]
+  A=[1, 0, 1, 0, 1]  B=[0, 1, 0, 1, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    
+    tally_A_ttb_A_choices = []
+    tally_A_ttb_B_choices = []
+    
+    for _, row in data.iterrows():
+        a = np.array(row['option_a_ratings'])
+        b = np.array(row['option_b_ratings'])
+        
+        a_wins = np.sum(a > b)
+        b_wins = np.sum(b > a)
+        
+        ttb_winner = None
+        for i in range(len(a)):
+            if a[i] > b[i]:
+                ttb_winner = 'A'
+                break
+            elif b[i] > a[i]:
+                ttb_winner = 'B'
+                break
+                
+        if a_wins == 3 and b_wins == 2:
+            is_A = 1 if row['response'] == 0 else 0
+            if ttb_winner == 'A':
+                tally_A_ttb_A_choices.append(is_A)
+            elif ttb_winner == 'B':
+                tally_A_ttb_B_choices.append(is_A)
+                
+    mean_A_ttb_A = np.mean(tally_A_ttb_A_choices) if len(tally_A_ttb_A_choices) > 0 else 0.5
+    mean_A_ttb_B = np.mean(tally_A_ttb_B_choices) if len(tally_A_ttb_B_choices) > 0 else 0.5
+    
+    return float(mean_A_ttb_A - mean_A_ttb_B)
+```
+
+**Observed (real) value:** 0.8075 (var=0.0287)
+**Previous candidate values (this loop):**
+  - iter 1: 0.3650 (var=0.0829) (Δ vs real -0.4425)
+  - iter 2: 0.3288 (var=0.0650) (Δ vs real -0.4787)
+  - iter 3: 0.4025 (var=0.0847) (Δ vs real -0.4050)
+  - iter 4 (most recent): 0.3900 (var=0.0517) (Δ vs real -0.4175)
+**Other theories' values on this metric (for reference):**
+- pi_7: 0.1038 (var=0.0224)
+- pi_2: -0.0325 (var=0.0103)
+- pi_1: 0.6850 (var=0.0567)
+- pi_3: -0.0150 (var=0.0217)
+- pi_4: 0.0938 (var=0.0307)
+- pi_5: 0.7263 (var=0.0275)
+- pi_6: -0.0250 (var=0.0130)
+- pi_8: 0.1600 (var=0.0927)
+- pi_9: 0.0550 (var=0.0253)
+
+### Experiment 12
+**Design**
+  A=[1, 0, 1, 0, 0]  B=[0, 1, 0, 1, 0]
+  A=[0, 1, 1, 1, 0]  B=[1, 0, 0, 0, 1]
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 1, 0]
+  A=[0, 1, 0, 1, 0]  B=[1, 0, 1, 0, 0]
+  A=[1, 1, 0, 0, 0]  B=[0, 0, 1, 1, 0]
+  A=[0, 0, 1, 1, 1]  B=[1, 1, 0, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    
+    a = np.stack(data['option_a_ratings'].values)
+    b = np.stack(data['option_b_ratings'].values)
+    
+    # Calculate tally scores
+    a_wins = np.sum(a > b, axis=1)
+    b_wins = np.sum(b > a, axis=1)
+    
+    # Identify tally tie trials
+    ties = (a_wins == b_wins)
+    if not np.any(ties):
+        return 0.5
+        
+    # For tie trials, determine the TTB prediction
+    # Feature 0 has the highest validity in this design
+    a_f0 = a[ties, 0]
+    b_f0 = b[ties, 0]
+    
+    responses = data['response'].values[ties]
+    
+    ttb_choices = np.where(a_f0 > b_f0, 0, np.where(b_f0 > a_f0, 1, -1))
+    
+    valid = ttb_choices != -1
+    if not np.any(valid):
+        return 0.5
+        
+    return float(np.mean(responses[valid] == ttb_choices[valid]))
+```
+
+**Observed (real) value:** 0.5208 (var=0.0051)
+**Previous candidate values (this loop):**
+  - iter 1: 0.6763 (var=0.0174) (Δ vs real +0.1554)
+  - iter 2: 0.6679 (var=0.0155) (Δ vs real +0.1471)
+  - iter 3: 0.6837 (var=0.0157) (Δ vs real +0.1629)
+  - iter 4 (most recent): 0.6975 (var=0.0183) (Δ vs real +0.1767)
+**Other theories' values on this metric (for reference):**
+- pi_2: 0.4975 (var=0.0054)
+- pi_7: 0.5750 (var=0.0066)
+- pi_1: 0.8329 (var=0.0095)
+- pi_3: 0.7508 (var=0.0179)
+- pi_4: 0.7979 (var=0.0278)
+- pi_5: 0.8688 (var=0.0109)
+- pi_6: 0.7321 (var=0.0147)
+- pi_8: 0.5854 (var=0.0272)
+- pi_9: 0.5079 (var=0.0188)
+
+### Experiment 13
+**Design**
+  A=[1, 1, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 0]
+  A=[1, 0, 0, 0, 0, 0]  B=[0, 1, 1, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0]  B=[0, 0, 0, 1, 1, 1]
+  A=[0, 1, 1, 1, 1, 0]  B=[1, 0, 0, 0, 0, 1]
+  A=[1, 0, 1, 0, 1, 0]  B=[0, 1, 0, 1, 0, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    target_A = (1, 1, 1, 0, 0, 0)
+    target_B = (0, 0, 0, 1, 1, 1)
+    
+    a_match = data['option_a_ratings'].apply(lambda x: tuple(x) == target_A)
+    b_match = data['option_b_ratings'].apply(lambda x: tuple(x) == target_B)
+    idx1 = a_match & b_match
+    
+    a_match_rev = data['option_a_ratings'].apply(lambda x: tuple(x) == target_B)
+    b_match_rev = data['option_b_ratings'].apply(lambda x: tuple(x) == target_A)
+    idx2 = a_match_rev & b_match_rev
+    
+    chose_target = 0
+    total = 0
+    
+    if idx1.any():
+        chose_target += (data.loc[idx1, 'response'] == 0).sum()
+        total += idx1.sum()
+        
+    if idx2.any():
+        chose_target += (data.loc[idx2, 'response'] == 1).sum()
+        total += idx2.sum()
+        
+    if total == 0:
+        return 0.5
+        
+    return float(chose_target / total)
+```
+
+**Observed (real) value:** 0.1832 (var=0.0124)
+**Previous candidate values (this loop):**
+  - iter 1: 0.6453 (var=0.0264) (Δ vs real +0.4621)
+  - iter 2: 0.6589 (var=0.0215) (Δ vs real +0.4758)
+  - iter 3: 0.6653 (var=0.0219) (Δ vs real +0.4821)
+  - iter 4 (most recent): 0.6937 (var=0.0208) (Δ vs real +0.5105)
+**Other theories' values on this metric (for reference):**
+- pi_8: 0.6695 (var=0.0510)
+- pi_2: 0.5116 (var=0.0090)
+- pi_1: 0.8516 (var=0.0109)
+- pi_3: 0.8284 (var=0.0100)
+- pi_4: 0.7884 (var=0.0288)
+- pi_5: 0.8800 (var=0.0076)
+- pi_6: 0.8179 (var=0.0166)
+- pi_7: 0.5789 (var=0.0160)
+- pi_9: 0.4747 (var=0.0853)
+
+### Experiment 14
+**Design**
+  A=[1, 1, 1, 0, 0, 0]  B=[0, 0, 0, 1, 1, 1]
+  A=[1, 1, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 0]
+  A=[0, 0, 1, 1, 1, 0]  B=[1, 1, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 1, 1]  B=[1, 1, 1, 1, 0, 0]
+  A=[0, 0, 0, 1, 1, 1]  B=[1, 1, 1, 0, 0, 0]
+  A=[1, 1, 1, 1, 0, 0]  B=[0, 0, 0, 0, 1, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    t1_mask = data['option_a_ratings'].apply(lambda x: tuple(x) == (1, 1, 1, 0, 0, 0)) & data['option_b_ratings'].apply(lambda x: tuple(x) == (0, 0, 0, 1, 1, 1))
+    t5_mask = data['option_a_ratings'].apply(lambda x: tuple(x) == (0, 0, 0, 1, 1, 1)) & data['option_b_ratings'].apply(lambda x: tuple(x) == (1, 1, 1, 0, 0, 0))
+    
+    chose_first_half_winner_t1 = (data[t1_mask]['response'] == 0).sum()
+    chose_first_half_winner_t5 = (data[t5_mask]['response'] == 1).sum()
+    
+    total_relevant_trials = t1_mask.sum() + t5_mask.sum()
+    if total_relevant_trials == 0:
+        return 0.5
+        
+    return float((chose_first_half_winner_t1 + chose_first_half_winner_t5) / total_relevant_trials)
+```
+
+**Observed (real) value:** 0.1762 (var=0.0166)
+**Previous candidate values (this loop):**
+  - iter 1: 0.6613 (var=0.0189) (Δ vs real +0.4850)
+  - iter 2: 0.6731 (var=0.0213) (Δ vs real +0.4969)
+  - iter 3: 0.6737 (var=0.0218) (Δ vs real +0.4975)
+  - iter 4 (most recent): 0.6781 (var=0.0225) (Δ vs real +0.5019)
+**Other theories' values on this metric (for reference):**
+- pi_2: 0.5069 (var=0.0095)
+- pi_8: 0.6819 (var=0.0374)
+- pi_1: 0.8581 (var=0.0142)
+- pi_3: 0.8462 (var=0.0097)
+- pi_4: 0.7925 (var=0.0197)
+- pi_5: 0.8644 (var=0.0121)
+- pi_6: 0.8213 (var=0.0193)
+- pi_7: 0.5531 (var=0.0093)
+- pi_9: 0.5006 (var=0.0642)
+
+### Experiment 15
+**Design**
+  A=[1, 1, 0, 0, 0]  B=[0, 0, 0, 1, 1]
+  A=[1, 0, 0, 0, 1]  B=[0, 1, 1, 0, 0]
+  A=[0, 0, 1, 1, 1]  B=[1, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 0, 0, 1, 1]
+  A=[0, 1, 1, 0, 0]  B=[1, 0, 0, 1, 1]
+  A=[0, 1, 0, 1, 0]  B=[1, 0, 0, 0, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+    
+    # Extract option ratings as numpy arrays
+    a_ratings = np.stack(data['option_a_ratings'].values)
+    b_ratings = np.stack(data['option_b_ratings'].values)
+    
+    # Calculate tallies for each option
+    a_wins = np.sum(a_ratings > b_ratings, axis=1)
+    b_wins = np.sum(b_ratings > a_ratings, axis=1)
+    
+    # Identify trials where the tally is tied
+    tie_mask = (a_wins == b_wins)
+    tie_data = data[tie_mask].copy()
+    
+    if len(tie_data) == 0:
+        return 0.0
+    
+    # Create a hashable trial identifier
+    tie_data['trial_id'] = tie_data.apply(lambda r: tuple(r['option_a_ratings']) + tuple(r['option_b_ratings']), axis=1)
+    
+    # Calculate the proportion of times each subject chose Option A (response == 0) for each tally-tie trial type
+    p_a = tie_data.groupby(['subject_id', 'trial_id'])['response'].apply(lambda x: (x == 0).mean())
+    
+    # Calculate the mean squared deviation from 0.5 (random guessing)
+    sq_dev = (p_a - 0.5) ** 2
+    
+    return float(sq_dev.mean())
+```
+
+**Observed (real) value:** 0.1591 (var=0.0033)
+**Previous candidate values (this loop):**
+  - iter 1: 0.0671 (var=0.0032) (Δ vs real -0.0920)
+  - iter 2: 0.0619 (var=0.0032) (Δ vs real -0.0971)
+  - iter 3: 0.0664 (var=0.0034) (Δ vs real -0.0927)
+  - iter 4 (most recent): 0.0583 (var=0.0019) (Δ vs real -0.1008)
+**Other theories' values on this metric (for reference):**
+- pi_9: 0.0426 (var=0.0019)
+- pi_2: 0.0140 (var=0.0001)
+- pi_1: 0.1424 (var=0.0052)
+- pi_3: 0.0720 (var=0.0015)
+- pi_4: 0.1102 (var=0.0053)
+- pi_5: 0.1510 (var=0.0037)
+- pi_6: 0.0546 (var=0.0009)
+- pi_7: 0.0178 (var=0.0002)
+- pi_8: 0.0558 (var=0.0047)
+
+### Experiment 16
+**Design**
+  A=[1, 1, 0, 0, 0]  B=[0, 0, 1, 1, 0]
+  A=[0, 0, 0, 1, 1]  B=[1, 1, 0, 0, 0]
+  A=[0, 0, 1, 1, 1]  B=[1, 1, 0, 0, 0]
+  A=[1, 1, 1, 0, 0]  B=[0, 0, 0, 1, 1]
+  A=[0, 1, 1, 0, 0]  B=[1, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 1]  B=[0, 1, 1, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+    
+    data['a_str'] = data['option_a_ratings'].apply(lambda x: ''.join(map(str, x)))
+    
+    t3_mask = data['a_str'] == '00111'
+    t4_mask = data['a_str'] == '11100'
+    
+    t3_data = data[t3_mask]
+    t4_data = data[t4_mask]
+    
+    if len(t3_data) == 0 or len(t4_data) == 0:
+        return 0.0
+        
+    p_a_t3 = 1.0 - t3_data.groupby('subject_id')['response'].mean()
+    p_a_t4 = 1.0 - t4_data.groupby('subject_id')['response'].mean()
+    
+    df = pd.DataFrame({'t3': p_a_t3, 't4': p_a_t4}).dropna()
+    if len(df) == 0:
+        return 0.0
+        
+    return float(np.mean((df['t4'] - df['t3'])**2))
+```
+
+**Observed (real) value:** 0.4773 (var=0.0539)
+**Previous candidate values (this loop):**
+  - iter 1: 0.2182 (var=0.0590) (Δ vs real -0.2591)
+  - iter 2: 0.2034 (var=0.0550) (Δ vs real -0.2739)
+  - iter 3: 0.1903 (var=0.0540) (Δ vs real -0.2870)
+  - iter 4 (most recent): 0.1891 (var=0.0450) (Δ vs real -0.2882)
+**Other theories' values on this metric (for reference):**
+- pi_2: 0.0132 (var=0.0004)
+- pi_9: 0.1796 (var=0.0754)
+- pi_1: 0.5162 (var=0.0604)
+- pi_3: 0.0387 (var=0.0020)
+- pi_4: 0.0391 (var=0.0027)
+- pi_5: 0.5536 (var=0.0774)
+- pi_6: 0.0627 (var=0.0064)
+- pi_7: 0.0456 (var=0.0056)
+- pi_8: 0.2073 (var=0.1036)
+
+## PREVIOUS CANDIDATE (this loop)
+The RUNNING-BEST (last ACCEPTED) candidate in this critique loop — i.e. the source the loop's accept gate kept as the best base so far. If your most recent attempt was REJECTED by the gate, this is NOT that attempt; it is the previously-accepted base the gate rolled back to. Iterate on this source — the next critic feedback should be applied on top of it.
+
+**Description**
+Heuristic Mixture Theory: Decision-makers evaluate options by probabilistically choosing between two distinct non-compensatory and compensatory heuristics on any given trial. A proportion of the time, governed by the individual parameter 'p_ttb', the decision-maker uses Take-The-Best (TTB), which bases the decision entirely on the single most valid discriminating cue. The rest of the time, they use Pure Tallying, which counts the total number of winning features for each option irrespective of their validities. The final choice probability is a mixture of the softmax probabilities derived from the chosen heuristic's evidence, further subject to random lapse noise.
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, state, history):
+    import numpy as np
+    
+    stim = np.asarray(state, dtype=float)
+    a, b = stim[0], stim[1]
+    
+    val = np.asarray(parameters["validities"], dtype=float)
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+    p_ttb = float(parameters["p_ttb"])
+    
+    # Take-The-Best (TTB) evaluation
+    order = np.argsort(-val, kind="stable")
+    ttb_ev = np.array([0.0, 0.0])
+    for idx in order:
+        if a[idx] > b[idx]:
+            ttb_ev = np.array([1.0, 0.0])
+            break
+        elif b[idx] > a[idx]:
+            ttb_ev = np.array([0.0, 1.0])
+            break
+            
+    # Pure Tallying evaluation
+    a_wins = float(np.sum(a > b))
+    b_wins = float(np.sum(b > a))
+    tally_ev = np.array([a_wins, b_wins])
+    
+    # Apply softmax response noise to TTB output
+    z_ttb = beta * (ttb_ev - np.max(ttb_ev))
+    e_ttb = np.exp(z_ttb)
+    p_ttb_choice = e_ttb / np.sum(e_ttb)
+    
+    # Apply softmax response noise to Tallying output
+    z_tally = beta * (tally_ev - np.max(tally_ev))
+    e_tally = np.exp(z_tally)
+    p_tally_choice = e_tally / np.sum(e_tally)
+    
+    # Mixture of the two heuristics' choice probabilities
+    p_core = p_ttb * p_ttb_choice + (1.0 - p_ttb) * p_tally_choice
+    
+    # Apply lapse rate
+    n_opts = len(p_core)
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+
+
+`policy(probs) -> int`:
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities /= probabilities.sum()
+    return np.random.choice(len(probabilities), p=probabilities)
+
+
+`parameters`:
+- beta: [0.1, 20.0]
+- epsilon: [0.0, 0.5]
+- p_ttb: [0.0, 1.0]
+- validities: validities
+
+`rationale`: Based on the arbiter's feedback, this model instantiates a Heuristic Mixture approach. Instead of attempting to blend Tallying and validity-weighting into a single evaluation score (as in pi_9), it posits that individuals probabilistically sample between two distinct cognitive strategies: Take-The-Best (lexicographic search) and Pure Tallying (unweighted compensatory integration). The parameter 'p_ttb' dictates the individual's propensity to use TTB over Tallying. Response noise (softmax) is applied independently to the evidence generated by whichever heuristic is selected, better capturing the discrete nature of heuristic application while still allowing for probabilistic choice behavior.
+
+## PRIOR FEEDBACK ITERATIONS
+The critic's verdicts on each previous in-loop candidate, in order. Each block ends with an **Outcome of this advice** line saying whether the candidate the proposer produced AFTER this advice was ACCEPTED (loss strictly beat the running best) or REJECTED (the gate discarded it). Address the most recent iteration's feedback in your next edit, but down-weight past advice whose candidates were REJECTED.
+
+### Iteration 1
+Verdict: regenerate
+Interpretation: The candidate successfully implemented the Heuristic Mixture theory recommended by the arbiter and achieved an accepted loss. However, it severely misfits several experiments, notably Experiment 4 (real: 0.69, sim: -0.03) and Experiment 11 (real: 0.80, sim: 0.36), and generally produces choice probabilities that are too uniform (closer to 0.5) in cases where human behavior is strongly directional.
+Rationale: The current model uses a single `beta` parameter to scale both the TTB evidence and the Tallying evidence before applying the softmax. Because TTB evidence is always a binary difference (1 vs 0) while Tallying evidence is a count difference (which can range from 1 to 5), a single `beta` forces an unnatural coupling of the noise levels between the two heuristics. This likely forces the fit to compromise, resulting in overly random predictions in many experiments. Keep the Heuristic Mixture structure exactly as is, but split `beta` into two independent parameters: `beta_ttb` and `beta_tally` (both [0.1, 20.0]). This minor in-family adjustment will allow the model to calibrate the determinism of each heuristic appropriately based on their respective evidence scales.
+
+**Outcome of this advice:** iter 1 candidate loss=0.4754 -> iter 2 candidate loss=0.4779 -> the gate marked it REJECTED.
+
+### Iteration 2
+Verdict: regenerate
+Interpretation: The candidate theory with independent beta parameters for TTB and Tallying was REJECTED by the accept gate, meaning it performed worse than the previous iteration with a single shared beta. The model still struggles with experiments that have strong directional behavior (e.g., Experiments 4 and 11), indicating that the way the two heuristics' evidence scales interact with the response noise is still not quite right. However, splitting the beta parameter likely overparameterized the model or created flat regions in the loss landscape.
+Rationale: Since splitting the beta parameter into `beta_ttb` and `beta_tally` was rejected by the gate, we should return to a single `beta` parameter (which the loop will automatically do by reverting to the accepted base). However, the original problem remains: TTB evidence is binary (0 or 1), while Tallying evidence is a count (e.g., 0 to 5), meaning a single `beta` scales them differently. Instead of adding a second parameter, normalize the Tallying evidence so it is on the same scale as TTB. Specifically, divide the Tallying evidence (`a_wins` and `b_wins`) by the total number of features (or the sum of wins) so that it also falls in the [0, 1] range. This will allow a single `beta` parameter to apply symmetrically to both heuristics without overparameterizing the model.
+
+**Outcome of this advice:** iter 2 candidate loss=0.4779 -> iter 3 candidate loss=0.4826 -> the gate marked it REJECTED.
+
+### Iteration 3
+Verdict: regenerate
+Interpretation: The candidate theory normalizing Tallying evidence was REJECTED by the accept gate, meaning it performed worse than the original base iteration. Previous attempts to calibrate the noise by splitting the beta parameter or normalizing the evidence scales have both failed to improve the fit. The core issue likely stems from applying a continuous softmax function to heuristics that are fundamentally discrete and rule-based. Take-The-Best and Pure Tallying are typically conceptualized as deterministic decision rules, where behavioral noise comes from random lapses rather than proportional evidence scaling.
+Rationale: Both attempts to fix the softmax scaling (splitting beta, normalizing evidence) were rejected by the gate. Instead of trying to force a softmax temperature to work for both a binary rule (TTB) and a count-based rule (Tallying), remove the softmax entirely. Make both TTB and Tallying deterministic: they should output a one-hot vector (e.g., [1.0, 0.0] for the winner, or [0.5, 0.5] in case of a tie). Mix these deterministic choice vectors using `p_ttb`, and then apply the lapse rate `epsilon` to the final result. This simplifies the model by removing the `beta` parameter, relies purely on the lapse rate for noise (which is perfectly valid under the arbiter's 'softmax or lapse' instruction), and preserves the discrete nature of the proposed heuristics.
+
+**Outcome of this advice:** iter 3 candidate loss=0.4826 -> iter 4 candidate loss=0.4983 -> the gate marked it REJECTED.
+
+### Iteration 4 (most recent — address this)
+Verdict: regenerate
+Interpretation: The candidate theory removing the softmax and making the heuristics purely deterministic was REJECTED by the accept gate, meaning it performed worse than the original Iter 1 base model. We have now tried splitting the beta parameter, normalizing the evidence, and removing the softmax entirely—all of which were rejected. This indicates that the Iter 1 formulation (a single `beta` parameter scaling both raw TTB and Tallying evidence before the softmax, mixed by `p_ttb`) is functionally the most robust formulation within this family, likely because the shared beta provides a necessary regularization across the two heuristics.
+Rationale: Since all structural modifications to the choice mechanism have been rejected, we should trust the gate and build directly on the Iter 1 formulation (which the loop will automatically revert to). The remaining misfit on directional experiments (like Exp 4 and 11) is likely due to parameter bounds preventing the model from becoming deterministic enough when needed. Retain the exact Iter 1 structure (single shared `beta` for both TTB and Tallying, mixed via `p_ttb`, plus `epsilon` lapse), but substantially widen the parameter ranges. Increase the upper bound of `beta` to at least 50.0 (e.g., [0.0, 50.0]) to allow the softmax to approach a step function if the data demands it. Also, ensure that if TTB finds no discriminating cues, it explicitly outputs [0.5, 0.5] rather than defaulting to an arbitrary option.
+
+**Outcome of this advice:** iter 4 candidate loss=0.4983 -> next candidate accept-status=PENDING (this is the advice you are addressing now).
+
+
+## IMPLEMENTATION GUARDRAILS
+- The parameters should be within the specified ranges.
+- The model's predictions should be valid probability distributions (non-negative and sum to 1).
+- When converting logits to probabilities via softmax, always use the numerically stable form: subtract the max before exponentiating (`x = x - np.max(x); p = np.exp(x); p /= p.sum()`). A naive `np.exp(x) / np.sum(np.exp(x))` overflows to Inf/NaN for large logits. Alternatively, use `scipy.special.softmax`.
+
+
+## PROPOSAL — MINIMAL-DIFF EDIT (do NOT rewrite from scratch)
+The RUNNING-BEST (last ACCEPTED) candidate is shown verbatim above under `## PREVIOUS CANDIDATE (this loop)`. This is the base the loop's accept gate is currently keeping; the most recent critic feedback (see `## PRIOR FEEDBACK ITERATIONS`) should be applied on top of it. Apply the SMALLEST edit that addresses the critic's diagnosis while staying inside the arbiter's prescribed mechanism family:
+  - Re-emit the previous source verbatim, then change ONLY the lines needed to address the critic (a parameter range, a normalization, a softmax temperature, an attention scheme, a gating term, a buggy indexing line, etc.).
+  - Keep all unaffected functions, equations, parameter names, and the overall mechanism intact.
+  - Do NOT rewrite `predict` / `policy` end-to-end if a few lines would do, and do NOT switch mechanism families — that is the arbiter's decision, not yours in this loop.
+  - Briefly explain the minimal edit in `rationale`.
+If you genuinely believe a larger rewrite is required, you may do one, but justify in `rationale` why the minimal-diff path was insufficient.
+
+## RESPONSE FORMAT
+Return a JSON object with the following fields:
+- theory: The theoretical claim this theory makes about cognition.
+- predict: Python source defining def predict(parameters, state, history) -> np.ndarray.
+- policy: Python source defining def policy(probs) -> int.
+- parameters: Parameter ranges (e.g. "[1.0, 10.0]") or choices (e.g. "{1, 2}"), sampled per subject.
+- rationale: Reasoning behind this theory design; used to explain why this theory is better then the previous ones.
+
+
+## Response
+
+```json
+```json
+{
+  "theory": "Heuristic Mixture Theory: Decision-makers evaluate options by probabilistically choosing between two distinct non-compensatory and compensatory heuristics on any given trial. A proportion of the time, governed by the individual parameter 'p_ttb', the decision-maker uses Take-The-Best (TTB), which bases the decision entirely on the single most valid discriminating cue. The rest of the time, they use Pure Tallying, which counts the total number of winning features for each option irrespective of their validities. The final choice probability is a mixture of the softmax probabilities derived from the chosen heuristic's evidence, further subject to random lapse noise.",
+  "predict": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    a, b = stim[0], stim[1]\n    \n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    p_ttb = float(parameters[\"p_ttb\"])\n    \n    # Take-The-Best (TTB) evaluation\n    order = np.argsort(-val, kind=\"stable\")\n    ttb_ev = np.array([0.5, 0.5])\n    for idx in order:\n        if a[idx] > b[idx]:\n            ttb_ev = np.array([1.0, 0.0])\n            break\n        elif b[idx] > a[idx]:\n            ttb_ev = np.array([0.0, 1.0])\n            break\n            \n    # Pure Tallying evaluation\n    a_wins = float(np.sum(a > b))\n    b_wins = float(np.sum(b > a))\n    tally_ev = np.array([a_wins, b_wins])\n    \n    # Apply softmax response noise to TTB output\n    z_ttb = beta * (ttb_ev - np.max(ttb_ev))\n    e_ttb = np.exp(z_ttb)\n    p_ttb_choice = e_ttb / np.sum(e_ttb)\n    \n    # Apply softmax response noise to Tallying output\n    z_tally = beta * (tally_ev - np.max(tally_ev))\n    e_tally = np.exp(z_tally)\n    p_tally_choice = e_tally / np.sum(e_tally)\n    \n    # Mixture of the two heuristics' choice probabilities\n    p_core = p_ttb * p_ttb_choice + (1.0 - p_ttb) * p_tally_choice\n    \n    # Apply lapse rate\n    n_opts = len(p_core)\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+  "policy": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+  "parameters": {
+    "beta": "[0.1, 50.0]",
+    "epsilon": "[0.0, 0.5]",
+    "p_ttb": "[0.0, 1.0]",
+    "validities": "validities"
+  },
+  "rationale": "Following the critic's advice, we revert to the Iteration 1 structure which was the most robust and accepted by the gate. To address the remaining misfit on directional experiments, we widen the `beta` parameter range to `[0.1, 50.0]` to allow the softmax to approach a deterministic step function when needed. We also explicitly initialize the TTB evidence to `[0.5, 0.5]` so that it symmetrically handles cases where no cues discriminate."
+}
+```
+```
+
+## Usage
+
+```json
+{
+  "prompt_token_count": 25208,
+  "candidates_token_count": 963,
+  "total_token_count": 27475
+}
+```

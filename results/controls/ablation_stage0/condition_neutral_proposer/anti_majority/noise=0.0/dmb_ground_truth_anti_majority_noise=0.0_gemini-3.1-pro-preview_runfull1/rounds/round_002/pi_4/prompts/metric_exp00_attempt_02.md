@@ -1,0 +1,251 @@
+# metric_exp00_attempt_02
+
+## System Prompt
+
+You are a psychology researcher proposing a metric in the Decision Making (Binary Features) domain.
+
+Your goal is adversarial: propose a metric that DISCRIMINATES the two theories — i.e., its value, computed on data simulated under your advocated theory, should be as far as possible from its value computed on data simulated under the competing theory. The direction of the gap does not matter; what matters is that the two theories produce visibly different numbers on this metric. The metric is computed on the data collected from the experimental design provided in the prompt. Produce a metric where you're prediction will be much more accurate than the competing theory's prediction on human data.
+
+Your metric is a Python function
+
+    metric(data: pd.DataFrame) -> float
+
+Available imports inside `metric`:
+- numpy as np
+- pandas as pd
+
+The system evaluates your metric in two ways and reports the pair as `point_estimate (var=between_subject_variance)` everywhere downstream:
+- `point_estimate` is `metric(data)` applied to the FULL pooled DataFrame (all subjects together) — the canonical scalar;
+- `between_subject_variance` is the population variance (`ddof=0`) of `metric(subj_df)` re-applied per `subject_id`, summarising how stable the metric is across subjects. If your metric only makes sense on multi-subject data this will fall back to `n/a` and the metric is rejected (the acceptance test below cannot run without it). Prefer metrics that work both on the pooled DataFrame and on a single subject's slice.
+
+Acceptance rule: the system simulates each theory and runs Welch's two-sample t-test on `(point_estimate_self, between_subject_variance_self, N)` vs. `(point_estimate_adv, between_subject_variance_adv, N)`, where N is the number of HUMAN subjects the experiment will actually be run with (a fixed small number, currently 25). Your metric is admitted iff the two-sided p-value is below the significance level (currently alpha=0.01). Implication: a large between-theory gap is NOT enough — if either theory's metric is also highly variable across subjects, N humans won't reliably distinguish them and the metric will be rejected. Aim for contrasts that are both large in mean AND tight per subject.
+
+Do NOT propose metrics that are trivially true for your theory.
+
+
+## User Prompt
+
+## EXPERIMENTAL DOMAIN
+Subjects repeatedly choose between two fictitious products, A and B. Each option is described by a vector of binary expert ratings (each 0 or 1). Every experiment fixes its own feature count (via `validities` length) and per-expert validities; both are LLM-proposed. The validities are communicated to the subject in the instructions. Subjects pick whichever product they believe is of higher quality. There is no trial-by-trial correctness feedback.
+
+Each subject completes ~96 trials in a single block, with order randomized independently per subject. On every trial the subject sees two options A and B, each described by `n_features` binary expert ratings (each 0 or 1). The per-feature validities and n_features are fixed per experiment (design-time choices). Validities are communicated to the subject in the instructions. Both `n_features` and `validities` are exposed to your `predict` via the `parameters` dict. The subject chooses A or B; no correctness feedback is provided after the choice.
+
+## CHOSEN EXPERIMENTAL DESIGN
+**Validities (n_features=4):** [0.95, 0.85, 0.75, 0.65]
+
+**Trial pairs (n=6):**
+  trial 1: A=[1, 0, 0, 1]  B=[0, 1, 1, 0]
+  trial 2: A=[1, 0, 0, 0]  B=[0, 1, 1, 1]
+  trial 3: A=[0, 1, 1, 0]  B=[1, 0, 0, 0]
+  trial 4: A=[1, 0, 1, 0]  B=[0, 1, 0, 1]
+  trial 5: A=[0, 1, 0, 1]  B=[1, 0, 0, 0]
+  trial 6: A=[1, 1, 0, 0]  B=[0, 0, 1, 1]
+
+**Rationale:** To distinguish the Evidence Accumulation with Bounded Threshold model (THEORY 1) from the exponent-scaled Weighted Additive model (THEORY 2), we exploit the threshold mechanism directly. In THEORY 1, if the threshold is reached early, sampling stops and subsequent cues are completely ignored. If the threshold is not reached, it integrates all cues linearly (sum of validities). In THEORY 2, all cues are always integrated, but their weights are non-linearly scaled by an exponent (gamma). We use a set of 4 features with specific validities such that the linear sum of validities is perfectly tied for some pairs (e.g., 0.95 + 0.65 = 1.60 vs 0.85 + 0.75 = 1.60). For these tied pairs, THEORY 1 predicts either a choice for the top cue (if threshold is low) or a perfect tie (if threshold is high). THEORY 2, however, applies an exponent to the validities: if gamma > 1, the option with the more extreme validities (0.95 and 0.65) wins; if gamma < 1, the option with the moderate validities (0.85 and 0.75) wins. By varying the dispersion and sums of the validities across trials, we can cleanly separate the early-stopping/linear-integration dynamics of THEORY 1 from the non-linear full-integration dynamics of THEORY 2.
+
+**Computed schedule:** 6 unique pairs × 16 reps = 96 trials per subject.
+
+
+
+## ADVOCATED THEORY
+**Description:** Evidence Accumulation with Bounded Threshold: People sample cues sequentially in order of validity. Each discriminating cue adds its validity to the evidence for the favored option. If the absolute difference in evidence between the two options reaches a threshold `theta`, sampling stops and a decision is made based on the accumulated evidence (mimicking Take The Best). If all cues are exhausted without the threshold being reached, the decision is based on the final integrated evidence (mimicking Weighted Additive). This allows for early stopping when initial evidence is strong, but continued sampling when evidence is weak or tied.
+
+**Parameters:**
+- theta: [0.0, 1.0]
+- beta: [0.1, 20.0]
+- epsilon: [0.0, 0.1]
+- validities: validities
+
+**`predict source code`:**
+```python
+def predict(parameters, stimulus, history):
+    import numpy as np
+    
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError("Stimulus must be shape (2, n_features).")
+        
+    a, b = stim[0], stim[1]
+    
+    val = np.asarray(parameters["validities"], dtype=float)
+    cue_order = np.argsort(-val, kind="stable").tolist()
+    
+    theta = float(parameters["theta"])
+    
+    ev_a = 0.0
+    ev_b = 0.0
+    
+    # Sequential evidence accumulation
+    for j in cue_order:
+        if a[j] > b[j]:
+            ev_a += val[j]
+        elif b[j] > a[j]:
+            ev_b += val[j]
+            
+        # Early stopping if threshold is reached
+        if abs(ev_a - ev_b) >= theta:
+            break
+            
+    scores = np.array([ev_a, ev_b])
+    
+    beta = float(parameters["beta"])
+    z = beta * (scores - scores.max())
+    e = np.exp(z)
+    p_core = e / e.sum()
+    
+    epsilon = float(parameters["epsilon"])
+    n_opts = p_core.shape[0]
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+```
+
+**`policy source code`:**
+```python
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities /= probabilities.sum()
+    return int(np.random.choice(len(probabilities), p=probabilities))
+```
+
+
+## COMPETING THEORY
+**Description:** People make decisions by computing a weighted sum of the features for each option, using the cue validities scaled by an exponent as the weights. Unlike Take The Best, which is strictly non-compensatory, the Weighted Additive (WADD) strategy integrates all available information. However, by scaling validities with an exponent (gamma), the model can flexibly capture varying degrees of compensatoriness, ranging from equal-weighting (Tallying) to highly skewed weighting that approximates one-reason decision making (TTB). Choice probabilities are generated via a softmax over the weighted sums, combined with a uniform lapse rate to account for random errors.
+
+**Parameters:**
+- beta: [0.1, 200.0]
+- epsilon: [0.0, 0.5]
+- gamma: [0.1, 50.0]
+- validities: validities
+
+**`predict source code`:**
+```python
+def predict(parameters, stimulus, history):
+    import numpy as np
+    
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError("WADD expects a (2, n_features) stimulus.")
+        
+    a, b = stim[0], stim[1]
+    val = np.asarray(parameters["validities"], dtype=float)
+    gamma = float(parameters["gamma"])
+    weights = val ** gamma
+    
+    # Compute weighted sum of features for each option
+    score_a = np.sum(weights * a)
+    score_b = np.sum(weights * b)
+    scores = np.array([score_a, score_b])
+    
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+    
+    # Numerically stable softmax
+    z = beta * (scores - np.max(scores))
+    e = np.exp(z)
+    p_core = e / np.sum(e)
+    
+    n_opts = p_core.shape[0]
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+```
+
+**`policy source code`:**
+```python
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities /= probabilities.sum()
+    return int(np.random.choice(len(probabilities), p=probabilities))
+```
+
+
+## DATA SCHEMA
+Your metric receives a tidy per-trial pandas DataFrame stacking all subjects (rows grouped by `subject_id`, in trial order). Columns:
+- subject_id: Subject identifier (one row per trial per subject).
+- option_a_ratings: List of n_features binary expert ratings (each 0 or 1) for option A on this trial.
+- option_b_ratings: List of n_features binary expert ratings (each 0 or 1) for option B on this trial.
+- response: 0 if subject chose A, 1 if subject chose B.
+
+## IMPLEMENTATION GUARDRAILS
+Any column in the schema above whose description names a list / tuple / np.ndarray (i.e. a per-trial sequence of values) holds non-scalar cells. Those cells are NOT hashable, so operations that hash row values fail with `TypeError: unhashable type: 'list'`. Treating `<seq_col>` as a placeholder for any such sequence-valued column:
+- Avoid: `data.groupby('<seq_col>')`, `data['<seq_col>'].value_counts()`,     `data['<seq_col>'].nunique()`, `data['<seq_col>'].unique()` (returns     an object array but downstream `set()` / `in dict` will crash),     `set(data['<seq_col>'])`, `data['<seq_col>'].isin([...])` against list     values, or using a list cell as a dict key.
+- If you need a hashable surrogate, project to one first, e.g.:
+    - `data['<seq_col>_key'] = data['<seq_col>'].apply(tuple)` then group by `<seq_col>_key`
+    - `data['<seq_col>_str'] = data['<seq_col>'].apply(lambda x: ''.join(map(str, x)))`
+    Scalar columns (ints, floats, strings like `subject_id`, integer     responses, etc.) hash fine and can be used directly.
+- Generator expressions inside function calls like `map()` or `join()` MUST be     parenthesized. For example:
+    - WRONG: `map(str, int(v) for v in x)` → SyntaxError
+    - RIGHT: `map(str, (int(v) for v in x))` or use a list comp: `[str(int(v)) for v in x]`
+- Always verify your code is syntactically valid Python before returning it.
+
+## METRICS YOU ALREADY TRIED AND FAILED ON
+Each entry below is a metric you previously proposed in this round that did NOT discriminate the two theories at the human sample size — either it errored, its between-subject variance was unavailable, or Welch's t-test on `(self mean, self var, N)` vs. `(adv mean, adv var, N)` returned p ≥ alpha. The `outcome` line is the simulation result (means, between-subject variances, t-statistic and p-value at the human N) on the same `data_self` / `data_adv` your next metric will be evaluated on. Use the numbers to see where your hypothesised contrast collapsed — small mean gap, large per-subject variance, or both — and propose something qualitatively different. Don't repeat the same idea with cosmetic tweaks.
+[0] rationale: This metric calculates the difference in the probability of choosing Option A between Trial 1 (A=[1,0,0,1] vs B=[0,1,1,0]) and Trial 2 (A=[1,0,0,0] vs B=[0,1,1,1]). Under the Evidence Accumulation (Bounded Threshold) model, if the threshold is met at the first cue (which occurs for a wide range of parameters), both trials result in an immediate choice for A, leading to a difference near 0. Under the Weighted Additive model, all cues are integrated; since B has three positive cues in Trial 2 compared to only two in Trial 1, Option B is systematically stronger in Trial 2. Thus, the WADD model predicts a substantially higher choice probability for A in Trial 1 than in Trial 2, yielding a positive difference.
+metric_source:
+def metric(data: pd.DataFrame) -> float:
+    t1_a = 0
+    t1_tot = 0
+    t2_a = 0
+    t2_tot = 0
+    for _, row in data.iterrows():
+        a = tuple(row['option_a_ratings'])
+        b = tuple(row['option_b_ratings'])
+        if a == (1, 0, 0, 1) and b == (0, 1, 1, 0):
+            t1_a += (1 if row['response'] == 0 else 0)
+            t1_tot += 1
+        elif a == (1, 0, 0, 0) and b == (0, 1, 1, 1):
+            t2_a += (1 if row['response'] == 0 else 0)
+            t2_tot += 1
+            
+    p1 = t1_a / t1_tot if t1_tot > 0 else 0.0
+    p2 = t2_a / t2_tot if t2_tot > 0 else 0.0
+    return p1 - p2
+
+outcome: self_sim=0.0375 (var=0.0291) adversary_sim=0.1000 (var=0.0734) welch_t=-0.976 p=0.3348 (N=25, alpha=0.01) -> reject
+
+[1] rationale: This metric calculates the overall proportion of choices that align with the Take-The-Best (TTB) heuristic (i.e., choosing the option favored by the most valid cue). Under the Evidence Accumulation with Bounded Threshold model (Theory 1), the threshold `theta` is drawn uniformly from [0, 1]. Because the first cue has a validity of 0.95, any threshold <= 0.95 (which occurs for 95% of simulated subjects) will trigger early stopping at the very first cue, resulting in a TTB choice. Combined with a very low lapse rate (`epsilon` in [0, 0.1]), Theory 1 predicts a very high and tightly clustered TTB adherence (typically > 90%). In contrast, the Weighted Additive model (Theory 2) integrates all cues. For many trials in this design, the secondary cues strongly oppose the first cue, so WADD frequently predicts choices contrary to TTB (especially for lower values of the exponent `gamma`). Furthermore, Theory 2 has a much higher lapse rate (`epsilon` in [0, 0.5]), which heavily suppresses the maximum possible choice proportion for any strategy. Consequently, Theory 2 will yield a substantially lower and more variable TTB adherence, cleanly separating the two models.
+metric_source:
+def metric(data: pd.DataFrame) -> float:
+    ttb_matches = 0
+    total = 0
+    for _, row in data.iterrows():
+        a = tuple(row['option_a_ratings'])
+        b = tuple(row['option_b_ratings'])
+        
+        # The first cue (validity 0.95) is the most valid.
+        # Take-The-Best (TTB) predicts choosing the option with a 1 on this cue.
+        if a[0] == 1 and b[0] == 0:
+            if row['response'] == 0:
+                ttb_matches += 1
+            total += 1
+        elif b[0] == 1 and a[0] == 0:
+            if row['response'] == 1:
+                ttb_matches += 1
+            total += 1
+            
+    return ttb_matches / total if total > 0 else 0.5
+outcome: self_sim=0.9079 (var=0.0271) adversary_sim=0.8323 (var=0.0163) welch_t=+1.815 p=0.07613 (N=25, alpha=0.01) -> reject
+
+## RESPONSE FORMAT
+Return a JSON object with the following fields:
+- metric: Python source defining def metric(data: pd.DataFrame) -> float.
+- rationale: Reasoning behind this metric; used when interpreting results.
+
+
+## Response
+
+```json
+{
+  "metric_source": "def metric(data: pd.DataFrame) -> float:\n    ttb_matches = 0\n    total = 0\n    for _, row in data.iterrows():\n        a = tuple(row['option_a_ratings'])\n        b = tuple(row['option_b_ratings'])\n        \n        # Focus only on trials where the TTB option (having only the first cue) \n        # is pitted against an option with multiple lesser cues (which have a higher sum).\n        # These are the trials where WADD (Theory 2) is most likely to disagree with TTB.\n        opposing_patterns = [(0, 1, 1, 1), (0, 1, 1, 0), (0, 1, 0, 1)]\n        \n        if a == (1, 0, 0, 0) and b in opposing_patterns:\n            if row['response'] == 0:\n                ttb_matches += 1\n            total += 1\n        elif b == (1, 0, 0, 0) and a in opposing_patterns:\n            if row['response'] == 1:\n                ttb_matches += 1\n            total += 1\n            \n    return ttb_matches / total if total > 0 else 0.5",
+  "rationale": "To maximize the separation between the Evidence Accumulation (Bounded Threshold) model and the Weighted Additive model, we must isolate trials where the two models make opposing predictions. In this experimental design, the first cue is highly valid (0.95). Theory 1 stops at the first cue for ~95% of simulated subjects, consistently choosing the option with the first cue (the TTB choice). Theory 2, however, integrates all cues. On trials where the TTB option has only the first cue (sum = 0.95) and the competing option has multiple secondary cues (sums = 2.25, 1.6, or 1.5), Theory 2 will frequently favor the competing option unless its exponent 'gamma' is extremely high. By computing the TTB adherence rate strictly on these specific conflict trials, we eliminate the agreement noise from other trials, resulting in a robustly high score for Theory 1 and a substantially lower, distinct score for Theory 2."
+}
+```
+
+## Usage
+
+```json
+{
+  "prompt_token_count": 4443,
+  "candidates_token_count": 531,
+  "total_token_count": 7686
+}
+```

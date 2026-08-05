@@ -1,0 +1,52 @@
+{
+  "round_idx": 2,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_4",
+      "killed": true,
+      "theory": {
+        "description": "Take The Best (Lexicographic Heuristic)",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Expected state to have shape (2, n_features)\")\n        \n    a, b = stim[0], stim[1]\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Sort features by validity in descending order\n    sorted_indices = np.argsort(-validities, kind=\"mergesort\")\n    \n    scores = np.zeros(2)\n    discriminated = False\n    \n    # Lexicographic search: stop at the first discriminating feature\n    for f_idx in sorted_indices:\n        if a[f_idx] != b[f_idx]:\n            if a[f_idx] > b[f_idx]:\n                scores[0] = 1.0\n            else:\n                scores[1] = 1.0\n            discriminated = True\n            break\n            \n    if not discriminated:\n        return np.array([0.5, 0.5])\n        \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax conversion with numerical stability\n    logits = beta * scores\n    logits -= np.max(logits)\n    probs = np.exp(logits) / np.sum(np.exp(logits))\n    \n    # Mixture with uniform lapse\n    return (1.0 - epsilon) * probs + epsilon * np.array([0.5, 0.5])",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    p = np.asarray(probs, dtype=np.float64)\n    p /= p.sum()\n    return int(np.random.choice(len(p), p=p))",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Take The Best (TTB) evaluates options lexicographically by consulting features in decreasing order of validity. The first feature that discriminates between the options determines the choice entirely, and all remaining lower-validity features are ignored. This embodies a fast-and-frugal heuristic that is strictly non-compensatory, contrasting sharply with exhaustive integration models like WADD or Tallying. The model uses a softmax over the binary TTB choice to account for decision noise, coupled with a lapse rate for random guessing."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_2",
+      "killed": false,
+      "theory": {
+        "description": "People compare two options by counting, across all features, how often one option has a higher value than the other. The option that wins on more features is chosen. Tallying discards cardinal magnitudes \u2014 only the sign of each feature-wise comparison matters \u2014 so the heuristic is robust to monotone rescaling of individual features and cannot be swayed by a single large feature difference in the way Equal-Weight can. Ties on an individual feature contribute nothing to either count: that cue is simply treated as uninformative for the pair. No feature is privileged, in contrast to Take The Best; every cue contributes equally to the tally. When the two counts are equal the heuristic has no basis for preference and the learner must guess. Response noise enters through a softmax over the two tallies with inverse temperature beta (interpolating between fully deterministic choice at large beta and uniform guessing at beta = 0), plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+        "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Tallying heuristic (Dawes 1979; Gigerenzer &\n    # Goldstein 1999). Stimulus is the pair of option feature vectors\n    # for the current trial: array-like of shape (2, n_features),\n    # with row 0 = option A, row 1 = option B. History is ignored.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"Tallying expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n\n    a, b = stim[0], stim[1]\n    # Count strict feature-wise wins; ties contribute to neither option.\n    a_wins = float(np.sum(a > b))\n    b_wins = float(np.sum(b > a))\n    scores = np.array([a_wins, b_wins])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. When\n    # a_wins == b_wins the softmax is exactly uniform regardless of\n    # beta, which is the correct behavior for an undiscriminating\n    # tally.\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]"
+        },
+        "rationale": null
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_5",
+    "slot": 1,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Tallying with Right-to-Left Position-Based Tie-Breaking",
+      "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Expected a (2, n_features) stimulus.\")\n        \n    a, b = stim[0], stim[1]\n    \n    # Tallying: count strict feature-wise wins\n    a_wins = float(np.sum(a > b))\n    b_wins = float(np.sum(b > a))\n    scores = np.array([a_wins, b_wins])\n    \n    # Position-based lexicographic tie-breaking (right-to-left)\n    if a_wins == b_wins:\n        for i in range(len(a) - 1, -1, -1):\n            if a[i] > b[i]:\n                scores[0] += 1.0\n                break\n            elif b[i] > a[i]:\n                scores[1] += 1.0\n                break\n                \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax with numerical stability\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+      "policy_source": "def policy(probs):\n    import numpy as np\n    p = np.asarray(probs, dtype=np.float64)\n    p /= p.sum()  # Ensure valid probabilities\n    return int(np.random.choice(len(p), p=p))\n",
+      "parameters": {
+        "beta": "[0.1, 20.0]",
+        "epsilon": "[0.0, 0.5]"
+      },
+      "rationale": "Applying a minimal edit to the tie-breaking logic based on critic feedback. The previous left-to-right search failed on Experiments 3 and 4's tie-trials. Reversing the search direction to right-to-left (perhaps reflecting a recency effect in evaluating sequentially presented features) explains the systematic deviations observed in those experiments while maintaining the core Tallying performance on conflict trials."
+    }
+  }
+}

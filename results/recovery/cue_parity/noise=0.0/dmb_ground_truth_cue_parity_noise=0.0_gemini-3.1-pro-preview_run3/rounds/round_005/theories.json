@@ -1,0 +1,58 @@
+{
+  "round_idx": 5,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_1",
+      "killed": false,
+      "theory": {
+        "description": "People compare two options by consulting cues one at a time in order of validity, stopping at the first cue that discriminates between the two options. That cue alone determines the choice: the option with the higher value on the discriminating cue wins, and no other cue is consulted. Cues with lower validity are never reached when a higher-validity cue already discriminates, so Take The Best is a \"one-reason\" decision rule \u2014 only a single feature is ever used on any given choice. Because only the sign of the comparison on the top discriminating cue matters, TTB ignores both the magnitude of that difference and all information on lower-validity cues, making it maximally frugal in the use of evidence. Cue validities are subjective and can be learned, inferred from instructions, or fixed by task structure. When no cue discriminates (all feature-wise comparisons tie) the learner has no basis for preference and must guess. Response noise enters through a softmax over the binary TTB score (winner = 1, loser = 0) with inverse temperature beta, plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.\n",
+        "predict_source": "def predict(parameters, stimulus, history):\n    # Paper-faithful Take The Best (Gigerenzer & Goldstein 1996).\n    # Stimulus is the pair of option feature vectors for the current\n    # trial: array-like of shape (2, n_features), row 0 = option A,\n    # row 1 = option B. Cue cascade: features are consulted in order\n    # of descending validity; the first discriminating cue (strict\n    # inequality) determines the winner; if no cue discriminates,\n    # the model guesses uniformly. History is ignored.\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"TTB expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n    n_features = stim.shape[1]\n\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    if val.shape[0] != n_features:\n        raise ValueError(\n            f\"validities length {val.shape[0]} != n_features {n_features}.\"\n        )\n    # Descending validity; argsort is stable so validity ties break\n    # toward the earlier feature index.\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n\n    a, b = stim[0], stim[1]\n    winner = None\n    for j in cue_order:\n        if a[j] > b[j]:\n            winner = 0\n            break\n        if b[j] > a[j]:\n            winner = 1\n            break\n\n    if winner is None:\n        # No discriminating cue \u2014 pure guess.\n        return np.ones(2) / 2.0\n\n    scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Softmax with max-subtraction for numerical stability. For the\n    # binary TTB score this collapses to sigmoid(beta) for the winner,\n    # giving a direct mapping from beta onto the paper's flip-noise\n    # levels (beta=0 \u2194 50/50; beta \u226b 1 \u2194 deterministic).\n    z = beta * (scores - scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": null
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_7",
+      "killed": true,
+      "theory": {
+        "description": "Decision-makers process cues sequentially in order of validity, accumulating evidence. The probability of stopping the search and making a decision is dynamic and depends on the magnitude of the accumulated evidence. This evidence-dependent stopping rule allows the model to naturally capture complex compensatory and non-compensatory dynamics, such as being more likely to stop and ignore subsequent cues when strong discriminating evidence has already been found, or stopping early when opposing cues dilute the accumulated evidence.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    from scipy.special import expit\n    \n    stim = np.asarray(state, dtype=float)\n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Sort cues by validity in descending order\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n    \n    gamma = float(parameters[\"gamma\"])\n    theta = float(parameters[\"theta\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    p_reach = 1.0\n    total_p_A = 0.0\n    \n    E = 0.0\n    for j in cue_order:\n        diff = a[j] - b[j]\n        if diff != 0:\n            # Accumulate evidence weighted by validity\n            E += diff * val[j]\n            \n            # Stopping probability depends on the magnitude of accumulated evidence\n            p_stop = expit(gamma * abs(E) + theta)\n            \n            # Probability of choosing A if the decision-maker stops here\n            p_A_here = expit(beta * E)\n            \n            # Add to total probability of choosing A\n            total_p_A += p_reach * p_stop * p_A_here\n            \n            # Update the probability of reaching the next cue\n            p_reach *= (1.0 - p_stop)\n            \n    # If the decision-maker reaches the end without stopping\n    if p_reach > 0:\n        p_A_final = expit(beta * E) if E != 0 else 0.5\n        total_p_A += p_reach * p_A_final\n        \n    p_core = np.array([total_p_A, 1.0 - total_p_A])\n    \n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "gamma": "[-20.0, 20.0]",
+          "theta": "[-10.0, 10.0]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's diagnosis for Experiment 5, the model's stopping rule has been updated from a constant probability to an evidence-dependent probability. By defining `p_stop = expit(gamma * |E| + theta)`, the decision-maker's likelihood of halting the search dynamically responds to the strength of the accumulated evidence. This allows the model to reproduce the negative Z-score in Experiment 5: depending on the sign of `gamma`, the decision-maker can either stop immediately upon finding strong initial evidence (ignoring subsequent opposing cues) or stop when opposing cues dilute the evidence, preventing further opposing cues from being integrated. This preserves the successful sequential accumulation framework while adding the necessary flexibility to capture these specific non-compensatory effects."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_8",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Decision-makers exhibit strategy heterogeneity, with choices generated by a mixture of a non-compensatory heuristic (Take The Best) and a compensatory strategy (Tallying). Tallying equally weights all discriminating cues. Individuals probabilistically select between these strategies, but predominantly rely on Take The Best (w_ttb >= 0.7). When Tallying is used, it acts as a noisier fallback, reducing the determinism of compensatory choices and preventing over-sensitivity to multiple weak cues.",
+      "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    w_ttb = float(parameters[\"w_ttb\"])\n    beta_ttb = float(parameters[\"beta_ttb\"])\n    beta_tally = float(parameters[\"beta_tally\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Take The Best (TTB) evaluation\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n    ttb_scores = np.array([0.0, 0.0])\n    for j in cue_order:\n        if a[j] > b[j]:\n            ttb_scores = np.array([1.0, 0.0])\n            break\n        elif b[j] > a[j]:\n            ttb_scores = np.array([0.0, 1.0])\n            break\n            \n    # Tallying evaluation (count of discriminating cues)\n    tally_scores = np.array([float(np.sum(a > b)), float(np.sum(b > a))])\n    \n    # Convert scores to probabilities\n    z_ttb = beta_ttb * ttb_scores\n    z_ttb -= np.max(z_ttb)\n    p_ttb = np.exp(z_ttb) / np.sum(np.exp(z_ttb))\n    \n    z_tally = beta_tally * tally_scores\n    z_tally -= np.max(z_tally)\n    p_tally = np.exp(z_tally) / np.sum(np.exp(z_tally))\n    \n    # Mixture of strategies\n    p_core = w_ttb * p_ttb + (1.0 - w_ttb) * p_tally\n    \n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])",
+      "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))",
+      "parameters": {
+        "w_ttb": "[0.7, 1.0]",
+        "beta_ttb": "[0.1, 15.0]",
+        "beta_tally": "[0.1, 5.0]",
+        "epsilon": "[0.0, 0.2]",
+        "validities": "validities"
+      },
+      "rationale": "Following the critic's diagnosis, I have restricted the prior range for `w_ttb` to `[0.7, 1.0]` to more heavily penalize compensatory intrusions, since the real data suggests a stronger baseline reliance on TTB. I also lowered the upper bound of `beta_tally` to `[0.1, 5.0]` so that when the compensatory Tallying strategy is selected, it behaves more as a noisy fallback, reducing the model's over-prediction of compensatory effects in trials with multiple weak cues (Exps 6, 11, 12)."
+    }
+  }
+}

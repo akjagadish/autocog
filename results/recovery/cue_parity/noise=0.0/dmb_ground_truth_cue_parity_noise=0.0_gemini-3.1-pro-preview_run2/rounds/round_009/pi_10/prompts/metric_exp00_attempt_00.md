@@ -1,0 +1,217 @@
+# metric_exp00_attempt_00
+
+## System Prompt
+
+You are a psychology researcher proposing a metric in the Decision Making (Binary Features) domain.
+
+Your goal is adversarial: propose a metric that DISCRIMINATES the two theories — i.e., its value, computed on data simulated under your advocated theory, should be as far as possible from its value computed on data simulated under the competing theory. The direction of the gap does not matter; what matters is that the two theories produce visibly different numbers on this metric. The metric is computed on the data collected from the experimental design provided in the prompt. Produce a metric where you're prediction will be much more accurate than the competing theory's prediction on human data.
+
+Your metric is a Python function
+
+    metric(data: pd.DataFrame) -> float
+
+Available imports inside `metric`:
+- numpy as np
+- pandas as pd
+
+The system evaluates your metric in two ways and reports the pair as `point_estimate (var=between_subject_variance)` everywhere downstream:
+- `point_estimate` is `metric(data)` applied to the FULL pooled DataFrame (all subjects together) — the canonical scalar;
+- `between_subject_variance` is the population variance (`ddof=0`) of `metric(subj_df)` re-applied per `subject_id`, summarising how stable the metric is across subjects. If your metric only makes sense on multi-subject data this will fall back to `n/a` and the metric is rejected (the acceptance test below cannot run without it). Prefer metrics that work both on the pooled DataFrame and on a single subject's slice.
+
+Acceptance rule: the system simulates each theory and runs Welch's two-sample t-test on `(point_estimate_self, between_subject_variance_self, N)` vs. `(point_estimate_adv, between_subject_variance_adv, N)`, where N is the number of HUMAN subjects the experiment will actually be run with (a fixed small number, currently 25). Your metric is admitted iff the two-sided p-value is below the significance level (currently alpha=0.01). Implication: a large between-theory gap is NOT enough — if either theory's metric is also highly variable across subjects, N humans won't reliably distinguish them and the metric will be rejected. Aim for contrasts that are both large in mean AND tight per subject.
+
+Do NOT propose metrics that are trivially true for your theory.
+
+
+## User Prompt
+
+## EXPERIMENTAL DOMAIN
+Subjects repeatedly choose between two fictitious products, A and B. Each option is described by a vector of binary expert ratings (each 0 or 1). Every experiment fixes its own feature count (via `validities` length) and per-expert validities; both are LLM-proposed. The validities are communicated to the subject in the instructions. Subjects pick whichever product they believe is of higher quality. There is no trial-by-trial correctness feedback.
+
+Each subject completes ~96 trials in a single block, with order randomized independently per subject. On every trial the subject sees two options A and B, each described by `n_features` binary expert ratings (each 0 or 1). The per-feature validities and n_features are fixed per experiment (design-time choices). Validities are communicated to the subject in the instructions. Both `n_features` and `validities` are exposed to your `predict` via the `parameters` dict. The subject chooses A or B; no correctness feedback is provided after the choice.
+
+## CHOSEN EXPERIMENTAL DESIGN
+**Validities (n_features=5):** [0.95, 0.85, 0.75, 0.65, 0.55]
+
+**Trial pairs (n=8):**
+  trial 1: A=[1, 0, 0, 1, 0]  B=[0, 1, 1, 0, 0]
+  trial 2: A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 0, 0]
+  trial 3: A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 1, 0]
+  trial 4: A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1]
+  trial 5: A=[0, 1, 1, 0, 0]  B=[1, 0, 0, 0, 0]
+  trial 6: A=[0, 1, 1, 1, 0]  B=[1, 0, 0, 0, 0]
+  trial 7: A=[0, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0]
+  trial 8: A=[0, 0, 1, 1, 0]  B=[0, 1, 0, 0, 1]
+
+**Rationale:** To quantitatively dissociate the Threshold-Gated Adaptive Strategy from WADD with Zero-Anchored Soft Validity Transformation, we exploit their divergent responses to varying tally differences. The advocated theory posits a discrete threshold (0, 1, or 2) for the raw tally difference; if the difference meets or exceeds the threshold, the decision relies purely on Tallying (ignoring validities), otherwise it falls back to Take-The-Best (TTB). WADD, on the other hand, continuously integrates all cues weighted by an exponential function of their validities, regardless of the raw tally difference. By presenting a series of trials where the tally difference systematically increases (from 0 to 3) while the lower-tally option always holds the single highest-validity cue, we can pinpoint the threshold. The advocated theory predicts a sharp, categorical reversal in choice from the high-validity option to the high-tally option once the tally difference crosses the threshold. WADD predicts a continuous, graded shift in choice probabilities as the compensatory weight of the multiple lower-validity cues gradually overcomes the single high-validity cue.
+
+**Computed schedule:** 8 unique pairs × 12 reps = 96 trials per subject.
+
+
+
+## ADVOCATED THEORY
+**Description:** Threshold-Gated Adaptive Strategy: Decision-makers start by evaluating the raw tally difference between the two options. If the absolute difference in tally exceeds a subjective threshold, they rely entirely on this fast, compensatory tallying heuristic to make their choice. However, if the tally difference is small or tied (below the threshold), they shift to a cue-validity-driven strategy (Take-The-Best), heavily overweighting the most valid discriminating cue. Allowing the threshold to take lower values (e.g., 0 or 1) explains why subjects often exhibit strict tallying behavior even when options are structurally close, effectively increasing the overall reliance on tallying to match empirical data.
+
+**Parameters:**
+- threshold: {0, 1, 2}
+- beta_tally: [0.1, 25.0]
+- beta_ttb: [0.1, 25.0]
+- epsilon: [0.0, 0.5]
+- validities: validities
+
+**`predict source code`:**
+```python
+def predict(parameters, stimulus, history):
+    import numpy as np
+    
+    stim = np.asarray(stimulus, dtype=float)
+    a, b = stim[0], stim[1]
+    val = np.asarray(parameters["validities"], dtype=float)
+    
+    threshold = float(parameters["threshold"])
+    beta_tally = float(parameters["beta_tally"])
+    beta_ttb = float(parameters["beta_ttb"])
+    epsilon = float(parameters["epsilon"])
+    
+    tally_a = np.sum(a)
+    tally_b = np.sum(b)
+    
+    # Check if the absolute tally difference meets or exceeds the threshold
+    if abs(tally_a - tally_b) >= threshold:
+        scores = np.array([tally_a, tally_b])
+        beta = beta_tally
+    else:
+        # Shift to Take-The-Best (lexicographic) strategy
+        cue_order = np.argsort(-val, kind="stable").tolist()
+        winner = None
+        for j in cue_order:
+            if a[j] > b[j]:
+                winner = 0
+                break
+            if b[j] > a[j]:
+                winner = 1
+                break
+        if winner == 0:
+            scores = np.array([1.0, 0.0])
+        elif winner == 1:
+            scores = np.array([0.0, 1.0])
+        else:
+            scores = np.array([0.0, 0.0])
+        beta = beta_ttb
+            
+    z = beta * (scores - np.max(scores))
+    e = np.exp(z)
+    p = e / np.sum(e)
+    
+    return (1.0 - epsilon) * p + epsilon * np.array([0.5, 0.5])
+```
+
+**`policy source code`:**
+```python
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities /= probabilities.sum()
+    return np.random.choice(len(probabilities), p=probabilities)
+```
+
+
+## COMPETING THEORY
+**Description:** Weighted Additive (WADD) Integration with Zero-Anchored Soft Validity Transformation: Decision-makers compute a subjective value for each option by summing its features, weighted by a zero-anchored exponential transformation of their validities. This transformation (exp(gamma * val) - 1) ensures that non-predictive cues receive no weight, preventing the artificial inflation of tallies by low-validity cues while allowing the highest validity cues to exponentially dominate when necessary. This naturally bridges compensatory and non-compensatory decision-making without heuristic switching.
+
+**Parameters:**
+- gamma: [0.0, 10.0]
+- beta: [0.1, 50.0]
+- epsilon: [0.0, 0.5]
+- validities: validities
+
+**`predict source code`:**
+```python
+def predict(parameters, stimulus, history):
+    import numpy as np
+    
+    stim = np.asarray(stimulus, dtype=float)
+    a, b = stim[0], stim[1]
+    val = np.asarray(parameters["validities"], dtype=float)
+    
+    gamma = float(parameters["gamma"])
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+    
+    # Subjective transformation of validities
+    # Subtracting 1.0 ensures that a zero-validity cue would receive exactly 0 weight,
+    # preventing artificial inflation of low-validity cues and allowing the highest
+    # validity cues to dominate when necessary.
+    w = np.exp(gamma * val) - 1.0
+    
+    # Compute subjective values (Weighted Additive sum)
+    v_a = np.sum(w * a)
+    v_b = np.sum(w * b)
+    
+    scores = np.array([v_a, v_b])
+    
+    # Softmax choice rule
+    z = beta * (scores - np.max(scores))
+    e = np.exp(z)
+    p = e / np.sum(e)
+    
+    return (1.0 - epsilon) * p + epsilon * np.array([0.5, 0.5])
+```
+
+**`policy source code`:**
+```python
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities /= probabilities.sum()
+    return np.random.choice(len(probabilities), p=probabilities)
+```
+
+
+## DATA SCHEMA
+Your metric receives a tidy per-trial pandas DataFrame stacking all subjects (rows grouped by `subject_id`, in trial order). Columns:
+- subject_id: Subject identifier (one row per trial per subject).
+- option_a_ratings: List of n_features binary expert ratings (each 0 or 1) for option A on this trial.
+- option_b_ratings: List of n_features binary expert ratings (each 0 or 1) for option B on this trial.
+- response: 0 if subject chose A, 1 if subject chose B.
+
+## IMPLEMENTATION GUARDRAILS
+Any column in the schema above whose description names a list / tuple / np.ndarray (i.e. a per-trial sequence of values) holds non-scalar cells. Those cells are NOT hashable, so operations that hash row values fail with `TypeError: unhashable type: 'list'`. Treating `<seq_col>` as a placeholder for any such sequence-valued column:
+- Avoid: `data.groupby('<seq_col>')`, `data['<seq_col>'].value_counts()`,     `data['<seq_col>'].nunique()`, `data['<seq_col>'].unique()` (returns     an object array but downstream `set()` / `in dict` will crash),     `set(data['<seq_col>'])`, `data['<seq_col>'].isin([...])` against list     values, or using a list cell as a dict key.
+- If you need a hashable surrogate, project to one first, e.g.:
+    - `data['<seq_col>_key'] = data['<seq_col>'].apply(tuple)` then group by `<seq_col>_key`
+    - `data['<seq_col>_str'] = data['<seq_col>'].apply(lambda x: ''.join(map(str, x)))`
+    Scalar columns (ints, floats, strings like `subject_id`, integer     responses, etc.) hash fine and can be used directly.
+- Generator expressions inside function calls like `map()` or `join()` MUST be     parenthesized. For example:
+    - WRONG: `map(str, int(v) for v in x)` → SyntaxError
+    - RIGHT: `map(str, (int(v) for v in x))` or use a list comp: `[str(int(v)) for v in x]`
+- Always verify your code is syntactically valid Python before returning it.
+
+## METRICS YOU ALREADY TRIED AND FAILED ON
+Each entry below is a metric you previously proposed in this round that did NOT discriminate the two theories at the human sample size — either it errored, its between-subject variance was unavailable, or Welch's t-test on `(self mean, self var, N)` vs. `(adv mean, adv var, N)` returned p ≥ alpha. The `outcome` line is the simulation result (means, between-subject variances, t-statistic and p-value at the human N) on the same `data_self` / `data_adv` your next metric will be evaluated on. Use the numbers to see where your hypothesised contrast collapsed — small mean gap, large per-subject variance, or both — and propose something qualitatively different. Don't repeat the same idea with cosmetic tweaks.
+(none yet)
+
+## RESPONSE FORMAT
+Return a JSON object with the following fields:
+- metric: Python source defining def metric(data: pd.DataFrame) -> float.
+- rationale: Reasoning behind this metric; used when interpreting results.
+
+
+## Response
+
+```json
+{
+  "metric_source": "def metric(data: pd.DataFrame) -> float:\n    tally_a = data['option_a_ratings'].apply(sum)\n    tally_b = data['option_b_ratings'].apply(sum)\n    diff = (tally_a - tally_b).abs()\n    \n    mask = diff >= 2\n    if not mask.any():\n        return 0.5\n    \n    subset = data[mask]\n    ta = tally_a[mask]\n    tb = tally_b[mask]\n    resp = subset['response']\n    \n    chose_higher_tally = ((ta > tb) & (resp == 0)) | ((tb > ta) & (resp == 1))\n    \n    return float(chose_higher_tally.mean())",
+  "rationale": "This metric calculates the proportion of times subjects chose the option with the higher tally on trials where the tally difference is 2 or greater. According to the advocated Threshold-Gated Adaptive Strategy, the threshold for switching to tallying is at most 2. Thus, on trials with a tally difference >= 2, the decision is strictly based on tallying, leading to a very high rate of choosing the higher tally option. In contrast, the competing WADD theory continuously weighs the cues; because the lower-tally option on these trials possesses the single most valid cue, WADD will frequently select it (especially at higher gamma values), resulting in a significantly lower proportion of higher-tally choices."
+}
+```
+
+## Usage
+
+```json
+{
+  "prompt_token_count": 3469,
+  "candidates_token_count": 349,
+  "total_token_count": 6911
+}
+```

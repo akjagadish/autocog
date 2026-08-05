@@ -1,0 +1,56 @@
+{
+  "round_idx": 4,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_3",
+      "killed": false,
+      "theory": {
+        "description": "Decision-makers use the 'Take The Best' (TTB) heuristic, a non-compensatory lexicographic strategy. Features are ranked by their validity, and options are compared on features one by one in descending order of validity. The choice is determined entirely by the first feature that discriminates between the options, ignoring all lower-validity cues.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"TTB expects a (2, n_features) stimulus.\")\n        \n    a, b = stim[0], stim[1]\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Rank features by validity in descending order\n    order = np.argsort(validities)[::-1]\n    \n    scores = np.array([0.0, 0.0])\n    # Lexicographic evaluation\n    for idx in order:\n        if a[idx] > b[idx]:\n            scores[0] = 1.0\n            break\n        elif b[idx] > a[idx]:\n            scores[1] = 1.0\n            break\n            \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax over the binary scores\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    # Blend with uniform lapse rate\n    return (1.0 - epsilon) * p_core + epsilon * 0.5\n",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the arbiter's feedback, this model instantiates the Take The Best (TTB) heuristic. Instead of summing features (like Tallying or WADD), TTB sorts features by validity and makes a choice based solely on the highest-validity feature that discriminates between the options. This non-compensatory mechanism naturally accounts for the extreme sensitivity to high-validity cues observed in Experiment 2, where a single predictive feature can strongly dominate the choice over multiple weaker features."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_6",
+      "killed": true,
+      "theory": {
+        "description": "Hybrid TTB-WADD Theory: Decision-makers probabilistically alternate between a strict non-compensatory strategy (Take The Best) and a fully compensatory strategy (Weighted Additive Model / WADD) depending on the trial or internal state. The model computes the choice probabilities for both TTB (relying solely on the first discriminating cue) and WADD (summing the validity-weighted cue values) and blends them using a subject-level mixing parameter.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Hybrid model expects a (2, n_features) stimulus.\")\n        \n    a, b = stim[0], stim[1]\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # --- TTB Probability ---\n    # Rank features by validity in descending order\n    order = np.argsort(validities)[::-1]\n    ttb_p = np.array([0.5, 0.5])\n    for idx in order:\n        if a[idx] > b[idx]:\n            ttb_p = np.array([1.0, 0.0])\n            break\n        elif b[idx] > a[idx]:\n            ttb_p = np.array([0.0, 1.0])\n            break\n            \n    # --- WADD Probability ---\n    score_a = np.sum(a * validities)\n    score_b = np.sum(b * validities)\n    wadd_scores = np.array([score_a, score_b])\n    \n    tau = float(parameters[\"tau\"])\n    z = (wadd_scores - np.max(wadd_scores)) / tau\n    e = np.exp(z)\n    wadd_p = e / np.sum(e)\n    \n    # --- Blend ---\n    mix_rate = float(parameters[\"mix_rate\"])\n    p_core = mix_rate * ttb_p + (1.0 - mix_rate) * wadd_p\n    \n    # --- Lapse Rate ---\n    epsilon = float(parameters[\"epsilon\"])\n    return (1.0 - epsilon) * p_core + epsilon * 0.5\n",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+        "parameters": {
+          "tau": "[0.01, 5.0]",
+          "epsilon": "[0.0, 0.05]",
+          "mix_rate": "[0.0, 1.0]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's advice, we replaced the direct multiplier `beta` with an inverse temperature parameter `tau` in [0.01, 5.0]. Inverse temperature scaling provides a smoother optimization landscape, which should help the fitter find the optimal subject-specific `mix_rate` without getting stuck in sub-optimal compromises. We also constrained `epsilon` to [0.0, 0.05] to prevent random noise from artificially flattening the deterministic TTB predictions."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_7",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Probabilistic Stopping Take-The-Best (Probabilistic TTB). Decision-makers search cues sequentially in descending order of validity. However, instead of strictly stopping at the first discriminating cue, they stop and choose the favored option with probability `p_stop`. With probability `1 - p_stop`, they continue searching and accumulate evidence from subsequent cues. A high p_stop ensures the model behaves primarily in a non-compensatory manner, matching human data.",
+      "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be shape (2, n_features).\")\n        \n    a, b = stim[0], stim[1]\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Rank features by validity in descending order\n    order = np.argsort(validities)[::-1]\n    \n    p_stop = float(parameters[\"p_stop\"])\n    \n    score_a = 0.0\n    score_b = 0.0\n    remaining = 1.0\n    \n    for idx in order:\n        if a[idx] > b[idx]:\n            score_a += remaining * p_stop\n            remaining *= (1.0 - p_stop)\n        elif b[idx] > a[idx]:\n            score_b += remaining * p_stop\n            remaining *= (1.0 - p_stop)\n            \n    score_a += remaining * 0.5\n    score_b += remaining * 0.5\n    \n    scores = np.array([score_a, score_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    z = beta * scores\n    z = z - np.max(z)\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    return (1.0 - epsilon) * p_core + epsilon * 0.5\n",
+      "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+      "parameters": {
+        "beta": "[0.1, 20.0]",
+        "epsilon": "[0.0, 0.25]",
+        "p_stop": "[0.6, 1.0]",
+        "validities": "validities"
+      },
+      "rationale": "Following the critic's feedback, I have tightened the parameter ranges for `p_stop` from [0.1, 1.0] to [0.6, 1.0] and for `epsilon` from [0.0, 0.5] to [0.0, 0.25]. This ensures the model predominantly stops at the first discriminating cue, reducing its compensatory nature to better align with the strong non-compensatory choice patterns observed in the empirical data, while also limiting excessive random choice noise."
+    }
+  }
+}

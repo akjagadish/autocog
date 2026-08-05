@@ -1,0 +1,59 @@
+{
+  "round_idx": 4,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_4",
+      "killed": true,
+      "theory": {
+        "description": "Population-level Strategy Selection Mixture Model: The population consists of distinct subgroups of decision-makers. Some individuals consistently use a non-compensatory heuristic (Take The Best) while others consistently use a compensatory strategy (Weighted Additive). This discrete between-subject variation in strategy selection accounts for the high individual divergence from the population average, and low lapse rates ensure that the distinct strategy signatures are not washed out by noise.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Expected state to be a (2, n_features) array.\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # --- WADD Strategy ---\n    score_a_wadd = np.sum(val * a)\n    score_b_wadd = np.sum(val * b)\n    scores_wadd = np.array([score_a_wadd, score_b_wadd])\n    beta_wadd = float(parameters[\"beta_wadd\"])\n    z_wadd = beta_wadd * (scores_wadd - np.max(scores_wadd))\n    e_wadd = np.exp(z_wadd)\n    p_wadd = e_wadd / np.sum(e_wadd)\n    \n    # --- TTB Strategy ---\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n    winner_ttb = None\n    for j in cue_order:\n        if a[j] > b[j]:\n            winner_ttb = 0\n            break\n        elif b[j] > a[j]:\n            winner_ttb = 1\n            break\n            \n    if winner_ttb is None:\n        p_ttb = np.array([0.5, 0.5])\n    else:\n        scores_ttb = np.array([1.0, 0.0]) if winner_ttb == 0 else np.array([0.0, 1.0])\n        beta_ttb = float(parameters[\"beta_ttb\"])\n        z_ttb = beta_ttb * (scores_ttb - np.max(scores_ttb))\n        e_ttb = np.exp(z_ttb)\n        p_ttb = e_ttb / np.sum(e_ttb)\n        \n    # --- Population-level Mixture & Lapse ---\n    w_raw = float(parameters[\"w_wadd\"])\n    w_wadd = 1.0 if w_raw > 0.5 else 0.0\n    p_mix = w_wadd * p_wadd + (1.0 - w_wadd) * p_ttb\n    \n    epsilon = float(parameters[\"epsilon\"])\n    p_final = (1.0 - epsilon) * p_mix + epsilon * np.array([0.5, 0.5])\n    \n    return p_final",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))",
+        "parameters": {
+          "beta_wadd": "[0.1, 30.0]",
+          "beta_ttb": "[0.1, 30.0]",
+          "w_wadd": "[0.0, 1.0]",
+          "epsilon": "[0.0, 0.1]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's feedback, we build upon the accepted Iteration 2 base (the population-level strict mixture model). To increase the JSD and make subjects more distinctly divergent from the population average, we restrict the lapse rate (epsilon) to a much lower range [0.0, 0.1] and increase the maximum inverse temperature (beta) up to 30.0. High lapse rates wash out individual differences, causing choices to regress toward the population mean. By reducing epsilon and allowing sharper, more deterministic choices, subjects utilizing TTB and WADD will behave starkly differently, driving the between-subject variance (JSD) up toward the empirical targets."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_6",
+      "killed": false,
+      "theory": {
+        "description": "Sequential Evidence Accumulation with Deterministic Threshold and Cognitive Bounds. Decision-makers evaluate features sequentially in descending order of validity. They accumulate the validity-weighted difference between the two options. Evaluation stops early either when the absolute accumulated evidence exceeds a threshold (theta) or when a cognitive bound on the maximum number of features (max_features) is reached. If the threshold is hit, choice is strictly deterministic. If the cognitive bound is reached without hitting the threshold, choice is probabilistic via a softmax over the evidence accumulated up to that point. This truncation prevents late, low-validity features from diluting the evidence, generating sharper probabilities and higher behavioral variability while maintaining a baseline lapse rate for true errors.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    a, b = stim[0], stim[1]\n    \n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Process features in descending order of validity\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n    \n    theta = float(parameters[\"theta\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    max_features_prop = float(parameters[\"max_features_prop\"])\n    \n    n_features = len(val)\n    # Convert proportion to an integer number of features (at least 1)\n    max_features = max(1, int(np.ceil(max_features_prop * n_features)))\n    \n    accumulated_evidence = 0.0\n    hit_threshold = False\n    \n    for i, cue_idx in enumerate(cue_order):\n        if i >= max_features:\n            break\n            \n        # Accumulate evidence (difference in weighted feature values)\n        accumulated_evidence += val[cue_idx] * (a[cue_idx] - b[cue_idx])\n        \n        # Threshold stopping rule\n        if abs(accumulated_evidence) >= theta:\n            hit_threshold = True\n            break\n            \n    # Probability of choosing A based on accumulated evidence\n    if hit_threshold:\n        # Strictly deterministic choice if threshold is hit\n        if accumulated_evidence > 0:\n            p_a = 1.0\n        elif accumulated_evidence < 0:\n            p_a = 0.0\n        else:\n            p_a = 0.5\n    else:\n        # Softmax choice if max_features exhausted without hitting threshold\n        z = beta * accumulated_evidence\n        if z > 500:\n            p_a = 1.0\n        elif z < -500:\n            p_a = 0.0\n        else:\n            p_a = 1.0 / (1.0 + np.exp(-z))\n            \n    # Incorporate baseline lapse rate\n    p_a_final = (1.0 - epsilon) * p_a + epsilon * 0.5\n    return np.array([p_a_final, 1.0 - p_a_final])\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.0, 20.0]",
+          "theta": "[0.0, 5.0]",
+          "epsilon": "[0.0, 0.5]",
+          "max_features_prop": "[0.0, 1.0]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's Iteration 8 advice, we revert to the successful Iteration 7 base (which uses a strict deterministic threshold rather than artificial parameter bounds) and introduce a cognitive bound on the number of features processed. We add a `max_features_prop` parameter that dictates the maximum proportion of features evaluated. The decision-maker stops evaluating either when the accumulated evidence hits `theta` OR when the `max_features` limit is reached. If the process stops due to `max_features` without hitting the threshold, the choice is made via the `beta` softmax based on the evidence accumulated up to that point. This truncation prevents low-validity features from diluting the accumulated evidence, naturally leading to starker probabilities and higher JSDs while allowing `epsilon` to remain wide enough to handle actual human lapses without massive log-loss penalties."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_7",
+    "slot": 1,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Decision-makers evaluate options by computing a weighted sum of their features based on subjective cue validities. However, instead of these validities remaining static, subjects exhibit a learning or adaptation mechanism over trials: they gradually adjust their decision weights to align with the features of the options they have previously chosen. This means that if a subject chooses an option with certain positive features, the subjective importance of those features increases (or decreases, depending on the learning rate) for future decisions. This psychologically plausible adaptation creates strong, idiosyncratic sequential dependencies\u2014capturing the high between-subject variance in sequential choice behavior\u2014while remaining deeply integrated with the utility computation.",
+      "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Stimulus must be shape (2, n_features).\")\n        \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float).copy()\n    alpha = float(parameters[\"alpha\"])\n    \n    # Adapt subjective validities based on past choices\n    if history and \"response\" in history and len(history[\"response\"]) > 0:\n        for i in range(len(history[\"response\"])):\n            resp = history[\"response\"][i]\n            opt_a = np.asarray(history[\"option_a_ratings\"][i], dtype=float)\n            opt_b = np.asarray(history[\"option_b_ratings\"][i], dtype=float)\n            chosen_features = opt_a if resp == 0 else opt_b\n            val += alpha * chosen_features\n            \n    # Base utilities using Weighted Additive (WADD) rule with adapted validities\n    u_a = np.dot(a, val)\n    u_b = np.dot(b, val)\n    \n    scores = np.array([u_a, u_b])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax conversion to probabilities\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    # Mix with uniform lapse rate\n    return (1.0 - epsilon) * p_core + epsilon * 0.5 * np.ones(2)\n",
+      "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return int(np.random.choice(len(probs), p=probs))\n",
+      "parameters": {
+        "beta": "[0.0, 50.0]",
+        "alpha": "[-5.0, 5.0]",
+        "epsilon": "[0.0, 1.0]",
+        "validities": "validities"
+      },
+      "rationale": "Following the critic's feedback, I replaced the pure A/B motor-response inertia with a simple learning/adaptation mechanism. The model now updates the subjective cue validities after each trial by adding the features of the chosen option scaled by a learning rate 'alpha'. This means subjects gradually specialize their decision weights to align with their past choices. This approach naturally generates strong, context-sensitive sequential dependencies that should inflate the sequence-aware JSD to match human levels, while maintaining the core utility evaluation framework to protect overall accuracy. I used a wide range for 'alpha' to allow for both strong reinforcement and alternation."
+    }
+  }
+}

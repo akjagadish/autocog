@@ -1,0 +1,1347 @@
+# generation_iter_05_attempt_00
+
+## System Prompt
+
+You are a renowned cognitive scientist and an expert Python programmer.
+
+Your job is to propose a new theory and its model instantiation in the Decision Making (Binary Features) domain based on the feedback provided by an arbiter. The feedback contains diagnoses of mechanistic failures of the previous theory along with suggestions for a new theory family that overcomes those failures. The newly proposed theory and model should display human-like behavior when simulated on experiment(s). 
+The goal of the theory generation process is to SURFACE theories that are EXPERIMENT-INVARIANT: that is,theories that explain data across the majority of experiments. 
+You will see a list of theories that have been proposed in the past but you should only use them as inspiration and not to choose from them. Propose a new theory that is different. 
+If they fail to do so, you will receive feedback on their performance on the same experiment(s) and you will have to propose another new theory and model that meet the requirements, iterating until you succeed.
+
+If you think the failure to capture human behavior is due to arbiter feedback that is inaccurate or unhelpful, you can propose a new theory and model that ignore the feedback, but you must provide rationale for why you are ignoring it and how your proposal overcomes the identified mechanistic failures.
+
+## ACCEPT GATE & LOSS TRAJECTORY — HOW THE LOOP HANDLES YOUR EDITS
+This propose-loop has a programmatic accept gate: after every iteration the candidate's `aggregate_loss` is compared against the running-best loss; strict improvement -> ACCEPTED (the candidate becomes the new running-best base); otherwise -> REJECTED (the candidate is discarded and the base is unchanged). You do NOT need to manually "revert" a regressed edit — the gate already does that for you.
+
+The block rendered below as `## PREVIOUS CANDIDATE (this loop)` is ALWAYS the running-best (last ACCEPTED) candidate, NEVER your most recent attempt if it was rejected. So:
+  * Treat `## PREVIOUS CANDIDATE` as a known-good base. Build on it.
+  * The `## LOSS TRAJECTORY` block tags every iteration ACCEPTED or REJECTED. Use this as ground truth on which past critic advice actually moved the loop forward and which didn't.
+  * The `## PRIOR FEEDBACK ITERATIONS` block annotates each prior critique with the same ACCEPTED/REJECTED tag of the candidate it elicited. Down-weight critic advice whose previous candidates were REJECTED, and reinforce / extend advice whose candidates were ACCEPTED.
+  * Treat the best ACCEPTED iteration's loss as a soft floor — the next edit should plausibly land at-or-below it, otherwise the gate will reject your attempt and the base stays put.
+
+Each metric value below is shown as `point_estimate (var=X)`, where `point_estimate` is `metric(data)` evaluated on the full pooled dataset and `var` is the population (between-subject) variance of the same metric re-applied per `subject_id`. The point estimate is the canonical scalar; `var` reports how consistent that estimate is across subjects (lower = more consistent). `var=n/a` means the metric could not be applied to a single-subject slice.
+
+## PARAMETER NOTATION
+`parameters` is a JSON object mapping each parameter name (snake_case string) to a *string* value that specifies its domain. Every value MUST be a string — never a bare list, number, tuple, or expression. Use exactly one of these notations per parameter:
+
+1. Continuous interval — square brackets, two numeric bounds:
+   "[min, max]"
+   Examples: "[0, 1]", "[1.0, 10.0]", "[10, 1000]"
+
+2. Discrete set — curly braces, comma-separated values:
+   "{v1, v2, ...}"
+   Example: "{1, 2}"
+
+3. Vector of intervals whose length is set by the experiment — a bracketed tuple repeated by a symbolic length variable:
+   "[(min, max)] * length_var"
+   Example: "[(0, 1)] * n_features"
+
+4. Symbolic reference — a bare variable name (no brackets, no angle brackets), used when the parameter takes its value from an experiment-defined constant rather than a range:
+   "variable_name"
+   Example: "n_features"
+
+Rules:
+- Do not use parentheses for intervals; square brackets only. Tuples `(a, b)` are reserved for the vector-of-intervals notation in (3).
+- Do not mix notations within a single value (e.g., no "[0, 1] or {2, 3}").
+- Do not quote numbers inside the notation (write "[0, 1]", not "['0', '1']").
+- Every parameter referenced by `predict` or `policy` must appear as a key in `parameters`, and vice versa.
+- Notations 3 and 4 may ONLY reference the experiment-defined symbolic identifiers listed under "ALLOWED SYMBOLIC IDENTIFIERS" below. Do not invent new identifier names. If a parameter's shape doesn't fit any of those variables, fall back to a literal interval (notation 1) or discrete set (notation 2). Use these names so the model adapts to any experiment in this domain instead of hardcoding shapes.
+
+## ALLOWED SYMBOLIC IDENTIFIERS (for notations 3 and 4 above)
+- n_features: Number of expert ratings per option (LLM-proposed via `validities` length).
+- validities: Per-expert validities (LLM-proposed; each in [0.5, 1.0]); fixed across all trials.
+
+## AVAILABLE IMPORTS inside `predict` and `policy`
+- numpy as np
+- pandas as pd
+- scipy and its submodules
+- torch and torch.nn.functional as F
+- sklearn and its submodules
+- math, random, and other standard Python libraries
+
+## RUNTIME CONTRACT (function signatures and argument shapes)
+`predict(parameters, state, history) -> np.ndarray`:
+- `parameters`: dict[str, value]. One sample drawn from your declared `parameters` ranges, applied for the entire subject run.
+- `state`: the per-trial input delivered by the experiment (shape is domain-specific — see the experiment description above and the `history` key list below, which mirrors the per-trial variables carried in `state`). Convert to an array with `np.asarray(state)` if you need array ops.
+- `history`: dict-of-lists for past trials in this subject's run, NOT a list-of-dicts. The per-trial keys are:
+  Each value below is a Python list in trial order; entry `i` is the value for trial `i`. On the first trial all lists are empty.
+  - `"option_a_ratings"`: List of n_features binary expert ratings (each 0 or 1) for option A on this trial.
+  - `"option_b_ratings"`: List of n_features binary expert ratings (each 0 or 1) for option B on this trial.
+  - `"response"`: 0 if subject chose A, 1 if subject chose B.
+Iterating `for x in history:` iterates the dict KEYS (strings); to walk trials index the lists in lock-step, e.g. `for i in range(len(next(iter(history.values())))): ...`.
+- Returns: 1-D `np.ndarray` of choice probabilities over the experiment's discrete action set, summing to 1.
+
+`policy(probs) -> int`:
+- Receives the probability vector produced by `predict`.
+- Returns: integer index in `[0, len(probs))` identifying the chosen action. If you sample with `np.random.choice(..., p=probs)`, normalise first (`probs = np.asarray(probs, dtype=np.float64); probs /= probs.sum()`) to avoid the "probabilities do not sum to 1" ValueError from float drift.
+
+
+## User Prompt
+
+## EXPERIMENTAL DOMAIN
+Subjects repeatedly choose between two fictitious products, A and B. Each option is described by a vector of binary expert ratings (each 0 or 1). Every experiment fixes its own feature count (via `validities` length) and per-expert validities; both are LLM-proposed. The validities are communicated to the subject in the instructions. Subjects pick whichever product they believe is of higher quality. There is no trial-by-trial correctness feedback.
+
+Each subject completes ~96 trials in a single block, with order randomized independently per subject. On every trial the subject sees two options A and B, each described by `n_features` binary expert ratings (each 0 or 1). The per-feature validities and n_features are fixed per experiment (design-time choices). Validities are communicated to the subject in the instructions. Both `n_features` and `validities` are exposed to your `predict` via the `parameters` dict. The subject chooses A or B; no correctness feedback is provided after the choice.
+
+## ARBITER GUIDE
+The arbiter labelled this round's two theories in its recommendation as follows:
+- THEORY 1 = `pi_8`
+- THEORY 2 = `pi_9`
+- The recommendation below acts on THEORY 1 (= `pi_8`).
+
+Propose a 'Rank-Based Heuristic' or 'Relative Cue Difference' theory. Instead of aggregating validities with a holistic penalty (variance or weakest link), this new theory should posit that decision-makers evaluate options by comparing them directly on a cue-by-cue basis, but the weight of each cue's difference is non-linearly scaled by its rank or validity. Alternatively, consider a 'Negative Evidence / Regret' theory where the absence of high-validity features is penalized more heavily than the presence of low-validity features. This could help capture the negative values in Experiments 8 and 10, where high-conflict situations cause subjects to systematically deviate from Take-The-Best, while still competing strongly against Theory 2.
+
+## THEORY LEADERBOARD
+A small set of prior picked theories shown for reference. Overall score is in `[0, 1]`, higher = better, computed as `1 - L2_norm(normalized_per_experiment_distances) / max_L2_norm`. 1.0 means closest to the real value on every experiment+metric pair; 0.0 means farthest. Each entry below carries the same depth of detail as the PREVIOUS MODEL INSTANCE above so you can borrow concrete mechanisms when useful.
+
+### `pi_8` (overall score: 0.664)
+
+**Description**
+Variance Aversion (Configural Weighting): Decision-makers evaluate options by averaging the subjective validities of their present features, but they apply a configural penalty proportional to the variance of those validities. This mechanism reflects a preference for 'holistic consistency'—options with tightly clustered, moderately high features are preferred over options with a mix of very high and very low features, as the latter are penalized for their inconsistency.
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, stimulus, history):
+    import numpy as np
+    
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError("Model expects a (2, n_features) stimulus.")
+    
+    a, b = stim[0], stim[1]
+    val = np.asarray(parameters["validities"], dtype=float)
+    
+    gamma = float(parameters["gamma"])
+    lambda_var = float(parameters["lambda_var"])
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+    
+    # Transform validities into subjective weights
+    w = val ** gamma
+    
+    def get_score(x):
+        active_w = w[x > 0]
+        if len(active_w) == 0:
+            return 0.0
+        
+        mean_w = np.mean(active_w)
+        var_w = np.var(active_w) if len(active_w) > 1 else 0.0
+        
+        # Average evidence penalized by the variance of the active validities
+        return mean_w - lambda_var * var_w
+        
+    score_a = get_score(a)
+    score_b = get_score(b)
+    
+    scores = np.array([score_a, score_b])
+    
+    # Softmax choice rule
+    z = beta * (scores - np.max(scores))
+    e = np.exp(z)
+    p_core = e / np.sum(e)
+    
+    n_opts = p_core.shape[0]
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+
+
+`policy(probs) -> int`:
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities /= probabilities.sum()
+    return np.random.choice(len(probabilities), p=probabilities)
+
+
+`parameters`:
+- gamma: [0.1, 10.0]
+- lambda_var: [0.0, 20.0]
+- beta: [0.1, 50.0]
+- epsilon: [0.0, 0.5]
+- validities: validities
+
+**Per-experiment fit (real vs this theory's metric value):**
+- Experiment 1: real=0.7675 (var=0.0218) vs this=0.7269 (var=0.0090)
+- Experiment 2: real=0.2552 (var=0.0312) vs this=0.3031 (var=0.0102)
+- Experiment 3: real=0.6317 (var=0.0095) vs this=0.6606 (var=0.0122)
+- Experiment 4: real=0.2888 (var=0.0207) vs this=0.2447 (var=0.0135)
+- Experiment 5: real=0.3309 (var=0.0110) vs this=0.2154 (var=0.0127)
+- Experiment 6: real=-0.1823 (var=0.0238) vs this=0.0471 (var=0.0153)
+- Experiment 7: real=0.8678 (var=0.0153) vs this=0.8183 (var=0.0062)
+- Experiment 8: real=-0.1200 (var=0.0258) vs this=0.0303 (var=0.0130)
+- Experiment 9: real=0.1572 (var=0.0102) vs this=0.1875 (var=0.0125)
+- Experiment 10: real=0.1454 (var=0.0162) vs this=0.1600 (var=0.0111)
+- Experiment 11: real=0.7428 (var=0.0066) vs this=0.7783 (var=0.0258)
+- Experiment 12: real=0.1758 (var=0.0096) vs this=0.1379 (var=0.0131)
+- Experiment 13: real=0.3307 (var=0.0208) vs this=0.2930 (var=0.0358)
+- Experiment 14: real=0.8456 (var=0.0113) vs this=0.7581 (var=0.0347)
+- Experiment 15: real=0.2095 (var=0.0222) vs this=0.4800 (var=0.0203)
+- Experiment 16: real=0.8400 (var=0.0141) vs this=0.4325 (var=0.0853)
+
+
+---
+
+### `pi_9` (overall score: 0.637)
+
+**Description**
+Weakest Link (Worst-Case Focus): Decision-makers evaluate an option primarily by averaging the subjective validities of its present features, but they apply a disproportionate penalty based on the option's 'weakest link' (the lowest validity active feature). Specifically, the penalty is proportional to the gap between the option's best feature and its weakest feature. This cognitive mechanism reflects a worst-case focus where attention is drawn to the most inferior attribute, naturally predicting both the dilution effect (adding weak features reduces the mean and increases the weakest-link penalty) and variance aversion (options with tighter feature clusters have smaller weakest-link penalties).
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, stimulus, history):
+    import numpy as np
+    
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError("Model expects a (2, n_features) stimulus.")
+    
+    a, b = stim[0], stim[1]
+    val = np.asarray(parameters["validities"], dtype=float)
+    
+    gamma = float(parameters["gamma"])
+    lambda_weak = float(parameters["lambda_weak"])
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+    
+    # Transform validities into subjective weights
+    w = val ** gamma
+    
+    def get_score(x):
+        active_w = w[x > 0]
+        if len(active_w) == 0:
+            return 0.0
+        
+        mean_w = np.mean(active_w)
+        min_w = np.min(active_w)
+        max_w = np.max(active_w)
+        
+        # Averaging baseline with a penalty based on the weakest link's distance from the best feature
+        return mean_w - lambda_weak * (max_w - min_w)
+        
+    score_a = get_score(a)
+    score_b = get_score(b)
+    
+    scores = np.array([score_a, score_b])
+    
+    # Softmax choice rule
+    z = beta * (scores - np.max(scores))
+    e = np.exp(z)
+    p_core = e / np.sum(e)
+    
+    n_opts = p_core.shape[0]
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+
+
+`policy(probs) -> int`:
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities /= probabilities.sum()
+    return np.random.choice(len(probabilities), p=probabilities)
+
+
+`parameters`:
+- gamma: [0.1, 10.0]
+- lambda_weak: [0.0, 10.0]
+- beta: [0.1, 50.0]
+- epsilon: [0.0, 0.5]
+- validities: validities
+
+**Per-experiment fit (real vs this theory's metric value):**
+- Experiment 1: real=0.7675 (var=0.0218) vs this=0.7027 (var=0.0111)
+- Experiment 2: real=0.2552 (var=0.0312) vs this=0.3010 (var=0.0098)
+- Experiment 3: real=0.6317 (var=0.0095) vs this=0.6531 (var=0.0082)
+- Experiment 4: real=0.2888 (var=0.0207) vs this=0.2772 (var=0.0096)
+- Experiment 5: real=0.3309 (var=0.0110) vs this=0.3350 (var=0.0072)
+- Experiment 6: real=-0.1823 (var=0.0238) vs this=0.0951 (var=0.0299)
+- Experiment 7: real=0.8678 (var=0.0153) vs this=0.8403 (var=0.0098)
+- Experiment 8: real=-0.1200 (var=0.0258) vs this=0.0600 (var=0.0183)
+- Experiment 9: real=0.1572 (var=0.0102) vs this=0.1233 (var=0.0071)
+- Experiment 10: real=0.1454 (var=0.0162) vs this=0.1227 (var=0.0068)
+- Experiment 11: real=0.7428 (var=0.0066) vs this=0.8689 (var=0.0100)
+- Experiment 12: real=0.1758 (var=0.0096) vs this=0.1619 (var=0.0184)
+- Experiment 13: real=0.3307 (var=0.0208) vs this=0.1910 (var=0.0142)
+- Experiment 14: real=0.8456 (var=0.0113) vs this=0.8089 (var=0.0259)
+- Experiment 15: real=0.2095 (var=0.0222) vs this=0.2421 (var=0.0098)
+- Experiment 16: real=0.8400 (var=0.0141) vs this=0.8467 (var=0.0177)
+
+
+---
+
+### `pi_7` (overall score: 0.601)
+
+**Description**
+Anchor and Adjust: Decision-makers evaluate options by first identifying the highest-validity positive feature, which serves as an anchor. Subsequent positive features adjust this anchored evaluation downwards if their validities are lower than the anchor. This explains the 'less is more' dilution effect, as adding low-validity features drags the overall evaluation down, while naturally predicting that an option with only high-validity features will be preferred over one that adds additional low-validity features (strict subset preference).
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, stimulus, history):
+    import numpy as np
+    
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError("Model expects a (2, n_features) stimulus.")
+    
+    a, b = stim[0], stim[1]
+    val = np.asarray(parameters["validities"], dtype=float)
+    
+    gamma = float(parameters["gamma"])
+    alpha = float(parameters["alpha"])
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+    
+    # Transform validities into subjective weights
+    w = val ** gamma
+    
+    def get_score(x):
+        active_w = w[x > 0]
+        if len(active_w) == 0:
+            return 0.0
+        
+        # The highest validity positive feature is the anchor
+        anchor = np.max(active_w)
+        idx = np.argmax(active_w)
+        
+        # Remaining features adjust the evaluation
+        other_w = np.delete(active_w, idx)
+        if len(other_w) == 0:
+            return anchor
+            
+        # Weighted average of anchor and adjusting features
+        return (anchor + alpha * np.sum(other_w)) / (1.0 + alpha * len(other_w))
+        
+    score_a = get_score(a)
+    score_b = get_score(b)
+    
+    scores = np.array([score_a, score_b])
+    
+    # Softmax choice rule
+    z = beta * (scores - np.max(scores))
+    e = np.exp(z)
+    p_core = e / np.sum(e)
+    
+    n_opts = p_core.shape[0]
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+
+
+`policy(probs) -> int`:
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities /= probabilities.sum()
+    return np.random.choice(len(probabilities), p=probabilities)
+
+
+`parameters`:
+- gamma: [0.1, 10.0]
+- alpha: [0.0, 50.0]
+- beta: [0.1, 50.0]
+- epsilon: [0.0, 0.5]
+- validities: validities
+
+**Per-experiment fit (real vs this theory's metric value):**
+- Experiment 1: real=0.7675 (var=0.0218) vs this=0.7963 (var=0.0147)
+- Experiment 2: real=0.2552 (var=0.0312) vs this=0.2562 (var=0.0079)
+- Experiment 3: real=0.6317 (var=0.0095) vs this=0.7623 (var=0.0122)
+- Experiment 4: real=0.2888 (var=0.0207) vs this=0.2288 (var=0.0145)
+- Experiment 5: real=0.3309 (var=0.0110) vs this=0.1707 (var=0.0032)
+- Experiment 6: real=-0.1823 (var=0.0238) vs this=-0.0130 (var=0.0073)
+- Experiment 7: real=0.8678 (var=0.0153) vs this=0.7853 (var=0.0078)
+- Experiment 8: real=-0.1200 (var=0.0258) vs this=-0.0331 (var=0.0051)
+- Experiment 9: real=0.1572 (var=0.0102) vs this=0.2328 (var=0.0172)
+- Experiment 10: real=0.1454 (var=0.0162) vs this=0.1398 (var=0.0117)
+- Experiment 11: real=0.7428 (var=0.0066) vs this=0.6978 (var=0.0229)
+- Experiment 12: real=0.1758 (var=0.0096) vs this=0.2781 (var=0.0334)
+- Experiment 13: real=0.3307 (var=0.0208) vs this=0.4693 (var=0.0140)
+- Experiment 14: real=0.8456 (var=0.0113) vs this=0.4275 (var=0.0161)
+- Experiment 15: real=0.2095 (var=0.0222) vs this=0.6626 (var=0.0195)
+- Experiment 16: real=0.8400 (var=0.0141) vs this=0.2617 (var=0.0362)
+
+
+## LOSS TRAJECTORY (this propose-loop)
+Aggregate loss across iterations of THIS propose-loop (lower = better, 0 = perfect, `+inf` = unscorable). The ACCEPTED / REJECTED tag is the loop's programmatic accept-gate decision — only ACCEPTED candidates have ever been used as the base for a subsequent iteration. Use this together with PRIOR FEEDBACK ITERATIONS below to grade which past critic advice actually paid off.
+
+- iter 1: loss=0.6471 -> ACCEPTED
+- iter 2: loss=0.5895 -> ACCEPTED
+- iter 3: loss=0.6410 -> REJECTED
+- iter 4: loss=0.5794 -> ACCEPTED
+- iter 5: loss=0.4757 -> ACCEPTED
+Running-best (last ACCEPTED) base: iter 5 at loss=0.4757 — this is the source shown verbatim below under `## PREVIOUS CANDIDATE (this loop)`. Push the next edit's loss strictly below that floor or the gate will reject it.
+
+## EXPERIMENTAL RESULTS
+### Experiment 1
+**Design**
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 1, 0]
+  A=[0, 1, 0, 0, 0]  B=[0, 0, 1, 1, 1]
+  A=[1, 1, 0, 0, 0]  B=[0, 1, 1, 1, 1]
+  A=[0, 1, 1, 0, 0]  B=[1, 0, 0, 0, 0]
+  A=[1, 0, 1, 0, 0]  B=[0, 1, 0, 1, 1]
+  A=[0, 0, 1, 1, 1]  B=[0, 1, 0, 0, 0]
+  A=[1, 0, 0, 1, 0]  B=[0, 1, 1, 0, 1]
+  A=[0, 1, 1, 1, 0]  B=[1, 0, 0, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    
+    a_ratings = np.stack(data['option_a_ratings'].values)
+    b_ratings = np.stack(data['option_b_ratings'].values)
+    
+    diff = a_ratings - b_ratings
+    ttb_winner = np.zeros(len(data))
+    
+    for i in range(len(data)):
+        winner = -1
+        for j in range(5):
+            if diff[i, j] > 0:
+                winner = 0
+                break
+            elif diff[i, j] < 0:
+                winner = 1
+                break
+        ttb_winner[i] = winner
+        
+    return float(np.mean(data['response'].values == ttb_winner))
+```
+
+**Observed (real) value:** 0.7675 (var=0.0218)
+**Previous candidate values (this loop):**
+  - iter 1: 0.6179 (var=0.0998) (Δ vs real -0.1496)
+  - iter 2: 0.7325 (var=0.0485) (Δ vs real -0.0350)
+  - iter 3: 0.5823 (var=0.0703) (Δ vs real -0.1852)
+  - iter 4: 0.8492 (var=0.0101) (Δ vs real +0.0817)
+  - iter 5 (most recent): 0.7681 (var=0.0565) (Δ vs real +0.0006)
+**Other theories' values on this metric (for reference):**
+- pi_1: 0.8335 (var=0.0163)
+- pi_2: 0.1446 (var=0.0073)
+- pi_3: 0.7538 (var=0.0288)
+- pi_4: 0.5567 (var=0.0496)
+- pi_5: 0.7315 (var=0.0170)
+- pi_6: 0.7883 (var=0.0147)
+- pi_7: 0.7963 (var=0.0147)
+- pi_8: 0.7269 (var=0.0090)
+- pi_9: 0.7027 (var=0.0111)
+
+### Experiment 2
+**Design**
+  A=[0, 1, 1, 1, 0]  B=[1, 0, 0, 0, 1]
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1]
+  A=[1, 0, 1, 0, 0]  B=[0, 1, 0, 1, 1]
+  A=[0, 0, 1, 1, 1]  B=[0, 1, 0, 0, 0]
+  A=[1, 0, 1, 1, 0]  B=[1, 1, 0, 0, 1]
+  A=[0, 1, 0, 1, 1]  B=[0, 1, 1, 0, 0]
+  A=[1, 1, 0, 1, 1]  B=[1, 1, 1, 0, 0]
+  A=[0, 0, 0, 1, 1]  B=[0, 0, 1, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    
+    a_ratings = np.array(data['option_a_ratings'].tolist())
+    b_ratings = np.array(data['option_b_ratings'].tolist())
+    
+    a_wins = np.sum(a_ratings > b_ratings, axis=1)
+    b_wins = np.sum(b_ratings > a_ratings, axis=1)
+    
+    strict_mask = a_wins != b_wins
+    if not np.any(strict_mask):
+        return 0.5
+        
+    tally_preds = (b_wins > a_wins).astype(int)
+    responses = np.array(data['response'].tolist())
+    
+    match = (tally_preds[strict_mask] == responses[strict_mask])
+    return float(np.mean(match))
+```
+
+**Observed (real) value:** 0.2552 (var=0.0312)
+**Previous candidate values (this loop):**
+  - iter 1: 0.4143 (var=0.0840) (Δ vs real +0.1590)
+  - iter 2: 0.2119 (var=0.0512) (Δ vs real -0.0433)
+  - iter 3: 0.3848 (var=0.0672) (Δ vs real +0.1295)
+  - iter 4: 0.1590 (var=0.0069) (Δ vs real -0.0962)
+  - iter 5 (most recent): 0.2586 (var=0.0611) (Δ vs real +0.0033)
+**Other theories' values on this metric (for reference):**
+- pi_2: 0.8726 (var=0.0061)
+- pi_1: 0.1450 (var=0.0142)
+- pi_3: 0.3233 (var=0.0094)
+- pi_4: 0.4183 (var=0.0418)
+- pi_5: 0.2874 (var=0.0114)
+- pi_6: 0.2312 (var=0.0107)
+- pi_7: 0.2562 (var=0.0079)
+- pi_8: 0.3031 (var=0.0102)
+- pi_9: 0.3010 (var=0.0098)
+
+### Experiment 3
+**Design**
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1]
+  A=[0, 1, 0, 0, 0]  B=[0, 0, 1, 1, 1]
+  A=[0, 0, 1, 0, 0]  B=[0, 0, 0, 1, 1]
+  A=[1, 0, 1, 0, 0]  B=[0, 1, 0, 1, 1]
+  A=[1, 1, 0, 0, 0]  B=[1, 0, 1, 1, 1]
+  A=[0, 1, 1, 0, 0]  B=[1, 0, 0, 0, 0]
+  A=[1, 0, 0, 1, 0]  B=[0, 1, 1, 0, 1]
+  A=[0, 1, 0, 1, 0]  B=[0, 0, 1, 0, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    
+    matches = []
+    for _, row in data.iterrows():
+        a = row['option_a_ratings']
+        b = row['option_b_ratings']
+        resp = row['response']
+        
+        ttb_choice = -1
+        for i in range(len(a)):
+            if a[i] > b[i]:
+                ttb_choice = 0
+                break
+            elif b[i] > a[i]:
+                ttb_choice = 1
+                break
+                
+        if ttb_choice != -1:
+            matches.append(1 if resp == ttb_choice else 0)
+            
+    return float(np.mean(matches)) if matches else 0.5
+```
+
+**Observed (real) value:** 0.6317 (var=0.0095)
+**Previous candidate values (this loop):**
+  - iter 1: 0.6506 (var=0.0844) (Δ vs real +0.0190)
+  - iter 2: 0.7867 (var=0.0328) (Δ vs real +0.1550)
+  - iter 3: 0.6627 (var=0.0382) (Δ vs real +0.0310)
+  - iter 4: 0.8538 (var=0.0076) (Δ vs real +0.2221)
+  - iter 5 (most recent): 0.8058 (var=0.0356) (Δ vs real +0.1742)
+**Other theories' values on this metric (for reference):**
+- pi_1: 0.8517 (var=0.0107)
+- pi_3: 0.7373 (var=0.0120)
+- pi_2: 0.2046 (var=0.0068)
+- pi_4: 0.5800 (var=0.0319)
+- pi_5: 0.7281 (var=0.0104)
+- pi_6: 0.7925 (var=0.0073)
+- pi_7: 0.7623 (var=0.0122)
+- pi_8: 0.6606 (var=0.0122)
+- pi_9: 0.6531 (var=0.0082)
+
+### Experiment 4
+**Design**
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1]
+  A=[1, 0, 1, 1, 1]  B=[1, 1, 0, 0, 0]
+  A=[1, 0, 1, 0, 0]  B=[0, 1, 0, 1, 1]
+  A=[0, 1, 0, 1, 1]  B=[1, 0, 1, 0, 0]
+  A=[0, 1, 0, 0, 0]  B=[0, 0, 1, 1, 1]
+  A=[0, 0, 1, 1, 1]  B=[0, 1, 0, 0, 0]
+  A=[1, 1, 1, 0, 0]  B=[1, 1, 0, 1, 1]
+  A=[1, 1, 0, 1, 1]  B=[1, 1, 1, 0, 0]
+  A=[1, 1, 0, 0, 0]  B=[0, 0, 1, 1, 0]
+  A=[0, 0, 1, 1, 0]  B=[1, 1, 0, 0, 0]
+  A=[1, 0, 0, 1, 0]  B=[0, 1, 1, 0, 0]
+  A=[0, 1, 1, 0, 0]  B=[1, 0, 0, 1, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    # Calculate the total number of positive features for each option
+    sum_a = data['option_a_ratings'].apply(sum)
+    sum_b = data['option_b_ratings'].apply(sum)
+    
+    # Focus on diagnostic trials where one option has more positive features than the other.
+    # In this specific design, these are exactly the trials where the single highest-validity
+    # discriminating cue favors the option with FEWER total features.
+    mask = sum_a != sum_b
+    if not mask.any():
+        return 0.5
+        
+    filtered_data = data[mask]
+    sum_a_filt = sum_a[mask]
+    sum_b_filt = sum_b[mask]
+    
+    # Determine which option has the greater number of positive features
+    # 0 for A, 1 for B
+    compensatory_choice = (sum_b_filt > sum_a_filt).astype(int)
+    
+    # Calculate the proportion of choices aligning with the compensatory (WADD-like) option
+    match = (filtered_data['response'] == compensatory_choice).mean()
+    return float(match)
+
+```
+
+**Observed (real) value:** 0.2888 (var=0.0207)
+**Previous candidate values (this loop):**
+  - iter 1: 0.4556 (var=0.1036) (Δ vs real +0.1669)
+  - iter 2: 0.2612 (var=0.0567) (Δ vs real -0.0275)
+  - iter 3: 0.3725 (var=0.0646) (Δ vs real +0.0837)
+  - iter 4: 0.1884 (var=0.0197) (Δ vs real -0.1003)
+  - iter 5 (most recent): 0.2216 (var=0.0452) (Δ vs real -0.0672)
+**Other theories' values on this metric (for reference):**
+- pi_3: 0.3234 (var=0.0244)
+- pi_1: 0.1822 (var=0.0195)
+- pi_2: 0.8612 (var=0.0089)
+- pi_4: 0.4116 (var=0.0598)
+- pi_5: 0.2784 (var=0.0094)
+- pi_6: 0.2397 (var=0.0150)
+- pi_7: 0.2288 (var=0.0145)
+- pi_8: 0.2447 (var=0.0135)
+- pi_9: 0.2772 (var=0.0096)
+
+### Experiment 5
+**Design**
+  A=[1, 0, 0, 0]  B=[0, 1, 1, 1]
+  A=[0, 1, 0, 0]  B=[0, 0, 1, 1]
+  A=[1, 1, 0, 0]  B=[0, 0, 1, 1]
+  A=[1, 0, 1, 0]  B=[0, 1, 0, 1]
+  A=[1, 0, 0, 1]  B=[0, 1, 1, 0]
+  A=[0, 1, 1, 0]  B=[1, 0, 0, 0]
+  A=[0, 1, 0, 1]  B=[1, 0, 0, 0]
+  A=[0, 0, 1, 1]  B=[1, 0, 0, 0]
+  A=[1, 1, 1, 0]  B=[0, 0, 0, 1]
+  A=[0, 1, 1, 1]  B=[1, 0, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import pandas as pd
+    import numpy as np
+    
+    # The validities are strictly decreasing from cue 0 to cue 3.
+    # So the Take-The-Best (TTB) choice is simply determined by the first cue 
+    # (from index 0 to 3) where the two options differ.
+    def get_ttb_choice(row):
+        a = row['option_a_ratings']
+        b = row['option_b_ratings']
+        for i in range(4):
+            if a[i] > b[i]: return 0
+            if b[i] > a[i]: return 1
+        return 0
+        
+    data['ttb_choice'] = data.apply(get_ttb_choice, axis=1)
+    data['is_ttb'] = (data['response'] == data['ttb_choice']).astype(float)
+    
+    # Create a hashable string representation of the trial pair to group by
+    data['trial_str'] = data.apply(lambda x: ''.join(map(str, x['option_a_ratings'])) + '_' + ''.join(map(str, x['option_b_ratings'])), axis=1)
+    
+    # Calculate the proportion of TTB-consistent choices for each unique trial type
+    trial_means = data.groupby('trial_str')['is_ttb'].mean()
+    
+    # Return the standard deviation of these proportions across the 10 trial types
+    return float(trial_means.std())
+```
+
+**Observed (real) value:** 0.3309 (var=0.0110)
+**Previous candidate values (this loop):**
+  - iter 1: 0.1410 (var=0.0228) (Δ vs real -0.1899)
+  - iter 2: 0.0464 (var=0.0078) (Δ vs real -0.2846)
+  - iter 3: 0.1422 (var=0.0171) (Δ vs real -0.1888)
+  - iter 4: 0.0147 (var=0.0015) (Δ vs real -0.3162)
+  - iter 5 (most recent): 0.0425 (var=0.0110) (Δ vs real -0.2885)
+**Other theories' values on this metric (for reference):**
+- pi_4: 0.1383 (var=0.0053)
+- pi_3: 0.0645 (var=0.0053)
+- pi_1: 0.0228 (var=0.0013)
+- pi_2: 0.2610 (var=0.0036)
+- pi_5: 0.0660 (var=0.0014)
+- pi_6: 0.0459 (var=0.0022)
+- pi_7: 0.1707 (var=0.0032)
+- pi_8: 0.2154 (var=0.0127)
+- pi_9: 0.3350 (var=0.0072)
+
+### Experiment 6
+**Design**
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1]
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 1, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 0, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 0, 0, 0]
+  A=[0, 1, 0, 0, 0]  B=[1, 0, 0, 0, 0]
+  A=[0, 1, 0, 0, 0]  B=[0, 0, 1, 1, 1]
+  A=[0, 1, 0, 0, 0]  B=[0, 0, 1, 1, 0]
+  A=[0, 0, 1, 0, 0]  B=[0, 1, 0, 0, 0]
+  A=[0, 0, 1, 0, 0]  B=[0, 0, 0, 1, 1]
+  A=[1, 1, 0, 0, 0]  B=[0, 0, 1, 1, 1]
+  A=[1, 0, 1, 0, 0]  B=[0, 1, 0, 1, 1]
+  A=[0, 1, 1, 0, 0]  B=[1, 0, 0, 1, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    data = data.copy()
+    data['a_cues'] = data['option_a_ratings'].apply(sum)
+    data['b_cues'] = data['option_b_ratings'].apply(sum)
+    
+    def ttb_favors_a(row):
+        a = row['option_a_ratings']
+        b = row['option_b_ratings']
+        for i in range(len(a)):
+            if a[i] > b[i]: return True
+            if b[i] > a[i]: return False
+        return False
+
+    data['ttb_a'] = data.apply(ttb_favors_a, axis=1)
+    
+    df_conflict = data[data['ttb_a']].copy()
+    
+    high_mask = df_conflict['b_cues'] >= 3
+    low_mask = df_conflict['b_cues'] <= 2
+    
+    p_high = df_conflict.loc[high_mask, 'response'].mean()
+    p_low = df_conflict.loc[low_mask, 'response'].mean()
+    
+    if pd.isna(p_high): p_high = 0.5
+    if pd.isna(p_low): p_low = 0.5
+    
+    return float(p_high - p_low)
+```
+
+**Observed (real) value:** -0.1823 (var=0.0238)
+**Previous candidate values (this loop):**
+  - iter 1: 0.0635 (var=0.0211) (Δ vs real +0.2458)
+  - iter 2: 0.0062 (var=0.0071) (Δ vs real +0.1885)
+  - iter 3: 0.0270 (var=0.0256) (Δ vs real +0.2093)
+  - iter 4: -0.0050 (var=0.0067) (Δ vs real +0.1773)
+  - iter 5 (most recent): 0.0041 (var=0.0054) (Δ vs real +0.1864)
+**Other theories' values on this metric (for reference):**
+- pi_3: -0.0536 (var=0.0101)
+- pi_4: 0.0481 (var=0.0115)
+- pi_1: 0.0061 (var=0.0074)
+- pi_2: 0.1070 (var=0.0081)
+- pi_5: -0.0304 (var=0.0102)
+- pi_6: -0.0290 (var=0.0102)
+- pi_7: -0.0130 (var=0.0073)
+- pi_8: 0.0471 (var=0.0153)
+- pi_9: 0.0951 (var=0.0299)
+
+### Experiment 7
+**Design**
+  A=[1, 0, 0, 0, 0]  B=[1, 0, 1, 0, 0]
+  A=[1, 0, 0, 0, 0]  B=[1, 0, 0, 1, 1]
+  A=[0, 1, 0, 0, 0]  B=[0, 1, 0, 1, 1]
+  A=[1, 1, 0, 0, 0]  B=[1, 1, 1, 1, 1]
+  A=[1, 0, 1, 0, 0]  B=[1, 0, 1, 1, 1]
+  A=[0, 1, 1, 0, 0]  B=[0, 1, 1, 1, 1]
+  A=[0, 0, 1, 0, 0]  B=[0, 0, 1, 1, 1]
+  A=[0, 0, 0, 1, 0]  B=[0, 0, 0, 1, 1]
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 0, 0, 0]
+  A=[1, 1, 0, 0, 0]  B=[0, 0, 1, 1, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    
+    a_ratings = np.stack(data['option_a_ratings'].values)
+    b_ratings = np.stack(data['option_b_ratings'].values)
+    
+    # Identify trials where Option A's features are a strict subset of Option B's features
+    is_subset = np.all(a_ratings <= b_ratings, axis=1) & (np.sum(a_ratings, axis=1) < np.sum(b_ratings, axis=1))
+    
+    subset_data = data[is_subset]
+    if len(subset_data) == 0:
+        return 0.5
+        
+    # Return the proportion of times Option A was chosen
+    return float(np.mean(subset_data['response'] == 0))
+```
+
+**Observed (real) value:** 0.8678 (var=0.0153)
+**Previous candidate values (this loop):**
+  - iter 1: 0.2083 (var=0.0225) (Δ vs real -0.6594)
+  - iter 2: 0.6089 (var=0.0811) (Δ vs real -0.2589)
+  - iter 3: 0.2053 (var=0.0200) (Δ vs real -0.6625)
+  - iter 4: 0.7144 (var=0.0379) (Δ vs real -0.1533)
+  - iter 5 (most recent): 0.7289 (var=0.0641) (Δ vs real -0.1389)
+**Other theories' values on this metric (for reference):**
+- pi_5: 0.7136 (var=0.0101)
+- pi_3: 0.4372 (var=0.0121)
+- pi_1: 0.1681 (var=0.0082)
+- pi_2: 0.1347 (var=0.0095)
+- pi_4: 0.1244 (var=0.0083)
+- pi_6: 0.6236 (var=0.0290)
+- pi_7: 0.7853 (var=0.0078)
+- pi_8: 0.8183 (var=0.0062)
+- pi_9: 0.8403 (var=0.0098)
+
+### Experiment 8
+**Design**
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 0, 0]
+  A=[0, 1, 0, 0, 0]  B=[0, 0, 1, 1, 0]
+  A=[1, 1, 0, 0, 0]  B=[0, 0, 1, 1, 1]
+  A=[0, 0, 1, 0, 0]  B=[0, 0, 0, 1, 1]
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 0, 1, 1]
+  A=[0, 1, 1, 0, 0]  B=[0, 0, 0, 1, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    b_sum = data['option_b_ratings'].apply(sum)
+    p_b_3 = data.loc[b_sum == 3, 'response'].mean()
+    p_b_2 = data.loc[b_sum == 2, 'response'].mean()
+    return float(p_b_3 - p_b_2)
+```
+
+**Observed (real) value:** -0.1200 (var=0.0258)
+**Previous candidate values (this loop):**
+  - iter 1: -0.0619 (var=0.0123) (Δ vs real +0.0581)
+  - iter 2: -0.0494 (var=0.0065) (Δ vs real +0.0706)
+  - iter 3: -0.0772 (var=0.0122) (Δ vs real +0.0428)
+  - iter 4: -0.0197 (var=0.0102) (Δ vs real +0.1003)
+  - iter 5 (most recent): -0.0184 (var=0.0109) (Δ vs real +0.1016)
+**Other theories' values on this metric (for reference):**
+- pi_3: -0.1687 (var=0.0254)
+- pi_5: -0.0631 (var=0.0065)
+- pi_1: 0.0034 (var=0.0056)
+- pi_2: 0.0947 (var=0.0064)
+- pi_4: 0.0206 (var=0.0090)
+- pi_6: -0.0616 (var=0.0098)
+- pi_7: -0.0331 (var=0.0051)
+- pi_8: 0.0303 (var=0.0130)
+- pi_9: 0.0600 (var=0.0183)
+
+### Experiment 9
+**Design**
+  A=[1, 0, 0, 0, 1]  B=[0, 1, 0, 0, 0]
+  A=[1, 0, 0, 1, 1]  B=[0, 1, 1, 0, 0]
+  A=[1, 0, 1, 0, 1]  B=[0, 1, 1, 0, 0]
+  A=[0, 1, 0, 0, 0]  B=[1, 0, 0, 0, 1]
+  A=[0, 0, 1, 0, 0]  B=[0, 1, 0, 0, 1]
+  A=[1, 0, 0, 0, 1]  B=[0, 0, 1, 0, 0]
+  A=[0, 1, 1, 0, 0]  B=[1, 0, 0, 1, 1]
+  A=[0, 1, 0, 1, 1]  B=[1, 0, 0, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    
+    val = np.array([0.95, 0.85, 0.75, 0.65, 0.55])
+    
+    A = np.stack(data['option_a_ratings'].values)
+    B = np.stack(data['option_b_ratings'].values)
+    
+    # Determine TTB choice (first discriminating cue)
+    diff = A - B
+    idx = np.argmax(np.abs(diff), axis=1)
+    ttb_choice = np.where(diff[np.arange(len(diff)), idx] == 1, 0, 1)
+    
+    # Determine Averaging choice
+    sum_a = np.sum(A, axis=1)
+    sum_b = np.sum(B, axis=1)
+    
+    avg_a = np.zeros(len(A))
+    mask_a = sum_a > 0
+    avg_a[mask_a] = np.sum(A[mask_a] * val, axis=1) / sum_a[mask_a]
+    
+    avg_b = np.zeros(len(B))
+    mask_b = sum_b > 0
+    avg_b[mask_b] = np.sum(B[mask_b] * val, axis=1) / sum_b[mask_b]
+    
+    avg_choice = np.where(avg_a > avg_b, 0, np.where(avg_b > avg_a, 1, -1))
+    
+    # Filter trials where TTB and Averaging disagree
+    disagree_mask = (avg_choice != -1) & (ttb_choice != avg_choice)
+    
+    if not np.any(disagree_mask):
+        return 0.5
+        
+    responses = data['response'].values[disagree_mask]
+    ttb_choices = ttb_choice[disagree_mask]
+    
+    return float(np.mean(responses == ttb_choices))
+
+```
+
+**Observed (real) value:** 0.1572 (var=0.0102)
+**Previous candidate values (this loop):**
+  - iter 1: 0.8492 (var=0.0080) (Δ vs real +0.6919)
+  - iter 2: 0.8300 (var=0.0148) (Δ vs real +0.6728)
+  - iter 3: 0.8475 (var=0.0076) (Δ vs real +0.6903)
+  - iter 4: 0.7983 (var=0.0285) (Δ vs real +0.6411)
+  - iter 5 (most recent): 0.5597 (var=0.0879) (Δ vs real +0.4025)
+**Other theories' values on this metric (for reference):**
+- pi_5: 0.5006 (var=0.0132)
+- pi_6: 0.6317 (var=0.0193)
+- pi_1: 0.8331 (var=0.0125)
+- pi_2: 0.8672 (var=0.0102)
+- pi_3: 0.8347 (var=0.0083)
+- pi_4: 0.8706 (var=0.0075)
+- pi_7: 0.2328 (var=0.0172)
+- pi_8: 0.1875 (var=0.0125)
+- pi_9: 0.1233 (var=0.0071)
+
+### Experiment 10
+**Design**
+  A=[1, 0, 0, 1, 1]  B=[0, 1, 1, 0, 0]
+  A=[1, 0, 0, 1, 0]  B=[0, 1, 0, 0, 0]
+  A=[1, 0, 0, 0, 1]  B=[0, 1, 0, 0, 0]
+  A=[1, 1, 0, 1, 1]  B=[0, 1, 1, 0, 0]
+  A=[0, 1, 0, 1, 1]  B=[0, 0, 1, 0, 0]
+  A=[1, 0, 1, 1, 1]  B=[0, 1, 1, 0, 0]
+  A=[1, 0, 0, 1, 1]  B=[0, 0, 1, 0, 0]
+  A=[0, 1, 0, 1, 0]  B=[0, 0, 1, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    return float((data['response'] == 0).mean())
+```
+
+**Observed (real) value:** 0.1454 (var=0.0162)
+**Previous candidate values (this loop):**
+  - iter 1: 0.7865 (var=0.0138) (Δ vs real +0.6410)
+  - iter 2: 0.7338 (var=0.0420) (Δ vs real +0.5883)
+  - iter 3: 0.8208 (var=0.0066) (Δ vs real +0.6754)
+  - iter 4: 0.5529 (var=0.0495) (Δ vs real +0.4075)
+  - iter 5 (most recent): 0.5092 (var=0.0875) (Δ vs real +0.3638)
+**Other theories' values on this metric (for reference):**
+- pi_6: 0.5204 (var=0.0401)
+- pi_5: 0.3127 (var=0.0095)
+- pi_1: 0.8612 (var=0.0076)
+- pi_2: 0.8573 (var=0.0120)
+- pi_3: 0.8037 (var=0.0106)
+- pi_4: 0.8221 (var=0.0105)
+- pi_7: 0.1398 (var=0.0117)
+- pi_8: 0.1600 (var=0.0111)
+- pi_9: 0.1227 (var=0.0068)
+
+### Experiment 11
+**Design**
+  A=[1, 0, 0, 1, 1]  B=[0, 1, 1, 0, 0]
+  A=[1, 0, 0, 0, 1]  B=[0, 1, 1, 0, 0]
+  A=[1, 0, 0, 1, 0]  B=[0, 1, 1, 1, 0]
+  A=[0, 1, 0, 1, 1]  B=[0, 0, 1, 1, 0]
+  A=[1, 0, 0, 1, 1]  B=[0, 1, 1, 1, 0]
+  A=[1, 0, 0, 0, 1]  B=[0, 1, 0, 0, 0]
+  A=[0, 1, 0, 0, 1]  B=[0, 0, 1, 1, 0]
+  A=[1, 1, 1, 1, 1]  B=[0, 1, 1, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    # Identify trials where Option A has the highest-validity feature (index 0) and Option B does not.
+    a_has_best = data['option_a_ratings'].apply(lambda x: x[0] == 1)
+    b_has_best = data['option_b_ratings'].apply(lambda x: x[0] == 1)
+    mask = a_has_best & ~b_has_best
+    
+    if mask.sum() == 0:
+        return 0.0
+        
+    # Return the proportion of times the subject chose Option B (response == 1)
+    # despite Option A having the best possible feature.
+    return float(data.loc[mask, 'response'].mean())
+```
+
+**Observed (real) value:** 0.7428 (var=0.0066)
+**Previous candidate values (this loop):**
+  - iter 1: 0.2475 (var=0.0306) (Δ vs real -0.4953)
+  - iter 2: 0.1703 (var=0.0157) (Δ vs real -0.5725)
+  - iter 3: 0.1558 (var=0.0172) (Δ vs real -0.5869)
+  - iter 4: 0.2114 (var=0.0238) (Δ vs real -0.5314)
+  - iter 5 (most recent): 0.2811 (var=0.0246) (Δ vs real -0.4617)
+**Other theories' values on this metric (for reference):**
+- pi_5: 0.4372 (var=0.0109)
+- pi_7: 0.6978 (var=0.0229)
+- pi_1: 0.1544 (var=0.0086)
+- pi_2: 0.3906 (var=0.0041)
+- pi_3: 0.1889 (var=0.0123)
+- pi_4: 0.2581 (var=0.0137)
+- pi_6: 0.3039 (var=0.0201)
+- pi_8: 0.7783 (var=0.0258)
+- pi_9: 0.8689 (var=0.0100)
+
+### Experiment 12
+**Design**
+  A=[1, 0, 0, 0, 1]  B=[0, 0, 1, 0, 0]
+  A=[0, 1, 0, 1, 0]  B=[0, 0, 1, 0, 0]
+  A=[1, 0, 1, 0, 0]  B=[0, 1, 0, 0, 0]
+  A=[1, 0, 0, 1, 0]  B=[0, 1, 1, 0, 0]
+  A=[1, 0, 0, 0, 1]  B=[0, 1, 0, 1, 0]
+  A=[0, 1, 1, 0, 0]  B=[1, 0, 0, 1, 0]
+  A=[0, 0, 1, 0, 0]  B=[1, 0, 0, 0, 1]
+  A=[0, 1, 0, 0, 0]  B=[1, 0, 1, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    extreme_chosen = 0
+    total = 0
+    for _, row in data.iterrows():
+        a = tuple(row['option_a_ratings'])
+        b = tuple(row['option_b_ratings'])
+        resp = row['response']
+        
+        idx_a = a.index(1) if 1 in a else len(a)
+        idx_b = b.index(1) if 1 in b else len(b)
+        
+        if idx_a < idx_b:
+            if resp == 0:
+                extreme_chosen += 1
+            total += 1
+        elif idx_b < idx_a:
+            if resp == 1:
+                extreme_chosen += 1
+            total += 1
+            
+    return float(extreme_chosen / total) if total > 0 else 0.5
+```
+
+**Observed (real) value:** 0.1758 (var=0.0096)
+**Previous candidate values (this loop):**
+  - iter 1: 0.8746 (var=0.0045) (Δ vs real +0.6987)
+  - iter 2: 0.8475 (var=0.0084) (Δ vs real +0.6717)
+  - iter 3: 0.8379 (var=0.0094) (Δ vs real +0.6621)
+  - iter 4: 0.8377 (var=0.0064) (Δ vs real +0.6619)
+  - iter 5 (most recent): 0.7679 (var=0.0195) (Δ vs real +0.5921)
+**Other theories' values on this metric (for reference):**
+- pi_7: 0.2781 (var=0.0334)
+- pi_5: 0.6356 (var=0.0073)
+- pi_1: 0.8475 (var=0.0096)
+- pi_2: 0.7135 (var=0.0043)
+- pi_3: 0.8131 (var=0.0118)
+- pi_4: 0.7931 (var=0.0106)
+- pi_6: 0.7129 (var=0.0139)
+- pi_8: 0.1379 (var=0.0131)
+- pi_9: 0.1619 (var=0.0184)
+
+### Experiment 13
+**Design**
+  A=[1, 0, 0, 0, 1]  B=[0, 1, 1, 0, 0]
+  A=[1, 0, 0, 1, 0]  B=[0, 1, 0, 1, 0]
+  A=[1, 0, 0, 1, 1]  B=[0, 1, 1, 0, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 1, 0]
+  A=[0, 1, 0, 0, 1]  B=[0, 0, 1, 1, 0]
+  A=[1, 0, 1, 0, 0]  B=[0, 1, 1, 0, 1]
+  A=[1, 0, 0, 0, 1]  B=[0, 0, 1, 1, 1]
+  A=[0, 1, 0, 1, 0]  B=[0, 0, 1, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    # Identify trials where Option A has the highest validity feature (index 0)
+    # but also has at least one other feature, creating high variance.
+    # Option B in the design always lacks the highest validity feature in these trials.
+    is_target_trial = data['option_a_ratings'].apply(lambda x: x[0] == 1 and sum(x) > 1)
+    target_data = data[is_target_trial]
+    
+    if len(target_data) == 0:
+        return 0.0
+        
+    # Return the proportion of times Option A was chosen (response == 0)
+    return (1.0 - target_data['response']).mean()
+```
+
+**Observed (real) value:** 0.3307 (var=0.0208)
+**Previous candidate values (this loop):**
+  - iter 1: 0.7897 (var=0.0324) (Δ vs real +0.4590)
+  - iter 2: 0.8150 (var=0.0149) (Δ vs real +0.4843)
+  - iter 3: 0.8190 (var=0.0210) (Δ vs real +0.4883)
+  - iter 4: 0.8040 (var=0.0200) (Δ vs real +0.4733)
+  - iter 5 (most recent): 0.7940 (var=0.0106) (Δ vs real +0.4633)
+**Other theories' values on this metric (for reference):**
+- pi_8: 0.2930 (var=0.0358)
+- pi_7: 0.4693 (var=0.0140)
+- pi_1: 0.8307 (var=0.0127)
+- pi_2: 0.4317 (var=0.0029)
+- pi_3: 0.8063 (var=0.0222)
+- pi_4: 0.7087 (var=0.0165)
+- pi_5: 0.6553 (var=0.0116)
+- pi_6: 0.7267 (var=0.0169)
+- pi_9: 0.1910 (var=0.0142)
+
+### Experiment 14
+**Design**
+  A=[1, 0, 1, 1, 0, 0]  B=[0, 1, 1, 1, 0, 0]
+  A=[1, 0, 0, 1, 1, 0]  B=[0, 1, 0, 1, 1, 0]
+  A=[1, 0, 0, 0, 1, 1]  B=[0, 0, 1, 0, 1, 1]
+  A=[1, 0, 0, 0, 0, 1]  B=[0, 1, 0, 0, 0, 1]
+  A=[0, 1, 0, 1, 1, 0]  B=[0, 0, 1, 1, 1, 0]
+  A=[0, 1, 0, 0, 1, 1]  B=[0, 0, 1, 0, 1, 1]
+  A=[1, 0, 0, 0, 0, 0]  B=[0, 1, 1, 0, 0, 0]
+  A=[0, 1, 0, 0, 0, 0]  B=[0, 0, 1, 1, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    # Filter for trials where both options have the same number of positive features
+    # In the design, these are trials 1-6. In all of these, Option A has a higher 
+    # maximum validity (anchor) but exactly the same remaining features as Option B.
+    # Therefore, Option B's features are more clustered (lower variance).
+    is_matched = data['option_a_ratings'].apply(sum) == data['option_b_ratings'].apply(sum)
+    matched_data = data[is_matched]
+    if len(matched_data) == 0:
+        return 0.0
+    # Return the proportion of times Option B was chosen
+    return float(matched_data['response'].mean())
+```
+
+**Observed (real) value:** 0.8456 (var=0.0113)
+**Previous candidate values (this loop):**
+  - iter 1: 0.1375 (var=0.0112) (Δ vs real -0.7081)
+  - iter 2: 0.1133 (var=0.0061) (Δ vs real -0.7322)
+  - iter 3: 0.1236 (var=0.0076) (Δ vs real -0.7219)
+  - iter 4: 0.1492 (var=0.0099) (Δ vs real -0.6964)
+  - iter 5 (most recent): 0.1581 (var=0.0103) (Δ vs real -0.6875)
+**Other theories' values on this metric (for reference):**
+- pi_7: 0.4275 (var=0.0161)
+- pi_8: 0.7581 (var=0.0347)
+- pi_1: 0.1561 (var=0.0079)
+- pi_2: 0.5000 (var=0.0038)
+- pi_3: 0.2294 (var=0.0118)
+- pi_4: 0.2636 (var=0.0161)
+- pi_5: 0.3556 (var=0.0111)
+- pi_6: 0.2753 (var=0.0141)
+- pi_9: 0.8089 (var=0.0259)
+
+### Experiment 15
+**Design**
+  A=[0, 1, 0, 0, 1]  B=[1, 0, 1, 1, 1]
+  A=[1, 0, 0, 0, 1]  B=[1, 0, 1, 0, 1]
+  A=[0, 1, 1, 0, 1]  B=[0, 1, 0, 0, 1]
+  A=[1, 0, 0, 1, 0]  B=[1, 1, 0, 0, 1]
+  A=[0, 1, 0, 1, 0]  B=[1, 0, 1, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    def is_target_trial(row):
+        a = tuple(row['option_a_ratings'])
+        b = tuple(row['option_b_ratings'])
+        if a == (0, 1, 0, 0, 1) and b == (1, 0, 1, 1, 1):
+            return 1
+        if a == (0, 1, 1, 0, 1) and b == (0, 1, 0, 0, 1):
+            return 3
+        return 0
+    
+    trial_types = data.apply(is_target_trial, axis=1)
+    
+    t1_mask = (trial_types == 1)
+    t3_mask = (trial_types == 3)
+    
+    p_b_t1 = data[t1_mask]['response'].mean() if t1_mask.sum() > 0 else 0.5
+    p_a_t3 = 1.0 - (data[t3_mask]['response'].mean() if t3_mask.sum() > 0 else 0.5)
+    
+    return float((p_b_t1 + p_a_t3) / 2.0)
+```
+
+**Observed (real) value:** 0.2095 (var=0.0222)
+**Previous candidate values (this loop):**
+  - iter 1: 0.8632 (var=0.0110) (Δ vs real +0.6537)
+  - iter 2: 0.7326 (var=0.0178) (Δ vs real +0.5232)
+  - iter 3: 0.8400 (var=0.0116) (Δ vs real +0.6305)
+  - iter 4: 0.6921 (var=0.0193) (Δ vs real +0.4826)
+  - iter 5 (most recent): 0.4721 (var=0.0773) (Δ vs real +0.2626)
+**Other theories' values on this metric (for reference):**
+- pi_8: 0.4800 (var=0.0203)
+- pi_9: 0.2421 (var=0.0098)
+- pi_1: 0.8705 (var=0.0109)
+- pi_2: 0.8274 (var=0.0168)
+- pi_3: 0.6916 (var=0.0103)
+- pi_4: 0.8516 (var=0.0146)
+- pi_5: 0.5042 (var=0.0076)
+- pi_6: 0.5821 (var=0.0111)
+- pi_7: 0.6626 (var=0.0195)
+
+### Experiment 16
+**Design**
+  A=[1, 0, 1, 1, 1, 1, 0, 1]  B=[0, 1, 0, 0, 0, 0, 1, 0]
+  A=[1, 0, 0, 0, 0, 0, 0, 1]  B=[0, 1, 0, 0, 0, 0, 1, 0]
+  A=[1, 0, 1, 1, 1, 1, 0, 1]  B=[1, 0, 0, 0, 0, 0, 0, 1]
+  A=[0, 1, 1, 0, 1, 0, 1, 0]  B=[0, 0, 1, 1, 1, 1, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    a_str = data['option_a_ratings'].apply(lambda x: ''.join([str(int(v)) for v in x]))
+    b_str = data['option_b_ratings'].apply(lambda x: ''.join([str(int(v)) for v in x]))
+    mask = (a_str == '10111101') & (b_str == '01000010')
+    if mask.sum() == 0:
+        return 0.5
+    return float(data.loc[mask, 'response'].mean())
+```
+
+**Observed (real) value:** 0.8400 (var=0.0141)
+**Previous candidate values (this loop):**
+  - iter 1: 0.1217 (var=0.0102) (Δ vs real -0.7183)
+  - iter 2: 0.1725 (var=0.0203) (Δ vs real -0.6675)
+  - iter 3: 0.1133 (var=0.0063) (Δ vs real -0.7267)
+  - iter 4: 0.2333 (var=0.0351) (Δ vs real -0.6067)
+  - iter 5 (most recent): 0.4817 (var=0.1461) (Δ vs real -0.3583)
+**Other theories' values on this metric (for reference):**
+- pi_9: 0.8467 (var=0.0177)
+- pi_8: 0.4325 (var=0.0853)
+- pi_1: 0.1725 (var=0.0158)
+- pi_2: 0.1258 (var=0.0100)
+- pi_3: 0.1675 (var=0.0139)
+- pi_4: 0.0783 (var=0.0074)
+- pi_5: 0.5800 (var=0.0192)
+- pi_6: 0.3817 (var=0.0249)
+- pi_7: 0.2617 (var=0.0362)
+
+## PREVIOUS CANDIDATE (this loop)
+The RUNNING-BEST (last ACCEPTED) candidate in this critique loop — i.e. the source the loop's accept gate kept as the best base so far. If your most recent attempt was REJECTED by the gate, this is NOT that attempt; it is the previously-accepted base the gate rolled back to. Iterate on this source — the next critic feedback should be applied on top of it.
+
+**Description**
+Relative Threshold Heuristic: Decision-makers evaluate options by directly comparing them on a cue-by-cue basis, focusing only on distinguishing features (unique advantages and disadvantages). To capture the dilution effect without relying on a holistic average, decision-makers apply a threshold (`theta`) to their unique advantages. Low-validity unique advantages that fall below this threshold actually penalize the option, reflecting a 'less is more' effect where trivial additions detract from the option's overall appeal. Unique disadvantages also incur a regret penalty.
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, stimulus, history):
+    import numpy as np
+    
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError("Model expects a (2, n_features) stimulus.")
+    
+    a, b = stim[0], stim[1]
+    val = np.asarray(parameters["validities"], dtype=float)
+    
+    gamma = float(parameters["gamma"])
+    delta = float(parameters["delta"])
+    lambda_regret = float(parameters["lambda_regret"])
+    theta = float(parameters["theta"])
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+    
+    # Transform validities into subjective weights for presence and absence
+    w_pos = val ** gamma
+    w_neg = val ** delta
+    
+    def get_score(x, other_x):
+        unique_adv = (x > 0) & (other_x == 0)
+        unique_disadv = (x == 0) & (other_x > 0)
+        
+        # Sum of unique advantages, penalized by a threshold (theta)
+        # This allows low-validity features to have a net negative impact
+        adv_score = np.sum(w_pos[unique_adv] - theta) if np.any(unique_adv) else 0.0
+        
+        # Regret penalty for unique disadvantages
+        disadv_score = lambda_regret * np.sum(w_neg[unique_disadv]) if np.any(unique_disadv) else 0.0
+        
+        return adv_score - disadv_score
+        
+    score_a = get_score(a, b)
+    score_b = get_score(b, a)
+    
+    scores = np.array([score_a, score_b])
+    
+    # Softmax choice rule
+    z = beta * (scores - np.max(scores))
+    e = np.exp(z)
+    p_core = e / np.sum(e)
+    
+    n_opts = p_core.shape[0]
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+
+
+`policy(probs) -> int`:
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities /= probabilities.sum()
+    return np.random.choice(len(probabilities), p=probabilities)
+
+
+`parameters`:
+- gamma: [0.1, 10.0]
+- delta: [1.0, 20.0]
+- lambda_regret: [0.0, 2.0]
+- theta: [0.0, 1.0]
+- beta: [0.1, 50.0]
+- epsilon: [0.0, 0.5]
+- validities: validities
+
+`rationale`: To address the inverted predictions in Experiments 9-16 while maintaining the success on Experiment 7, I completely removed the holistic 'averaging baseline' as requested by the critic. The model now strictly uses a 'Relative Cue Difference' approach where it sums the unique advantages and subtracts a regret penalty for unique disadvantages. To capture the subset dilution effect (Exp 7) without averaging, I introduced a threshold parameter `theta`. When an option has a unique advantage, it contributes `(val ** gamma) - theta` to its score. For low-validity features, this contribution becomes negative, meaning that adding trivial features to an option (like in Exp 7's Option B) actually reduces its relative score, allowing the subset Option A to be preferred. This elegantly aligns with the cue-by-cue comparison family while fixing the holistic aggregation artifacts.
+
+## PRIOR FEEDBACK ITERATIONS
+The critic's verdicts on each previous in-loop candidate, in order. Each block ends with an **Outcome of this advice** line saying whether the candidate the proposer produced AFTER this advice was ACCEPTED (loss strictly beat the running best) or REJECTED (the gate discarded it). Address the most recent iteration's feedback in your next edit, but down-weight past advice whose candidates were REJECTED.
+
+### Iteration 1
+Verdict: regenerate
+Interpretation: The candidate theory 'Relative Regret Heuristic' was accepted by the loop due to aggregate loss improvements, but it systematically flips the direction of the empirical effects on almost all critical diagnostic experiments (e.g., Experiments 7, 9, 10, 11, 12, 14, 15, and 16). For example, in Experiment 7, Option A is a strict subset of Option B, yet humans overwhelmingly choose A (due to a dilution effect where B's extra low-validity features drag down its subjective value). The candidate model heavily penalizes A for lacking the features that B has via the 'regret' penalty, causing it to incorrectly predict B. The regret penalty is currently counteracting the averaging baseline entirely.
+Rationale: The candidate is in the correct mechanism family but its regret/penalty mechanism is miscalibrated and often operates in the wrong direction. To fix the flipped predictions (especially in Exp 7, 9, 11, 14), the proposer needs to adjust how the relative cue differences are weighted. If using a regret penalty for lacking features, it must be highly sensitive to validity (e.g., penalizing the absence of HIGH validity features only, while ignoring the absence of low validity features). This can be achieved by ensuring the exponent for the regret scaling (`delta`) forces a much steeper drop-off, or by shifting to a 'Relative Cue Difference' where the presence of unshared low-validity features actually hurts an option (capturing dilution directly in the difference). Tighten `lambda_regret` to a smaller range (e.g., [0.0, 5.0]) so it doesn't completely overpower the averaging baseline, and ensure the exponents `gamma` and `delta` can create sharp non-linearities.
+
+**Outcome of this advice:** iter 1 candidate loss=0.6471 -> iter 2 candidate loss=0.5895 -> the gate marked it ACCEPTED.
+
+### Iteration 2
+Verdict: regenerate
+Interpretation: The loop accepted the candidate because tightening the regret penalty parameters (delta and lambda_regret) improved the aggregate loss and partially fixed Experiment 7. However, the model still systematically flips the direction of the empirical effects on Experiments 9, 10, 11, 12, 13, 14, 15, and 16. The core issue is that the model still relies on an 'averaging baseline' (mean of present features). The arbiter explicitly requested a theory that compares options directly on a *cue-by-cue basis*, rather than using holistic aggregation like averaging. The averaging baseline causes the model to incorrectly evaluate options in high-conflict scenarios, leading to massive deviations from human choices in the latter half of the experiments.
+Rationale: You must remove the 'averaging baseline' (`np.mean(w_pos[active])`) completely. It violates the arbiter's instruction to avoid holistic aggregation and is the root cause of the flipped predictions in Exp 9-16. Instead, strictly implement the 'Relative Cue Difference' or 'Rank-Based Heuristic' as requested: compute the direct cue-by-cue difference between the options. For example, an option's score could be the sum of its unique advantages (where it has a 1 and the other has a 0) weighted by `val ** gamma`, minus a regret penalty for its unique disadvantages (where it has a 0 and the other has a 1) weighted by `lambda_regret * (val ** delta)`. By summing these non-linearly scaled cue differences directly rather than averaging over all active features, the model will naturally capture the relative comparisons humans are making without the artifactual penalties introduced by the mean.
+
+**Outcome of this advice:** iter 2 candidate loss=0.5895 -> iter 3 candidate loss=0.6410 -> the gate marked it REJECTED.
+
+### Iteration 3
+Verdict: regenerate
+Interpretation: The loop rejected the current candidate because completely removing the averaging baseline caused a massive regression on Experiment 7 (subset dilution effect). In Exp 7, Option A is a strict subset of Option B. Without an averaging mechanism, Option A has no unique advantages and only unique disadvantages, causing the model to incorrectly predict B. The averaging baseline in Iter 2 correctly captured the dilution effect (where B's extra low-validity features drag down its subjective value below A's). However, Iter 2 still failed on Experiments 11-16, meaning the regret penalty or the weighting scheme needs adjustment.
+Rationale: Since the gate rejected this candidate, the loop will automatically revert to the Iter 2 base. You must keep the averaging baseline from Iter 2, as it is critical for capturing the dilution effect in Experiment 7. To fix the flipped predictions in Experiments 11-16, refine the 'Negative Evidence / Regret' component. Instead of penalizing all absent features, try restricting the regret penalty ONLY to high-validity features that the competitor possesses (unique disadvantages), and use a steep non-linear scaling (e.g., `val ** delta`) so that only the most critical missing features trigger the penalty. Ensure `lambda_regret` is kept relatively small so it modifies rather than completely overrides the averaging baseline.
+
+**Outcome of this advice:** iter 3 candidate loss=0.6410 -> iter 4 candidate loss=0.5794 -> the gate marked it ACCEPTED.
+
+### Iteration 4
+Verdict: regenerate
+Interpretation: The loop accepted Iteration 4 because restricting the regret penalty slightly improved the aggregate loss, but the model still systematically and severely flips the empirical effects on Experiments 9 through 16. The core issue remains the 'averaging baseline'. While averaging successfully captures the subset dilution effect in Experiment 7, it acts as a blunt holistic aggregation that fundamentally contradicts human behavior in the high-conflict, variance-sensitive scenarios tested in Exps 9-16. We need a way to implement the arbiter's prescribed 'Relative Cue Difference' (cue-by-cue comparison) that can still handle the dilution effect without resorting to a holistic mean.
+Rationale: To fix Experiments 9-16 while maintaining the success on Experiment 7, completely remove the averaging baseline and return to a pure 'Relative Cue Difference' model, but introduce a threshold for unique advantages. Specifically, compute the cue-by-cue difference. An option's score should be the sum of its unique advantages weighted by `(val ** gamma) - theta` (where `theta` is a new parameter in [0.0, 1.0]), minus a regret penalty for its unique disadvantages weighted by `lambda_regret * (val ** delta)`. By subtracting `theta`, low-validity unique advantages become negative. This elegantly captures the dilution effect in Exp 7 (where adding trivial features to Option B actually reduces its relative score, making the subset Option A preferred) without using a holistic average. This strictly aligns with the arbiter's relative comparison family and will correct the inverted predictions across Exps 9-16.
+
+**Outcome of this advice:** iter 4 candidate loss=0.5794 -> iter 5 candidate loss=0.4757 -> the gate marked it ACCEPTED.
+
+### Iteration 5 (most recent — address this)
+Verdict: regenerate
+Interpretation: The loop correctly accepted Iteration 5. By replacing the holistic averaging baseline with a threshold (`theta`) on unique advantages, the model successfully captured the subset dilution effect in Experiment 7 while strictly adhering to the prescribed cue-by-cue comparison family. Furthermore, this change significantly improved the aggregate loss and moved predictions in the right direction for Experiments 9 and 10. However, the model still struggles with Experiments 11, 12, 14, and 16, where it under-predicts the compensatory choice (Option B). In these experiments, Option B has more clustered or numerous medium-validity features, while Option A has the single highest-validity feature. The model currently overvalues Option A, likely because the regret penalty for missing the best feature is too steep, or the reward for multiple medium unique advantages is too suppressed.
+Rationale: The current 'Relative Threshold Heuristic' is highly successful and should be kept as the core mechanism. To fix the remaining under-prediction of compensatory choices in Experiments 11, 12, 14, and 16, adjust the parameter ranges and non-linearities to allow multiple medium-validity unique advantages to overpower a single high-validity advantage. Specifically, widen the lower bounds for `gamma` and `delta` (e.g., [0.01, 5.0]) so the model can learn a more concave weighting function if needed. Additionally, consider applying a threshold to the regret penalty as well (e.g., `max(0, w_neg - theta_regret)`), so that only the absence of truly critical features incurs a regret penalty, preventing the model from overly punishing Option B for missing a single high-validity feature when it possesses many other strong features.
+
+**Outcome of this advice:** iter 5 candidate loss=0.4757 -> next candidate accept-status=PENDING (this is the advice you are addressing now).
+
+
+## IMPLEMENTATION GUARDRAILS
+- The parameters should be within the specified ranges.
+- The model's predictions should be valid probability distributions (non-negative and sum to 1).
+- When converting logits to probabilities via softmax, always use the numerically stable form: subtract the max before exponentiating (`x = x - np.max(x); p = np.exp(x); p /= p.sum()`). A naive `np.exp(x) / np.sum(np.exp(x))` overflows to Inf/NaN for large logits. Alternatively, use `scipy.special.softmax`.
+
+
+## PROPOSAL — MINIMAL-DIFF EDIT (do NOT rewrite from scratch)
+The RUNNING-BEST (last ACCEPTED) candidate is shown verbatim above under `## PREVIOUS CANDIDATE (this loop)`. This is the base the loop's accept gate is currently keeping; the most recent critic feedback (see `## PRIOR FEEDBACK ITERATIONS`) should be applied on top of it. Apply the SMALLEST edit that addresses the critic's diagnosis while staying inside the arbiter's prescribed mechanism family:
+  - Re-emit the previous source verbatim, then change ONLY the lines needed to address the critic (a parameter range, a normalization, a softmax temperature, an attention scheme, a gating term, a buggy indexing line, etc.).
+  - Keep all unaffected functions, equations, parameter names, and the overall mechanism intact.
+  - Do NOT rewrite `predict` / `policy` end-to-end if a few lines would do, and do NOT switch mechanism families — that is the arbiter's decision, not yours in this loop.
+  - Briefly explain the minimal edit in `rationale`.
+If you genuinely believe a larger rewrite is required, you may do one, but justify in `rationale` why the minimal-diff path was insufficient.
+
+## RESPONSE FORMAT
+Return a JSON object with the following fields:
+- theory: The theoretical claim this theory makes about cognition.
+- predict: Python source defining def predict(parameters, state, history) -> np.ndarray.
+- policy: Python source defining def policy(probs) -> int.
+- parameters: Parameter ranges (e.g. "[1.0, 10.0]") or choices (e.g. "{1, 2}"), sampled per subject.
+- rationale: Reasoning behind this theory design; used to explain why this theory is better then the previous ones.
+
+
+## Response
+
+```json
+```json
+{
+  "theory": "Relative Threshold Heuristic with Bounded Regret: Decision-makers evaluate options by directly comparing them on a cue-by-cue basis, focusing only on distinguishing features (unique advantages and disadvantages). To capture the dilution effect without relying on a holistic average, decision-makers apply a threshold (`theta`) to their unique advantages. Low-validity unique advantages that fall below this threshold actually penalize the option. Furthermore, the regret penalty for unique disadvantages is also thresholded (`theta_regret`), ensuring that decision-makers only penalize the absence of truly critical (high-validity) features. This prevents options with multiple medium-validity advantages from being overly punished for missing a single high-validity feature.",
+  "predict": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\"Model expects a (2, n_features) stimulus.\")\n    \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    gamma = float(parameters[\"gamma\"])\n    delta = float(parameters[\"delta\"])\n    lambda_regret = float(parameters[\"lambda_regret\"])\n    theta = float(parameters[\"theta\"])\n    theta_regret = float(parameters[\"theta_regret\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Transform validities into subjective weights for presence and absence\n    w_pos = val ** gamma\n    w_neg = val ** delta\n    \n    def get_score(x, other_x):\n        unique_adv = (x > 0) & (other_x == 0)\n        unique_disadv = (x == 0) & (other_x > 0)\n        \n        # Sum of unique advantages, penalized by a threshold (theta)\n        # This allows low-validity features to have a net negative impact\n        adv_score = np.sum(w_pos[unique_adv] - theta) if np.any(unique_adv) else 0.0\n        \n        # Regret penalty for unique disadvantages, also thresholded\n        disadv_score = lambda_regret * np.sum(np.maximum(0.0, w_neg[unique_disadv] - theta_regret)) if np.any(unique_disadv) else 0.0\n        \n        return adv_score - disadv_score\n        \n    score_a = get_score(a, b)\n    score_b = get_score(b, a)\n    \n    scores = np.array([score_a, score_b])\n    \n    # Softmax choice rule\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+  "policy": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+  "parameters": {
+    "gamma": "[0.01, 5.0]",
+    "delta": "[0.01, 5.0]",
+    "lambda_regret": "[0.0, 2.0]",
+    "theta": "[0.0, 1.0]",
+    "theta_regret": "[0.0, 1.0]",
+    "beta": "[0.1, 50.0]",
+    "epsilon": "[0.0, 0.5]",
+    "validities": "validities"
+  },
+  "rationale": "To address the under-prediction of compensatory choices in Experiments 11, 12, 14, and 16, I widened the lower bounds for `gamma` and `delta` to 0.01 to allow for more concave weighting functions. I also introduced a `theta_regret` parameter to threshold the regret penalty. This ensures that only the absence of highly critical features (those with subjective validities above `theta_regret`) incurs a regret penalty, allowing an option with multiple medium-validity advantages to outcompete an option with a single high-validity advantage without being excessively penalized."
+}
+```
+```
+
+## Usage
+
+```json
+{
+  "prompt_token_count": 26122,
+  "candidates_token_count": 1111,
+  "total_token_count": 28059
+}
+```

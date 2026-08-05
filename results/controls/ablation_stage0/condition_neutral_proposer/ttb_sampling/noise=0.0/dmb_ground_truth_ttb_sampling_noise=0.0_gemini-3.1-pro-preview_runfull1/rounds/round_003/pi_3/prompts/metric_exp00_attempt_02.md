@@ -1,0 +1,286 @@
+# metric_exp00_attempt_02
+
+## System Prompt
+
+You are a psychology researcher proposing a metric in the Decision Making (Binary Features) domain.
+
+Your goal is adversarial: propose a metric that DISCRIMINATES the two theories — i.e., its value, computed on data simulated under your advocated theory, should be as far as possible from its value computed on data simulated under the competing theory. The direction of the gap does not matter; what matters is that the two theories produce visibly different numbers on this metric. The metric is computed on the data collected from the experimental design provided in the prompt. Produce a metric where you're prediction will be much more accurate than the competing theory's prediction on human data.
+
+Your metric is a Python function
+
+    metric(data: pd.DataFrame) -> float
+
+Available imports inside `metric`:
+- numpy as np
+- pandas as pd
+
+The system evaluates your metric in two ways and reports the pair as `point_estimate (var=between_subject_variance)` everywhere downstream:
+- `point_estimate` is `metric(data)` applied to the FULL pooled DataFrame (all subjects together) — the canonical scalar;
+- `between_subject_variance` is the population variance (`ddof=0`) of `metric(subj_df)` re-applied per `subject_id`, summarising how stable the metric is across subjects. If your metric only makes sense on multi-subject data this will fall back to `n/a` and the metric is rejected (the acceptance test below cannot run without it). Prefer metrics that work both on the pooled DataFrame and on a single subject's slice.
+
+Acceptance rule: the system simulates each theory and runs Welch's two-sample t-test on `(point_estimate_self, between_subject_variance_self, N)` vs. `(point_estimate_adv, between_subject_variance_adv, N)`, where N is the number of HUMAN subjects the experiment will actually be run with (a fixed small number, currently 25). Your metric is admitted iff the two-sided p-value is below the significance level (currently alpha=0.01). Implication: a large between-theory gap is NOT enough — if either theory's metric is also highly variable across subjects, N humans won't reliably distinguish them and the metric will be rejected. Aim for contrasts that are both large in mean AND tight per subject.
+
+Do NOT propose metrics that are trivially true for your theory.
+
+
+## User Prompt
+
+## EXPERIMENTAL DOMAIN
+Subjects repeatedly choose between two fictitious products, A and B. Each option is described by a vector of binary expert ratings (each 0 or 1). Every experiment fixes its own feature count (via `validities` length) and per-expert validities; both are LLM-proposed. The validities are communicated to the subject in the instructions. Subjects pick whichever product they believe is of higher quality. There is no trial-by-trial correctness feedback.
+
+Each subject completes ~96 trials in a single block, with order randomized independently per subject. On every trial the subject sees two options A and B, each described by `n_features` binary expert ratings (each 0 or 1). The per-feature validities and n_features are fixed per experiment (design-time choices). Validities are communicated to the subject in the instructions. Both `n_features` and `validities` are exposed to your `predict` via the `parameters` dict. The subject chooses A or B; no correctness feedback is provided after the choice.
+
+## CHOSEN EXPERIMENTAL DESIGN
+**Validities (n_features=5):** [0.95, 0.85, 0.75, 0.65, 0.55]
+
+**Trial pairs (n=12):**
+  trial 1: A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1]
+  trial 2: A=[0, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0]
+  trial 3: A=[1, 1, 0, 0, 0]  B=[1, 0, 1, 1, 1]
+  trial 4: A=[1, 0, 1, 1, 1]  B=[1, 1, 0, 0, 0]
+  trial 5: A=[1, 1, 1, 0, 0]  B=[1, 1, 0, 1, 1]
+  trial 6: A=[1, 1, 0, 1, 1]  B=[1, 1, 1, 0, 0]
+  trial 7: A=[1, 0, 1, 0, 1]  B=[0, 1, 0, 1, 0]
+  trial 8: A=[0, 1, 0, 1, 0]  B=[1, 0, 1, 0, 1]
+  trial 9: A=[0, 0, 0, 0, 1]  B=[1, 1, 1, 1, 0]
+  trial 10: A=[1, 1, 1, 1, 0]  B=[0, 0, 0, 0, 1]
+  trial 11: A=[1, 0, 0, 1, 1]  B=[0, 1, 1, 0, 0]
+  trial 12: A=[0, 1, 1, 0, 0]  B=[1, 0, 0, 1, 1]
+
+**Rationale:** To distinguish deterministic Take The Best (TTB) from Probabilistic Take The Best (PTTB), we exploit PTTB's stochastic stopping rule. While TTB strictly terminates search at the first discriminating feature, PTTB may skip it (with probability 1 - gamma) and continue to evaluate subsequent features. We design trials where the highest-validity discriminating feature strongly favors one option, but all or most subsequent discriminating features favor the opposite option. TTB will consistently choose the option favored by the first discriminating cue (subject only to a uniform lapse rate), whereas PTTB will systematically deviate toward the opposite option whenever it skips the first cue and stops on a subsequent one. By varying which feature is the first to discriminate (e.g., feature 1 vs. feature 2 or 3) and having the remaining features consistently point the other way, we can detect the characteristic 'leakage' of choices to the second-best cues predicted by PTTB but not TTB.
+
+**Computed schedule:** 12 unique pairs × 8 reps = 96 trials per subject.
+
+
+
+## ADVOCATED THEORY
+**Description:** Take The Best (TTB) posits that decision-makers consider features sequentially in order of their subjective validities and stop searching as soon as they find a feature that discriminates between the two options. The choice is then based entirely on this single cue, providing a non-compensatory heuristic alternative to compensatory models like WADD.
+
+**Parameters:**
+- epsilon: [0.0, 0.5]
+- validities: validities
+
+**`predict source code`:**
+```python
+def predict(parameters, stimulus, history):
+    import numpy as np
+    
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(f"TTB expects a (2, n_features) stimulus; got shape {stim.shape}.")
+        
+    validities = np.asarray(parameters["validities"], dtype=float)
+    
+    # Sort indices by validity in descending order
+    order = np.argsort(validities)[::-1]
+    
+    a_wins = False
+    b_wins = False
+    
+    # Search for the first discriminating cue
+    for idx in order:
+        if stim[0, idx] > stim[1, idx]:
+            a_wins = True
+            break
+        elif stim[1, idx] > stim[0, idx]:
+            b_wins = True
+            break
+            
+    if a_wins:
+        p_core = np.array([1.0, 0.0])
+    elif b_wins:
+        p_core = np.array([0.0, 1.0])
+    else:
+        p_core = np.array([0.5, 0.5])
+        
+    epsilon = float(parameters["epsilon"])
+    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])
+```
+
+**`policy source code`:**
+```python
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities /= probabilities.sum()
+    return np.random.choice(len(probabilities), p=probabilities)
+```
+
+
+## COMPETING THEORY
+**Description:** Probabilistic Take The Best (PTTB) posits that decision-makers search through features sequentially in order of their subjective validities. However, unlike deterministic Take The Best, the stopping rule is stochastic: upon finding a feature that discriminates between the two options, the decision-maker stops and bases their choice on that feature with probability gamma. If they do not stop, they continue to the next feature. If all features are evaluated without a decision, they guess randomly. This model captures the primarily non-compensatory nature of human decision-making while allowing for occasional deviations where lower-validity cues might influence the choice.
+
+**Parameters:**
+- gamma: [0.8, 1.0]
+- epsilon: [0.0, 0.2]
+- validities: validities
+
+**`predict source code`:**
+```python
+def predict(parameters, stimulus, history):
+    import numpy as np
+    
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(f"PTTB expects a (2, n_features) stimulus; got shape {stim.shape}.")
+        
+    validities = np.asarray(parameters["validities"], dtype=float)
+    
+    # Sort indices by validity in descending order
+    order = np.argsort(validities)[::-1]
+    
+    gamma = float(parameters["gamma"])
+    epsilon = float(parameters["epsilon"])
+    
+    p_choice = np.array([0.0, 0.0])
+    p_reach = 1.0
+    
+    # Search for discriminating cues with stochastic stopping
+    for idx in order:
+        if stim[0, idx] > stim[1, idx]:
+            p_stop = gamma
+            p_choice += p_reach * p_stop * np.array([1.0, 0.0])
+            p_reach *= (1.0 - p_stop)
+        elif stim[1, idx] > stim[0, idx]:
+            p_stop = gamma
+            p_choice += p_reach * p_stop * np.array([0.0, 1.0])
+            p_reach *= (1.0 - p_stop)
+            
+    # If no decision is made after evaluating all cues, guess
+    p_choice += p_reach * np.array([0.5, 0.5])
+        
+    # Apply uniform lapse rate
+    return (1.0 - epsilon) * p_choice + epsilon * np.array([0.5, 0.5])
+```
+
+**`policy source code`:**
+```python
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities /= probabilities.sum()
+    return np.random.choice(len(probabilities), p=probabilities)
+```
+
+
+## DATA SCHEMA
+Your metric receives a tidy per-trial pandas DataFrame stacking all subjects (rows grouped by `subject_id`, in trial order). Columns:
+- subject_id: Subject identifier (one row per trial per subject).
+- option_a_ratings: List of n_features binary expert ratings (each 0 or 1) for option A on this trial.
+- option_b_ratings: List of n_features binary expert ratings (each 0 or 1) for option B on this trial.
+- response: 0 if subject chose A, 1 if subject chose B.
+
+## IMPLEMENTATION GUARDRAILS
+Any column in the schema above whose description names a list / tuple / np.ndarray (i.e. a per-trial sequence of values) holds non-scalar cells. Those cells are NOT hashable, so operations that hash row values fail with `TypeError: unhashable type: 'list'`. Treating `<seq_col>` as a placeholder for any such sequence-valued column:
+- Avoid: `data.groupby('<seq_col>')`, `data['<seq_col>'].value_counts()`,     `data['<seq_col>'].nunique()`, `data['<seq_col>'].unique()` (returns     an object array but downstream `set()` / `in dict` will crash),     `set(data['<seq_col>'])`, `data['<seq_col>'].isin([...])` against list     values, or using a list cell as a dict key.
+- If you need a hashable surrogate, project to one first, e.g.:
+    - `data['<seq_col>_key'] = data['<seq_col>'].apply(tuple)` then group by `<seq_col>_key`
+    - `data['<seq_col>_str'] = data['<seq_col>'].apply(lambda x: ''.join(map(str, x)))`
+    Scalar columns (ints, floats, strings like `subject_id`, integer     responses, etc.) hash fine and can be used directly.
+- Generator expressions inside function calls like `map()` or `join()` MUST be     parenthesized. For example:
+    - WRONG: `map(str, int(v) for v in x)` → SyntaxError
+    - RIGHT: `map(str, (int(v) for v in x))` or use a list comp: `[str(int(v)) for v in x]`
+- Always verify your code is syntactically valid Python before returning it.
+
+## METRICS YOU ALREADY TRIED AND FAILED ON
+Each entry below is a metric you previously proposed in this round that did NOT discriminate the two theories at the human sample size — either it errored, its between-subject variance was unavailable, or Welch's t-test on `(self mean, self var, N)` vs. `(adv mean, adv var, N)` returned p ≥ alpha. The `outcome` line is the simulation result (means, between-subject variances, t-statistic and p-value at the human N) on the same `data_self` / `data_adv` your next metric will be evaluated on. Use the numbers to see where your hypothesised contrast collapsed — small mean gap, large per-subject variance, or both — and propose something qualitatively different. Don't repeat the same idea with cosmetic tweaks.
+[0] rationale: This metric calculates the difference in alignment with the highest-validity discriminating cue between two types of trials: 'Agree' trials (where the first two discriminating cues favor the same option) and 'Oppose' trials (where they favor opposite options). Deterministic Take The Best (TTB) stops strictly at the first discriminating cue, so its alignment rate is constant across both trial types (subject only to a uniform lapse rate), yielding an expected difference of 0. Probabilistic Take The Best (PTTB) has a stochastic stopping rule, meaning it will sometimes skip the first cue. On 'Oppose' trials, skipping leads to a cue favoring the opposite option, reducing alignment with the first cue. On 'Agree' trials, skipping leads to a cue favoring the same option, keeping alignment high. Therefore, PTTB systematically predicts a positive difference.
+metric_source:
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    
+    agree_aligned = []
+    oppose_aligned = []
+    
+    for _, row in data.iterrows():
+        a_rat = np.array(row['option_a_ratings'])
+        b_rat = np.array(row['option_b_ratings'])
+        diff = a_rat - b_rat
+        
+        # Find indices of discriminating cues
+        discr_idx = np.where(diff != 0)[0]
+        if len(discr_idx) < 2:
+            continue
+            
+        idx1 = discr_idx[0]
+        idx2 = discr_idx[1]
+        
+        # Check if the first two discriminating cues favor the same option
+        is_agree = (diff[idx1] == diff[idx2])
+        
+        # Check if the subject's choice aligns with the first discriminating cue
+        favors_A = (diff[idx1] > 0)
+        chose_A = (row['response'] == 0)
+        is_aligned = (favors_A == chose_A)
+        
+        if is_agree:
+            agree_aligned.append(is_aligned)
+        else:
+            oppose_aligned.append(is_aligned)
+            
+    if len(agree_aligned) == 0 or len(oppose_aligned) == 0:
+        return 0.0
+        
+    return float(np.mean(agree_aligned) - np.mean(oppose_aligned))
+outcome: self_sim=0.0018 (var=0.0095) adversary_sim=0.0667 (var=0.0064) welch_t=-2.577 p=0.01324 (N=25, alpha=0.01) -> reject
+
+[1] rationale: This metric refines the previous 'Agree vs Oppose' alignment contrast by strictly filtering for trials with maximum signal-to-noise ratio. 'Pure Agree' trials are those where the first four discriminating cues all favor the same option (Trials 9, 10). 'Pure Oppose' trials are those where the first discriminating cue is contradicted by the next three consecutive discriminating cues (Trials 1-4). Deterministic TTB stops at the first cue regardless, yielding an expected difference of 0 between these trial types. PTTB, however, may skip the first cue. On Pure Agree trials, skipping still leads to cues favoring the same option, keeping alignment high. On Pure Oppose trials, skipping exposes the decision-maker to three consecutive cues favoring the opposite option, heavily driving choices away from the first cue. By excluding mixed/alternating trials (like 7, 8) that dilute the PTTB deviation, this metric maximizes the mean gap between the theories while minimizing per-subject variance.
+metric_source:
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    
+    agree_aligned = []
+    oppose_aligned = []
+    
+    for _, row in data.iterrows():
+        a_rat = np.array(row['option_a_ratings'])
+        b_rat = np.array(row['option_b_ratings'])
+        diff = a_rat - b_rat
+        
+        discr_idx = np.where(diff != 0)[0]
+        if len(discr_idx) < 4:
+            continue
+            
+        idx1 = discr_idx[0]
+        
+        favors_A = (diff[idx1] > 0)
+        chose_A = (row['response'] == 0)
+        is_aligned = (favors_A == chose_A)
+        
+        # Pure agree: first 4 discriminating cues all point in the same direction
+        if diff[discr_idx[0]] == diff[discr_idx[1]] == diff[discr_idx[2]] == diff[discr_idx[3]]:
+            agree_aligned.append(is_aligned)
+        # Pure oppose: first discriminating cue opposes the next 3 discriminating cues
+        elif diff[discr_idx[0]] == -diff[discr_idx[1]] == -diff[discr_idx[2]] == -diff[discr_idx[3]]:
+            oppose_aligned.append(is_aligned)
+            
+    if len(agree_aligned) == 0 or len(oppose_aligned) == 0:
+        return 0.0
+        
+    return float(np.mean(agree_aligned) - np.mean(oppose_aligned))
+outcome: self_sim=-0.0062 (var=0.0128) adversary_sim=0.0675 (var=0.0083) welch_t=-2.540 p=0.01452 (N=25, alpha=0.01) -> reject
+
+## RESPONSE FORMAT
+Return a JSON object with the following fields:
+- metric: Python source defining def metric(data: pd.DataFrame) -> float.
+- rationale: Reasoning behind this metric; used when interpreting results.
+
+
+## Response
+
+```json
+{
+  "metric_source": "def metric(data: pd.DataFrame) -> float:\n    import numpy as np\n    \n    X = []\n    Y = []\n    \n    for _, row in data.iterrows():\n        a_rat = np.array(row['option_a_ratings'])\n        b_rat = np.array(row['option_b_ratings'])\n        diff = a_rat - b_rat\n        \n        discr_idx = np.where(diff != 0)[0]\n        if len(discr_idx) < 2:\n            continue\n            \n        first_idx = discr_idx[0]\n        first_favors_A = (diff[first_idx] > 0)\n        \n        rem_idx = discr_idx[1:]\n        \n        # X: net support for the first cue's favored option from remaining cues\n        x_val = 0\n        for idx in rem_idx:\n            if (diff[idx] > 0) == first_favors_A:\n                x_val += 1\n            else:\n                x_val -= 1\n                \n        X.append(x_val)\n        \n        # Y: 1 if subject choice aligns with first cue, 0 otherwise\n        chose_A = (row['response'] == 0)\n        y_val = 1.0 if (chose_A == first_favors_A) else 0.0\n        Y.append(y_val)\n        \n    if len(X) < 2:\n        return 0.0\n        \n    return float(np.cov(X, Y)[0, 1])",
+  "rationale": "To robustly discriminate the theories across all trials, this metric computes the covariance between the net support of the remaining cues (X) and the subject's alignment with the first discriminating cue (Y). For deterministic Take The Best (TTB), the decision relies solely on the first cue; thus, Y is independent of the remaining cues (X), yielding an expected covariance of 0. For Probabilistic Take The Best (PTTB), the stochastic stopping rule means subjects occasionally evaluate remaining cues. When remaining cues strongly oppose the first cue (negative X), alignment (Y) decreases; when they agree (positive X), alignment increases. This creates a systematic positive covariance. By utilizing all multi-cue trials continuously rather than splitting them into small 'Agree' vs 'Oppose' bins, this metric minimizes per-subject variance while maintaining a stark theoretical contrast."
+}
+```
+
+## Usage
+
+```json
+{
+  "prompt_token_count": 4775,
+  "candidates_token_count": 595,
+  "total_token_count": 10030
+}
+```

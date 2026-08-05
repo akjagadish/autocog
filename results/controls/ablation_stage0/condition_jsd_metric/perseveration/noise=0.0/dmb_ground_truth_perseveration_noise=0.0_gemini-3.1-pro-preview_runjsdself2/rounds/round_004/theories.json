@@ -1,0 +1,56 @@
+{
+  "round_idx": 4,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_6",
+      "killed": true,
+      "theory": {
+        "description": "Sequential Cue Integration with Tallying Fallback (Compensatory Shift)",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n\n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n\n    threshold = float(parameters[\"threshold\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n\n    # Sort cues in descending order of validity\n    cue_order = np.argsort(-val, kind=\"stable\")\n    \n    diff = 0.0\n    crossed = False\n    # Accumulate evidence sequentially\n    for j in cue_order:\n        diff += val[j] * (a[j] - b[j])\n        if abs(diff) >= threshold:\n            crossed = True\n            break\n\n    # If all cues are exhausted without crossing the threshold, fall back to tallying\n    if not crossed:\n        diff = float(np.sum(a > b) - np.sum(b > a))\n\n    scores = np.array([diff, 0.0])\n    \n    z = beta * scores\n    z -= np.max(z)  # numerical stability\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n\n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "threshold": "[2.0, 10.0]",
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "By increasing the threshold bounds from [0.0, 5.0] to [2.0, 10.0], we force the model to integrate more cues before terminating. This increases the model's compensatory behavior, moving it away from the purely non-compensatory Take-The-Best reference probabilities and better capturing the human variance observed in the experiments."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_3",
+      "killed": false,
+      "theory": {
+        "description": "People evaluate options by computing a weighted sum of their feature values, where the weights correspond to the subjective or objective validities of the cues (Weighted Additive rule, WADD). Rather than relying on a single discriminating cue (like Take The Best) or ignoring validities entirely (like Tallying), this compensatory strategy allows multiple lower-validity cues to jointly outweigh a single high-validity cue. Choices are made probabilistically via a softmax over the options' weighted sums, along with a lapse rate to account for random errors.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"WADD expects a (2, n_features) stimulus; got shape {stim.shape}.\")\n    \n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    # Compute weighted sum of features for each option\n    score_a = np.sum(a * val)\n    score_b = np.sum(b * val)\n    scores = np.array([score_a, score_b])\n    \n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Softmax with max-subtraction for numerical stability\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()  # Ensure valid probabilities\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the arbiter's instructions, this model implements the Weighted Additive (WADD) heuristic. Unlike Take The Best (which relies on a single cue) or Tallying (which weights all cues equally), WADD multiplies each feature by its validity and sums them to evaluate each option. This compensatory mechanism is capable of explaining behavior where participants trade off multiple weak cues against a single strong cue, which is often necessary to explain intermediate choice patterns observed across different experiments."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_7",
+    "slot": 1,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Probabilistic Take-The-Best (TTB) with Cue Misordering: Decision makers primarily rely on a non-compensatory one-reason heuristic, evaluating features strictly in descending order of their validities and choosing based solely on the first discriminating cue. However, due to cognitive noise or memory retrieval failures, there is a probability that the cue hierarchy is misordered (effectively randomizing the cue search order). When the order is randomized, the first discriminating cue encountered is uniformly distributed among all available discriminating cues. This provides a stark, non-compensatory alternative to WADD, where apparent 'tallying' behavior naturally emerges from random cue misordering rather than a distinct compensatory calculation. Response noise is handled via a softmax temperature on the final cue and an independent uniform lapse rate.",
+      "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n\n    stim = np.asarray(stimulus, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(f\"Expected a (2, n_features) stimulus; got shape {stim.shape}.\")\n\n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    p_random = float(parameters[\"p_random_order\"])\n\n    # --- Strict TTB (Validities Order) ---\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n    winner_strict = None\n    for j in cue_order:\n        if a[j] > b[j]:\n            winner_strict = 0\n            break\n        elif b[j] > a[j]:\n            winner_strict = 1\n            break\n\n    p_strict = np.array([0.5, 0.5])\n    if winner_strict is not None:\n        scores = np.array([1.0, 0.0]) if winner_strict == 0 else np.array([0.0, 1.0])\n        z = beta * (scores - np.max(scores))\n        e = np.exp(z)\n        p_strict = e / np.sum(e)\n\n    # --- Random Order TTB (Misordered Cues) ---\n    # If the cue order is fully randomized, the first discriminating cue found\n    # is uniformly selected from the set of all discriminating cues.\n    discriminating_cues = []\n    for j in range(len(val)):\n        if a[j] > b[j]:\n            discriminating_cues.append(0)\n        elif b[j] > a[j]:\n            discriminating_cues.append(1)\n\n    p_rand = np.array([0.5, 0.5])\n    if len(discriminating_cues) > 0:\n        count_0 = sum(1 for w in discriminating_cues if w == 0)\n        count_1 = sum(1 for w in discriminating_cues if w == 1)\n        prob_0_wins = count_0 / len(discriminating_cues)\n        prob_1_wins = count_1 / len(discriminating_cues)\n        \n        # Softmax probabilities if a cue favoring option 0 is found first\n        scores_0 = np.array([1.0, 0.0])\n        z_0 = beta * (scores_0 - np.max(scores_0))\n        e_0 = np.exp(z_0)\n        p_win_0 = e_0 / np.sum(e_0)\n        \n        # Softmax probabilities if a cue favoring option 1 is found first\n        scores_1 = np.array([0.0, 1.0])\n        z_1 = beta * (scores_1 - np.max(scores_1))\n        e_1 = np.exp(z_1)\n        p_win_1 = e_1 / np.sum(e_1)\n        \n        # Expected probability under random cue misordering\n        p_rand = prob_0_wins * p_win_0 + prob_1_wins * p_win_1\n\n    # --- Mixture and Lapse ---\n    p_core = (1.0 - p_random) * p_strict + p_random * p_rand\n    p_final = (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n\n    return p_final\n",
+      "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+      "parameters": {
+        "beta": "[0.1, 20.0]",
+        "epsilon": "[0.0, 0.2]",
+        "p_random_order": "[0.0, 1.0]",
+        "validities": "validities"
+      },
+      "rationale": "Following the critic's advice, we revert the `beta` range to its original [0.1, 20.0] and restrict the upper bound of the lapse rate `epsilon` to 0.2 (changing the range to [0.0, 0.2]). High lapse rates may have been homogenizing the simulated population by pulling all subjects toward a 0.5 probability, thereby collapsing between-subject variance. Restricting `epsilon` to a lower range allows the distinct idiosyncratic strategies (strict TTB vs. randomized TTB) to dominate the response probabilities, which should yield higher between-subject variance similar to the empirical data."
+    }
+  }
+}

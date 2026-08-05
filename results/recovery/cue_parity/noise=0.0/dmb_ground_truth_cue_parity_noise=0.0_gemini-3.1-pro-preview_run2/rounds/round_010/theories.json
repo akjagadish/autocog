@@ -1,0 +1,58 @@
+{
+  "round_idx": 10,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_12",
+      "killed": true,
+      "theory": {
+        "description": "Noisy Take-The-Best (Probabilistic Lexicographic Choice) with Validity Differences",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    alpha = float(parameters[\"alpha\"])\n    gamma = float(parameters[\"gamma\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Sort cues by validity descending\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n    \n    p_a = 0.0\n    p_b = 0.0\n    p_skip_accum = 1.0\n    \n    for i, j in enumerate(cue_order):\n        if a[j] != b[j]:\n            if i < len(cue_order) - 1:\n                next_j = cue_order[i+1]\n                diff = val[j] - val[next_j]\n            else:\n                diff = val[j]\n                \n            # Probability of successfully using this cue scales with its validity difference\n            p_success = alpha * (diff ** gamma)\n            p_success = min(max(p_success, 0.0), 1.0)\n            \n            if a[j] > b[j]:\n                p_a += p_skip_accum * p_success\n            else:\n                p_b += p_skip_accum * p_success\n                \n            p_skip_accum *= (1.0 - p_success)\n            \n    # If all discriminating cues are skipped or no cues discriminate, guess randomly\n    p_a += p_skip_accum * 0.5\n    p_b += p_skip_accum * 0.5\n    \n    # Apply lapse rate\n    p_a = (1.0 - epsilon) * p_a + epsilon * 0.5\n    p_b = (1.0 - epsilon) * p_b + epsilon * 0.5\n    \n    return np.array([p_a, p_b])\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "alpha": "[0.0, 10.0]",
+          "gamma": "[0.1, 5.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's advice, the probability of successfully executing a cue comparison now scales with the difference between the current cue's validity and the next cue's validity in the sorted order (diff = val[j] - val[j+1]). This mathematically allows the model to skip the primary cue with high probability if its validity is very close to the secondary cue, enabling secondary cues to accumulate enough probability mass to strongly favor compensatory choices (as seen in Exp 9 and Exp 15). The ranges for alpha and gamma have been adjusted to [0.0, 10.0] and [0.1, 5.0] to provide enough scaling flexibility for these validity differences."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_11",
+      "killed": false,
+      "theory": {
+        "description": "Weighted Additive (WADD) Integration with Zero-Anchored Soft Validity Transformation: Decision-makers compute a subjective value for each option by summing its features, weighted by a zero-anchored exponential transformation of their validities. This transformation (exp(gamma * val) - 1) ensures that non-predictive cues receive no weight, preventing the artificial inflation of tallies by low-validity cues while allowing the highest validity cues to exponentially dominate when necessary. This naturally bridges compensatory and non-compensatory decision-making without heuristic switching.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    gamma = float(parameters[\"gamma\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Subjective transformation of validities\n    # Subtracting 1.0 ensures that a zero-validity cue would receive exactly 0 weight,\n    # preventing artificial inflation of low-validity cues and allowing the highest\n    # validity cues to dominate when necessary.\n    w = np.exp(gamma * val) - 1.0\n    \n    # Compute subjective values (Weighted Additive sum)\n    v_a = np.sum(w * a)\n    v_b = np.sum(w * b)\n    \n    scores = np.array([v_a, v_b])\n    \n    # Softmax choice rule\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p = e / np.sum(e)\n    \n    return (1.0 - epsilon) * p + epsilon * np.array([0.5, 0.5])\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "gamma": "[0.0, 10.0]",
+          "beta": "[0.1, 50.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's advice, we modified the exponential weight transformation to `w = np.exp(gamma * val) - 1.0`. The previous `np.exp(gamma * val)` assigned a baseline weight of 1.0 even to zero-validity cues, which artificially inflated the subjective value of options with many low-validity cues and made the model too compensatory (failing on heavily non-compensatory experiments like 13 and 15). By subtracting 1.0, we anchor the transformation at zero, ensuring that low validities vanish correctly while high validities can still scale exponentially to dominate when needed. This preserves the continuous WADD integration while better capturing TTB-like human behavior."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_13",
+    "slot": 1,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Two-Stage Tally-Threshold Theory: Decision-makers evaluate options using a fast, unweighted tallying heuristic as a first pass. If the difference in the number of positive features between the options meets or exceeds a subjective threshold, the decision is made based on this tally difference. However, if the options are tied or the difference is too small to be discriminative (below the threshold), the decision-maker shifts to a second, more effortful stage. In this fallback stage, they evaluate the options using either a weighted additive (WADD) or a lexicographic (Take-The-Best) approach based on cue validities. Evidence scores are normalized across strategies to share a single sensitivity parameter.",
+      "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    threshold = int(parameters[\"threshold\"])\n    fallback = str(parameters[\"fallback\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    tally_a = np.sum(a)\n    tally_b = np.sum(b)\n    n_features = len(a)\n    \n    if abs(tally_a - tally_b) >= threshold:\n        # Normalize tally scores to [0, 1] to calibrate with fallback scales\n        scores = np.array([tally_a, tally_b]) / n_features\n    else:\n        if fallback == \"WADD\":\n            # Normalize validities so WADD scores are in [0, 1]\n            val_norm = val / np.sum(val)\n            scores = np.array([np.sum(val_norm * a), np.sum(val_norm * b)])\n        else:  # TTB\n            cue_order = np.argsort(-val, kind=\"stable\").tolist()\n            winner = -1\n            for j in cue_order:\n                if a[j] > b[j]:\n                    winner = 0\n                    break\n                elif b[j] > a[j]:\n                    winner = 1\n                    break\n            if winner == 0:\n                scores = np.array([1.0, 0.0])\n            elif winner == 1:\n                scores = np.array([0.0, 1.0])\n            else:\n                scores = np.array([0.0, 0.0])\n                \n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p = e / np.sum(e)\n    \n    return (1.0 - epsilon) * p + epsilon * np.array([0.5, 0.5])\n",
+      "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+      "parameters": {
+        "threshold": "{1, 2, 3, 4}",
+        "fallback": "{\"WADD\", \"TTB\"}",
+        "beta": "[0.1, 20.0]",
+        "epsilon": "[0.0, 0.5]",
+        "validities": "validities"
+      },
+      "rationale": "Following the critic's advice, I reverted to the accepted Iteration 2 base, which successfully utilized normalized tally scores (`tally / n_features`) to allow a single `beta` to calibrate both stages. I narrowed the threshold parameter to integer values `{1, 2, 3, 4}` to ensure the unnormalized absolute tally difference is appropriately gated, while keeping the scores used in the softmax strictly bounded within [0, 1] for all heuristics (Tally, WADD, and TTB). This maintains the critical scale alignment necessary for a shared sensitivity parameter."
+    }
+  }
+}

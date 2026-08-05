@@ -1,0 +1,60 @@
+{
+  "round_idx": 12,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_14",
+      "killed": false,
+      "theory": {
+        "description": "Sequential Evidence Accumulation: Decision-makers evaluate cues sequentially in descending order of validity. Each cue provides evidence proportional to a non-linear transformation of its validity above chance. Evidence is accumulated as a running difference between the two options. If the absolute accumulated evidence exceeds a threshold, search is terminated and a choice is made based on the current evidence. If all cues are evaluated without crossing the threshold, a decision is made based on the final accumulated evidence. This allows for fast, non-compensatory decisions when top cues are highly valid, while gracefully falling back to compensatory integration when early cues are less decisive.",
+        "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    theta = float(parameters[\"theta\"])\n    gamma = float(parameters[\"gamma\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Scale weights by transforming validity above chance, allowing better separation\n    weights = np.maximum(val - 0.5, 0.001) ** gamma\n    \n    # Search in order of descending validity\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n    \n    E = 0.0\n    for j in cue_order:\n        diff = a[j] - b[j]\n        if diff != 0:\n            E += diff * weights[j]\n            # Stop if absolute accumulated evidence reaches the threshold\n            if abs(E) >= theta:\n                break\n            \n    scores = np.array([E, -E])\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p = e / np.sum(e)\n    \n    return (1.0 - epsilon) * p + epsilon * np.array([0.5, 0.5])\n",
+        "policy_source": "def policy(probs):\n    import numpy as np\n    probabilities = np.asarray(probs, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "theta": "[0.0, 10.0]",
+          "gamma": "[0.0, 10.0]",
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's advice, we adjust the weight transformation to `weights = np.maximum(val - 0.5, 0.001) ** gamma`. Since validities are typically in the [0.5, 1.0] range, transforming them relative to chance (0.5) before applying the exponent provides much better contrast between high and low validity cues. This allows the model to flexibly flatten or steepen the weights. We also expand the range of `theta` to [0.0, 10.0] to allow the model to avoid early stopping and evaluate all cues when compensatory tallying behavior is required."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_11",
+      "killed": true,
+      "theory": {
+        "description": "Weighted Additive (WADD) Integration with Zero-Anchored Soft Validity Transformation: Decision-makers compute a subjective value for each option by summing its features, weighted by a zero-anchored exponential transformation of their validities. This transformation (exp(gamma * val) - 1) ensures that non-predictive cues receive no weight, preventing the artificial inflation of tallies by low-validity cues while allowing the highest validity cues to exponentially dominate when necessary. This naturally bridges compensatory and non-compensatory decision-making without heuristic switching.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    gamma = float(parameters[\"gamma\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Subjective transformation of validities\n    # Subtracting 1.0 ensures that a zero-validity cue would receive exactly 0 weight,\n    # preventing artificial inflation of low-validity cues and allowing the highest\n    # validity cues to dominate when necessary.\n    w = np.exp(gamma * val) - 1.0\n    \n    # Compute subjective values (Weighted Additive sum)\n    v_a = np.sum(w * a)\n    v_b = np.sum(w * b)\n    \n    scores = np.array([v_a, v_b])\n    \n    # Softmax choice rule\n    z = beta * (scores - np.max(scores))\n    e = np.exp(z)\n    p = e / np.sum(e)\n    \n    return (1.0 - epsilon) * p + epsilon * np.array([0.5, 0.5])\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "gamma": "[0.0, 10.0]",
+          "beta": "[0.1, 50.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's advice, we modified the exponential weight transformation to `w = np.exp(gamma * val) - 1.0`. The previous `np.exp(gamma * val)` assigned a baseline weight of 1.0 even to zero-validity cues, which artificially inflated the subjective value of options with many low-validity cues and made the model too compensatory (failing on heavily non-compensatory experiments like 13 and 15). By subtracting 1.0, we anchor the transformation at zero, ensuring that low validities vanish correctly while high validities can still scale exponentially to dominate when needed. This preserves the continuous WADD integration while better capturing TTB-like human behavior."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_15",
+    "slot": 2,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Adaptive Environment-Structured Strategy Selection: Decision-makers adapt their choice strategy based on the global statistical structure of the environment. Specifically, they evaluate the dispersion (e.g., standard deviation) of cue validities. In environments with high dispersion, they probabilistically favor a non-compensatory heuristic (Take-The-Best). In environments with low dispersion, they fall back to a simpler compensatory heuristic (Equal-weights Tallying). The mixture between these strategies is dynamically governed by a logistic function of the environment's validity dispersion, with independent confidence (temperature) parameters for each strategy.",
+      "predict_source": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    a, b = stim[0], stim[1]\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    \n    theta = float(parameters[\"theta\"])\n    k = float(parameters[\"k\"])\n    beta_ttb = float(parameters[\"beta_ttb\"])\n    beta_tally = float(parameters[\"beta_tally\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Calculate dispersion of validities in the environment\n    dispersion = float(np.std(val))\n    \n    # Logistic function for strategy weight\n    # Higher dispersion -> higher probability of using Take-The-Best\n    w_ttb = 1.0 / (1.0 + np.exp(-k * (dispersion - theta)))\n    \n    # Take-The-Best (TTB) component\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n    ttb_diff = 0.0\n    for j in cue_order:\n        if a[j] > b[j]:\n            ttb_diff = 1.0\n            break\n        elif b[j] > a[j]:\n            ttb_diff = -1.0\n            break\n            \n    scores_ttb = np.array([ttb_diff, -ttb_diff])\n    \n    # Tallying component\n    # Normalized by the number of cues to ensure it's on a comparable scale to TTB (-1 to 1)\n    tally_diff = (np.sum(a) - np.sum(b)) / len(val)\n    scores_tally = np.array([tally_diff, -tally_diff])\n    \n    # Convert scores to probabilities\n    z_ttb = beta_ttb * (scores_ttb - np.max(scores_ttb))\n    p_ttb = np.exp(z_ttb) / np.sum(np.exp(z_ttb))\n    \n    z_tally = beta_tally * (scores_tally - np.max(scores_tally))\n    p_tally = np.exp(z_tally) / np.sum(np.exp(z_tally))\n    \n    # Mixture prediction\n    p_mix = w_ttb * p_ttb + (1.0 - w_ttb) * p_tally\n    \n    # Apply lapse rate\n    return (1.0 - epsilon) * p_mix + epsilon * np.array([0.5, 0.5])\n",
+      "policy_source": "def policy(probs):\n    import numpy as np\n    probabilities = np.asarray(probs, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+      "parameters": {
+        "theta": "[0.0, 0.3]",
+        "k": "[1.0, 100.0]",
+        "beta_ttb": "[0.1, 20.0]",
+        "beta_tally": "[0.1, 20.0]",
+        "epsilon": "[0.0, 0.5]",
+        "validities": "validities"
+      },
+      "rationale": "Following the critic's advice, this edit restores the normalized tallying score from the previously accepted iteration, which scales Tallying differences to the same [-1, 1] bounds as TTB. To address the issue where Tallying predictions were too flat (due to smaller absolute score differences after normalization), we introduce separate inverse temperature parameters (`beta_ttb` and `beta_tally`). This allows the model to independently calibrate the confidence of the TTB and Tallying components without fundamentally altering the scale of the scores themselves, enabling sharp deterministic choices when Tallying dominates."
+    }
+  }
+}

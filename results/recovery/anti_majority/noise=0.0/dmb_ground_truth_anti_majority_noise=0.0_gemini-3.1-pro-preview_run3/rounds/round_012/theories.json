@@ -1,0 +1,58 @@
+{
+  "round_idx": 12,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_14",
+      "killed": true,
+      "theory": {
+        "description": "Take-The-Best with Compensatory Verification (Sub-linear Tallying)",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    a, b = stim[0], stim[1]\n    \n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n    \n    ttb_winner = -1\n    disc_idx = -1\n    for i, j in enumerate(cue_order):\n        if a[j] != b[j]:\n            ttb_winner = 0 if a[j] > b[j] else 1\n            disc_idx = i\n            break\n            \n    if ttb_winner == -1:\n        return np.array([0.5, 0.5])\n        \n    # Tally remaining cues (those evaluated after the discriminating cue)\n    remaining_a = 0.0\n    remaining_b = 0.0\n    for j in cue_order[disc_idx+1:]:\n        remaining_a += a[j]\n        remaining_b += b[j]\n        \n    beta_ttb = float(parameters[\"beta_ttb\"])\n    beta_tally = float(parameters[\"beta_tally\"])\n    \n    tally_diff = remaining_a - remaining_b\n    compressed_diff = np.sign(tally_diff) * np.sqrt(np.abs(tally_diff))\n    \n    score_a = beta_ttb * (1.0 if ttb_winner == 0 else 0.0) + beta_tally * compressed_diff\n    score_b = beta_ttb * (1.0 if ttb_winner == 1 else 0.0)\n    \n    scores = np.array([score_a, score_b])\n    z = scores - np.max(scores)\n    e = np.exp(z)\n    p_core = e / np.sum(e)\n    \n    epsilon = float(parameters[\"epsilon\"])\n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "beta_ttb": "[0.0, 10.0]",
+          "beta_tally": "[0.0, 10.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's advice, we return to the exact Iteration 1 base (unweighted tally of remaining cues, independent beta_ttb and beta_tally in [0.0, 10.0], and epsilon). To solve the calibration issue where the tallying component overpowers TTB on long cue vectors, we apply a sub-linear (square-root) compression to the tally difference. This diminishing-returns scaling ensures that the first contradicting cue provides a strong verification signal, but additional contradicting cues don't linearly inflate the score to the point of completely overriding the TTB baseline."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_13",
+      "killed": false,
+      "theory": {
+        "description": "Weighted Additive with Power-Function Validity Scaling (WADD-PWR): Decision-makers integrate all available cues but weight them non-linearly using a power function of their stated validities. A single parameter, gamma, controls the weighting scheme: positive values approximate Take-The-Best by heavily favoring the most valid cues, zero yields Tallying by weighting all cues equally, and negative values approximate Reverse TTB by favoring less valid cues. The power function naturally anchors a validity of 1.0 to a weight of 1.0, providing built-in numerical stability across the full spectrum of strategies without requiring artificial normalization.",
+        "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    a, b = stim[0], stim[1]\n    \n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    gamma = float(parameters[\"gamma\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Apply power-function weighting scheme to capture TTB, Tallying, and Reverse TTB\n    # Validities are in [0.5, 1.0], so val ** gamma is numerically stable.\n    w = val ** gamma\n    \n    # Accumulate evidence based on discriminating cues\n    diff = a - b\n    ev_a = np.sum(w[diff > 0])\n    ev_b = np.sum(w[diff < 0])\n    \n    # Convert to choice probabilities via softmax\n    scores = np.array([ev_a, ev_b])\n    z = beta * scores\n    e = np.exp(z - np.max(z))\n    p_core = e / np.sum(e)\n    \n    return (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])\n",
+        "policy_source": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities /= probabilities.sum()\n    return np.random.choice(len(probabilities), p=probabilities)\n",
+        "parameters": {
+          "gamma": "[-20.0, 20.0]",
+          "beta": "[0.1, 20.0]",
+          "epsilon": "[0.0, 0.5]",
+          "validities": "validities"
+        },
+        "rationale": "Following the critic's advice, we replace the exponential weighting scheme with a power-function parameterization `w = val ** gamma` while preserving the expanded range for gamma `[-20.0, 20.0]`. Because validities are bounded in [0.5, 1.0], raising them to a power naturally anchors the maximum possible validity to 1.0 (since 1.0 ** gamma = 1.0), inherently solving the absolute scaling issues that plagued the exponential normalizations. When gamma > 0, it approximates TTB; when gamma == 0, it yields Tallying; and when gamma < 0, lower validities are weighted more heavily, naturally capturing Reverse TTB. This provides a clean, continuous WADD-NL integration mechanism."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_15",
+    "slot": 1,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Sequential Cue Evaluation with Probabilistic Stopping: Decision-makers evaluate cues sequentially in descending order of validity. Upon finding a discriminating cue, they stop with a certain probability and choose based on accumulated evidence. If they continue, they integrate further cues, naturally blending non-compensatory (TTB) and compensatory (Tallying/WADD) behaviors.",
+      "predict_source": "def predict(parameters, stimulus, history):\n    import numpy as np\n    \n    stim = np.asarray(stimulus, dtype=float)\n    a, b = stim[0], stim[1]\n    \n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    cue_order = np.argsort(-val, kind=\"stable\").tolist()\n    \n    p_stop = float(parameters[\"p_stop\"])\n    beta = float(parameters[\"beta\"])\n    kappa = float(parameters[\"kappa\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    ev_A = 0.0\n    ev_B = 0.0\n    \n    w_reach = 1.0\n    p_A_total = 0.0\n    p_B_total = 0.0\n    \n    for i, j in enumerate(cue_order):\n        weight = val[j] ** kappa\n        ev_A += a[j] * weight\n        ev_B += b[j] * weight\n        \n        is_last = (i == len(cue_order) - 1)\n        \n        # Stop probabilistically only if the cue discriminates\n        if a[j] != b[j]:\n            p_s = p_stop\n        else:\n            p_s = 0.0\n            \n        # Must stop at the last cue\n        if is_last:\n            p_s = 1.0\n            \n        w_stop = w_reach * p_s\n        \n        # Choice probabilities if stopping at this step\n        z = beta * np.array([ev_A, ev_B])\n        e = np.exp(z - np.max(z))\n        p_choice = e / np.sum(e)\n        \n        p_A_total += w_stop * p_choice[0]\n        p_B_total += w_stop * p_choice[1]\n        \n        # Update probability of reaching the next step\n        w_reach *= (1.0 - p_s)\n        \n    p_final = np.array([p_A_total, p_B_total])\n    return (1.0 - epsilon) * p_final + epsilon * np.array([0.5, 0.5])\n",
+      "policy_source": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs /= probs.sum()\n    return np.random.choice(len(probs), p=probs)\n",
+      "parameters": {
+        "p_stop": "[0.0, 1.0]",
+        "beta": "[0.1, 20.0]",
+        "kappa": "[0.0, 10.0]",
+        "epsilon": "[0.0, 0.5]",
+        "validities": "validities"
+      },
+      "rationale": "Following the arbiter's feedback, we introduce the Sequential Cue Evaluation with Probabilistic Stopping model. Instead of positing rigid strategy selection (e.g., entirely TTB or entirely Tallying), subjects evaluate cues sequentially in descending order of validity. When encountering a discriminating cue, they stop with probability `p_stop` and make a decision based on the accumulated evidence up to that point. If they do not stop, they continue to integrate evidence from subsequent cues. The evidence itself is weighted by the cue's validity raised to a parameter `kappa`, allowing the accumulation process to range from simple Tallying (`kappa=0`) to weighted additive processing (WADD, `kappa>0`). By marginalizing over all possible stopping points, we compute the exact expected choice probabilities. This formulation elegantly unifies TTB (high `p_stop`), Tallying (low `p_stop`, `kappa=0`), and WADD (low `p_stop`, `kappa>0`) within a single generative mechanism, capturing the nuanced partial variance across experiments."
+    }
+  }
+}
