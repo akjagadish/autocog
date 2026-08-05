@@ -47,7 +47,7 @@ def test_load_human_choices_parses_real_exp1_file():
     """Smoke-test the real Hilbig exp1.txt — the script's primary input."""
     from scripts.eval_hilbig import load_human_choices
 
-    path = REPO_ROOT / "hilbig" / "exp1.txt"
+    path = REPO_ROOT / "results" / "hilbig2014" / "exp1.txt"
     if not path.is_file():
         pytest.skip(f"{path} not present.")
     df = load_human_choices(path)

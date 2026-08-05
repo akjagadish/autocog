@@ -1,4 +1,4 @@
-"""Fit of {pi_7, WADD, Tallying, TTB, Centaur-surfaced} to the validation_online
+"""Fit of {pi_7, WADD, Tallying, TTB} to the preregistered-study
 humans, pooled across BOTH experiments (exp1 + exp2) and all five validity
 vectors, in stimulus choice-proportion space.
 
@@ -10,8 +10,6 @@ proportion via MAE, MSE, and Pearson r. The models:
   pi_7              — "Diminishing Returns WADD" (concave-utility WADD) surfaced
                       by the heuristic_decision_making human run (round 4).
   wadd / tallying / ttb — the canonical paper heuristics (fixed baselines).
-  centaur_surfaced  — "Non-linear Compensatory Attention" surfaced by the
-                      Centaur (corrected-theories) hdm run.
 
 A "stimulus" here is a (validity-vector, option_a, option_b) triple. The five
 vectors are different tasks (different validities / cue orderings), so each model
@@ -55,15 +53,10 @@ from src.theory import Theory  # noqa: E402
 PI7_SOURCE = (REPO_ROOT / "results" / "human_decision_making_cardinal"
               / "ttb+tallying"
               / "rounds" / "round_004" / "theories.json")
-CENTAUR_SURFACED_SOURCE = (
-    REPO_ROOT / "results" / "heuristic_decision_making" / "centaur_corrected_theories"
-    / "seeds_tallying_ttb" / "hdm_seeds_tallying_ttb_gemini-3.1-pro-preview_rundella_centaur"
-    / "surfaced" / "centaur_surfaced.yaml")
 
 # Display order (left-to-right in every figure) and pretty labels.
-MODEL_ORDER = ["pi_7", "centaur_surfaced", "wadd", "tallying", "ttb"]
+MODEL_ORDER = ["pi_7", "wadd", "tallying", "ttb"]
 PRETTY = {"pi_7": "pi_7\n(surfaced)",
-          "centaur_surfaced": "centaur\n(surfaced)",
           "wadd": "WADD", "tallying": "Tallying", "ttb": "TTB"}
 
 
@@ -74,10 +67,9 @@ def _load_replacement(source: Path, expect: str) -> Theory:
 
 
 def load_models() -> dict[str, Theory]:
-    """The five models to score, keyed by the label used everywhere downstream."""
+    """The four models to score, keyed by the label used everywhere downstream."""
     models: dict[str, Theory] = {
         "pi_7": _load_replacement(PI7_SOURCE, "pi_7"),
-        "centaur_surfaced": Theory.from_yaml(CENTAUR_SURFACED_SOURCE),
     }
     canon = eh.load_canonical_theories()  # ttb / wadd / tallying / ew / ...
     for m in ("wadd", "tallying", "ttb"):

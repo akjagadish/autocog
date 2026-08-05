@@ -36,15 +36,16 @@ YAML_DIR = REPO_ROOT / "theories" / "heuristic_decision_making"
 
 def _first_available_run_dir() -> Path:
     """Find any hilbig run-dir under results/ for integration tests."""
-    for family in ("wadd", "ttb", "tallying"):
-        for noise in ("noise=0.3", "noise=0.05", "noise=0.0"):
-            base = REPO_ROOT / "results" / family / noise
-            if not base.is_dir():
-                continue
-            for d in sorted(base.iterdir()):
-                if d.is_dir() and (d / "observations" / "state.json").is_file():
-                    return d
-    pytest.skip("No hilbig run-dir with observations/state.json under results/.")
+    # hilibig_battery requires a CARDINAL run: load_run_metadata reads
+    # experiment["rating_max"], which binary runs (results/recovery/) omit
+    # entirely. The cardinal run that ships is the human study.
+    for base in (REPO_ROOT / "results" / "human_decision_making_cardinal",):
+        if not base.is_dir():
+            continue
+        for d in sorted(base.iterdir()):
+            if d.is_dir() and (d / "observations" / "state.json").is_file():
+                return d
+    pytest.skip("No cardinal run-dir with observations/state.json under results/.")
 
 
 def test_load_run_metadata_returns_validities_and_trial_pairs():

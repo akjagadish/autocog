@@ -114,8 +114,7 @@ parser.add_argument(
         "Results root the run dir is written under. The "
         "<ground_truth>/noise=<eps>/<run_dir> substructure is preserved "
         "beneath it, so one value serves a whole gt/noise/run sweep "
-        "(e.g. --out_path results/decision_making_binary/"
-        "synthetic_corrected_theories). Defaults to 'results', reproducing "
+        "(e.g. --out_path results/recovery). Defaults to 'results', reproducing "
         "the historical path."
     ),
 )

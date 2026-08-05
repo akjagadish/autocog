@@ -20,7 +20,7 @@ import pytest
 from scripts.figure_style import FONTSIZE, GRAY, NEUTRAL_HARMONY
 
 BUNDLE = Path(
-    "results/heuristic_decision_making/humans/hdm_full_prolific_run_full/"
+    "results/human_decision_making_cardinal/"
     "ttb+tallying/preregistration_visualization"
 )
 SANDY = NEUTRAL_HARMONY["sandy"]
@@ -74,12 +74,22 @@ def test_gain_arrow_contrasts_with_the_region_washes():
 
 # --- fonts / axes / output format ------------------------------------------
 def test_apply_style_sets_axis_and_tick_fontsizes():
+    """`apply_style` must publish the bundle's own declared sizes.
+
+    This bundle deliberately enlarges axis/tick labels for legibility (18/16)
+    instead of inheriting `scripts/figure_style.FONTSIZE` (14) — see the comment
+    on `FONTS["size_axis_label"]`. Asserting against `style.FONTS` tracks that
+    decision; the previous `== FONTSIZE` anchor silently went stale because this
+    whole module was skipping on a pre-rename bundle path.
+    """
     import style
 
     style.apply_style()
-    assert plt.rcParams["axes.labelsize"] == FONTSIZE
-    assert plt.rcParams["xtick.labelsize"] == FONTSIZE - 2
-    assert plt.rcParams["ytick.labelsize"] == FONTSIZE - 2
+    assert plt.rcParams["axes.labelsize"] == style.FONTS["size_axis_label"]
+    assert plt.rcParams["xtick.labelsize"] == style.FONTS["size_tick"]
+    assert plt.rcParams["ytick.labelsize"] == style.FONTS["size_tick"]
+    # Axis labels stay 2pt above tick labels, as in the original 14/12 pairing.
+    assert style.FONTS["size_axis_label"] == style.FONTS["size_tick"] + 2
 
 
 def test_save_figure_writes_png_svg_and_pdf(tmp_path):

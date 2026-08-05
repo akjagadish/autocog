@@ -236,10 +236,15 @@ def resolve_all_explored_theories(
 def load_canonical_theories(
     yaml_dir: Path = CANONICAL_YAML_DIR,
 ) -> dict[str, Theory]:
-    """Load every `*.yaml` under `yaml_dir` as a `Theory`, keyed by the
-    file stem (e.g. `ttb`, `wadd`, `tallying`, `ew`). These are the
-    paper-faithful canonical heuristics — useful as a fixed reference
-    baseline alongside whatever the autocog run discovered."""
+    """Load every `*.yaml` under `yaml_dir` as a `Theory`, keyed by file stem.
+
+    NOTE: this globs the whole directory, which holds both the canonical
+    heuristics (`ttb`, `wadd`, `tallying`, `ew`, and their `*_sampling`
+    variants) AND the non-canonical stress-test baselines (`alternating`,
+    `perseveration`, `coin_flip`, ...). Only the canonical ones are a
+    "paper-faithful reference baseline"; callers wanting just those should
+    select by name rather than take everything this returns. Reached only
+    via `--include-canonical`, which is off by default."""
     if not yaml_dir.is_dir():
         raise FileNotFoundError(f"No canonical YAML dir at {yaml_dir!s}")
     out: dict[str, Theory] = {}

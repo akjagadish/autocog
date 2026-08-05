@@ -18,7 +18,9 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 # ---- edit these ------------------------------------------------------------
-RUN_ID="fbtest1"          # names results/human_decision_making_binary/<seeds>/
+RUN_ID="fbtest1"          # a fresh run writes results/online/dmb/<backend>/$RUN_ID/<seeds>/
+                          # (the committed human runs were later moved to
+                          #  results/human_decision_making_{binary,cardinal}/<seeds>/)
 SEEDS=(ttb wadd)          # two distinct seeds from: ttb ew tallying wadd
 REAL_N_SUBJECTS=2         # PER experiment -> 2*this = total people (2 -> 4)
 N_ROUNDS=1               # adversarial rounds this invocation

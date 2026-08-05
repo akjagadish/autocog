@@ -10,30 +10,6 @@ import pandas as pd
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-RUN25 = (
-    REPO_ROOT
-    / "results/heuristic_decision_making/centaur_corrected_theories"
-    / "seeds_tallying_ttb_rounds_25"
-    / "hdm_seeds_tallying_ttb_gemini-3.1-pro-preview_rundella_centaur"
-)
-
-
-@pytest.mark.skipif(not RUN25.is_dir(), reason="25-round run dir not present")
-def test_resolve_surfaced_at_round_returns_that_rounds_survivors():
-    from scripts.eval_human import resolve_surfaced_theories
-
-    assert set(resolve_surfaced_theories(RUN25, round_idx=4)) == {"pi_6", "pi_7"}
-    assert set(resolve_surfaced_theories(RUN25, round_idx=24)) == {"pi_26", "pi_27"}
-
-
-@pytest.mark.skipif(not RUN25.is_dir(), reason="25-round run dir not present")
-def test_resolve_surfaced_default_is_last_round():
-    from scripts.eval_human import resolve_surfaced_theories
-
-    # round_024 is the last round of the 25-round run.
-    assert set(resolve_surfaced_theories(RUN25)) == {"pi_26", "pi_27"}
-
-
 def test_resolve_surfaced_missing_round_raises(tmp_path):
     from scripts.eval_human import resolve_surfaced_theories
 
@@ -383,45 +359,9 @@ def test_plot_metric_trajectory_per_metric_writes_one_file_each(tmp_path):
 
 HUMANS = (
     REPO_ROOT
-    / "results/heuristic_decision_making/humans/hdm_full_prolific_run_full"
+    / "results/human_decision_making_cardinal"
     / "ttb+tallying/prolific_exp"
 )
-
-
-@pytest.mark.skipif(
-    not (RUN25.is_dir() and HUMANS.is_dir()),
-    reason="run dir or human data not present",
-)
-def test_main_end_to_end_reproduces_round5_baseline(tmp_path):
-    from scripts.eval_human_trajectory import main
-
-    rc = main([
-        "--run-dir", str(RUN25),
-        "--human-data", str(HUMANS),
-        "--rounds", "5",
-        "--n-subjects", "200", "--seed", "0",
-        "--out", str(tmp_path),
-    ])
-    assert rc == 0
-
-    traj = pd.read_csv(tmp_path / "trajectory.csv")
-    per_exp = pd.read_csv(tmp_path / "per_experiment_summary.csv")
-    assert (tmp_path / "calibration_scatter.png").is_file()
-    assert (tmp_path / "trajectory_p_b_pooled.png").is_file()
-
-    # 10 experiments scored per surfaced model at cutoff 5.
-    assert per_exp[per_exp.model == "pi_6"].shape[0] == 10
-
-    # Mean-across-experiments MAE for pi_6 matches the verification baseline.
-    row = traj[
-        (traj.cutoff_round == 5) & (traj.model == "pi_6")
-        & (traj.metric == "mae")
-    ].iloc[0]
-    assert row["mean_across_exps"] == pytest.approx(0.164, abs=0.01)
-    assert row["n_experiments"] == 10
-
-    # Seeds present as a role.
-    assert "seed" in set(traj["role"])
 
 
 def test_replay_matched_to_participants_slices_shared_pool():
@@ -468,35 +408,6 @@ def test_replay_matched_sem_larger_than_200_draw_sem():
         rating_max=1, n_subjects=200, base_seed=0,
     )
     assert np.mean(sem_matched) > np.mean(sem_200)
-
-
-@pytest.mark.skipif(
-    not (RUN25.is_dir() and HUMANS.is_dir()),
-    reason="run dir or human data not present",
-)
-def test_main_match_participants_writes_suffixed_outputs(tmp_path):
-    from scripts.eval_human_trajectory import main
-
-    rc = main([
-        "--run-dir", str(RUN25),
-        "--human-data", str(HUMANS),
-        "--rounds", "5", "--seed", "0",
-        "--match-participants",
-        "--out", str(tmp_path),
-    ])
-    assert rc == 0
-
-    # Matched mode writes _matched-suffixed artifacts so it never clobbers
-    # the default (200-draw) outputs.
-    assert (tmp_path / "calibration_scatter_matched.png").is_file()
-    assert (tmp_path / "trajectory_p_b_pooled_matched.png").is_file()
-    assert (tmp_path / "trajectory_matched.csv").is_file()
-    assert (tmp_path / "per_experiment_summary_matched.csv").is_file()
-
-    # The per-stimulus scatter points are persisted, and model SEM under
-    # participant-matched draws is far above the ~0.006 of 200 draws.
-    pts = pd.read_csv(tmp_path / "calibration_points_matched.csv")
-    assert pts["p_b_model_sem"].median() > 0.01
 
 
 def test_plot_metric_trajectory_accepts_ground_truth_label(tmp_path):

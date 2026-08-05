@@ -22,11 +22,8 @@ SANDY = NEUTRAL_HARMONY["sandy"]
 TERRA = NEUTRAL_HARMONY["terracotta"]
 SLATE = NEUTRAL_HARMONY["slate"]
 
-WADD = Path("results/online/dmb/firebase_prolific/prolific1/ttb+wadd")
-TALLY = Path(
-    "results/heuristic_decision_making/humans/hdm_full_prolific_run_full/"
-    "ttb+tallying"
-)
+WADD = Path("results/human_decision_making_binary/ttb+wadd")
+TALLY = Path("results/human_decision_making_cardinal/ttb+tallying")
 
 
 # --- synthetic frames matching the committed CSV schemas -------------------

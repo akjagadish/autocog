@@ -17,7 +17,9 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 # ---- edit these ------------------------------------------------------------
-RUN_ID="prolific1"        # names results/human_decision_making_binary/<seeds>/
+RUN_ID="prolific1"        # a fresh run writes results/online/dmb/<backend>/$RUN_ID/<seeds>/
+                          # (the committed copy of this run was later moved to
+                          #  results/human_decision_making_binary/<seeds>/)
 SEEDS=(ttb wadd)          # two distinct seeds from: ttb ew tallying wadd
 REAL_N_SUBJECTS=25        # PER experiment -> 2*this people recruited per round
 N_ROUNDS=5               # adversarial rounds this invocation
