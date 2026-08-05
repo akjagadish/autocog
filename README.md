@@ -179,7 +179,6 @@ results/recovery/                        synthetic ground-truth recovery, binary
                                            <family>/noise=<eps>/dmb_ground_truth_*_run<N>/
   analysis/                                derived tables + figures (recovery_long.csv,
                                            per_model/, llmasjudge/) that stats.py reads
-results/synthetic_cardinal/              the same for graded/cardinal cues (hdm_ground_truth_*)
 results/human_decision_making_binary/    closed-loop run with humans, binary  (ttb+wadd)
 results/human_decision_making_cardinal/  closed-loop run with humans, cardinal (ttb+tallying)
 results/controls/                        ablations & controls (ablation_stage0, proposer_comparison,

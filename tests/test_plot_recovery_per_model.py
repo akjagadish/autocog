@@ -448,14 +448,14 @@ def test_main_end_to_end_per_model(tmp_path):
     out_dir = tmp_path / "per_model"
     rc = main([
         "--results-root",
-        str(REPO_ROOT / "results" / "synthetic_cardinal"),
-        "--families", "ttb",
+        str(REPO_ROOT / "results" / "recovery"),
+        "--families", "ttb_sampling",
         "--noises", "0.0",
         "--n-draws", "3",
         "--seed", "0",
         "--out-dir", str(out_dir),
     ])
     assert rc == 0
-    assert (out_dir / "recovery_mse_ttb.png").is_file()
-    assert (out_dir / "recovery_correlation_ttb.png").is_file()
-    assert (out_dir / "recovery_mse_ttb.svg").is_file()
+    assert (out_dir / "recovery_mse_ttb_sampling.png").is_file()
+    assert (out_dir / "recovery_correlation_ttb_sampling.png").is_file()
+    assert (out_dir / "recovery_mse_ttb_sampling.svg").is_file()

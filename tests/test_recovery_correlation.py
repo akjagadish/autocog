@@ -126,11 +126,11 @@ def test_empty_noises_normalises_to_all_dirs():
     """Fix 1: noises=None and noises=[] (normalised to None) both discover ≥1 dir."""
     from scripts.recovery_correlation import discover_run_dirs
 
-    root = REPO_ROOT / "results" / "synthetic_cardinal"
-    found_none = discover_run_dirs(root, families=["ttb"], noises=None)
+    root = REPO_ROOT / "results" / "recovery"
+    found_none = discover_run_dirs(root, families=["ttb_sampling"], noises=None)
     # Simulate what main() does: empty list -> None
     empty_list_normalised = None  # [] normalised to None
-    found_normalised = discover_run_dirs(root, families=["ttb"], noises=empty_list_normalised)
+    found_normalised = discover_run_dirs(root, families=["ttb_sampling"], noises=empty_list_normalised)
     assert len(found_none) >= 1
     assert found_none == found_normalised
 
@@ -138,11 +138,11 @@ def test_empty_noises_normalises_to_all_dirs():
 def test_discover_run_dirs_parses_family_and_noise():
     from scripts.recovery_correlation import discover_run_dirs
 
-    root = REPO_ROOT / "results" / "synthetic_cardinal"
-    found = discover_run_dirs(root, families=["ttb"], noises=[0.0])
+    root = REPO_ROOT / "results" / "recovery"
+    found = discover_run_dirs(root, families=["ttb_sampling"], noises=[0.0])
     assert len(found) >= 1
     for family, noise, run_dir in found:
-        assert family == "ttb"
+        assert family == "ttb_sampling"
         assert noise == 0.0
         assert run_dir.is_dir()
         assert (run_dir / "rounds").is_dir()
@@ -316,16 +316,16 @@ def test_legend_label_override_falls_back_to_role_label():
 def test_build_results_long_has_all_three_roles():
     from scripts.recovery_correlation import build_results_long, unique_stimulus_pairs
 
-    root = REPO_ROOT / "results" / "synthetic_cardinal"
+    root = REPO_ROOT / "results" / "recovery"
     pairs = unique_stimulus_pairs()
     df = build_results_long(
-        results_root=root, families=["ttb"], noises=[0.0],
+        results_root=root, families=["ttb_sampling"], noises=[0.0],
         stimulus_pairs=pairs, n_draws=5, base_seed=0,
     )
     assert set(["family", "noise", "run_dir", "role", "theory_label",
                 "n_stimuli", "pearson_r"]).issubset(df.columns)
     assert {"seed", "surfaced", "gt"}.issubset(set(df["role"].unique()))
-    assert (df["family"] == "ttb").all()
+    assert (df["family"] == "ttb_sampling").all()
     assert (df["noise"] == 0.0).all()
     # exactly one gt row per run-dir
     n_run_dirs = df["run_dir"].nunique()
@@ -503,10 +503,10 @@ def test_random_model_has_nan_corr_and_positive_mse():
 
 def test_build_results_long_has_mse_column_and_random_role():
     from scripts.recovery_correlation import build_results_long, unique_stimulus_pairs
-    root = REPO_ROOT / "results" / "synthetic_cardinal"
+    root = REPO_ROOT / "results" / "recovery"
     pairs = unique_stimulus_pairs()
     df = build_results_long(
-        results_root=root, families=["ttb"], noises=[0.0],
+        results_root=root, families=["ttb_sampling"], noises=[0.0],
         stimulus_pairs=pairs, n_draws=5, base_seed=0,
     )
     assert "mse" in df.columns
@@ -594,10 +594,10 @@ def test_surfaced_best_at_least_mean_in_pipeline():
     from scripts.recovery_correlation import (
         build_results_long, surfaced_best_rows, summarise, unique_stimulus_pairs,
     )
-    root = REPO_ROOT / "results" / "synthetic_cardinal"
+    root = REPO_ROOT / "results" / "recovery"
     pairs = unique_stimulus_pairs()
     long = build_results_long(
-        results_root=root, families=["wadd"], noises=[0.0],
+        results_root=root, families=["wadd_sampling"], noises=[0.0],
         stimulus_pairs=pairs, n_draws=5, base_seed=0,
     )
     corr_long = pd.concat(

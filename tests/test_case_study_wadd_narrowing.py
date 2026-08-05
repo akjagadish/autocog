@@ -1,20 +1,20 @@
 """Tests for the round-0 WADD case-study figure's data extraction.
 
 The figure tells one story — how the LLM narrows from the TTB+Tallying seeds to
-WADD in round 0 — and is rendered for two task variants that differ in the
-*kind* of feature the experiments use:
+WADD in round 0. These tests cover the **binary** task variant
+(`dmb_ground_truth_wadd_sampling`): features are 0/1, so there are no
+magnitudes, and the arbiter picks WADD because behavior is intermediate — a
+*weighted compensatory* rule integrating the cues' *specific validities*
+(TTB = non-compensatory; Tallying = unweighted compensatory).
 
-  * cardinal task (`hdm_ground_truth_wadd`): features are 1..rating_max ratings;
-    the arbiter picks WADD because behavior shows sensitivity to *cardinal
-    magnitudes* that TTB and Tallying both ignore.
-  * binary task  (`dmb_ground_truth_wadd_sampling`): features are 0/1, so there
-    are no magnitudes; the arbiter picks WADD because behavior is intermediate —
-    a *weighted compensatory* rule integrating the cues' *specific validities*
-    (TTB = non-compensatory; Tallying = unweighted compensatory).
+`case_study_wadd_narrowing.py` also handles a cardinal variant
+(`hdm_ground_truth_wadd`, features are 1..rating_max ratings), but that data is
+not part of this repository, so its `rating_max` / magnitude-insight /
+"cardinal task" subtitle branches are **not covered here**.
 
 Only the extraction / text-selection logic is unit-tested here; the matplotlib
 drawing is iterated visually. Every number/string below is hand-verified ground
-truth read off each run's round_000 artifacts.
+truth read off the run's round_000 artifacts.
 """
 from pathlib import Path
 
@@ -35,13 +35,9 @@ BINARY_RUN = Path(
     "wadd_sampling/noise=0.0/"
     "dmb_ground_truth_wadd_sampling_noise=0.0_gemini-3.1-pro-preview_run3"
 )
-CARDINAL_RUN = Path(
-    "results/synthetic_cardinal/wadd/noise=0.0/"
-    "hdm_ground_truth_wadd_noise=0.0_gemini-3.1-pro-preview_run1"
-)
 
 
-# --- experiment parsing: binary has no rating_max, cardinal does --------------
+# --- experiment parsing: binary features carry no rating_max ------------------
 def test_parse_experiment_binary_is_binary_and_has_no_rating_max():
     exp1 = parse_experiment(BINARY_RUN, "pi_1")
     exp2 = parse_experiment(BINARY_RUN, "pi_2")
@@ -53,16 +49,6 @@ def test_parse_experiment_binary_is_binary_and_has_no_rating_max():
     assert exp1["validities"] == [0.95, 0.85, 0.75, 0.65, 0.55]
 
 
-def test_parse_experiment_cardinal_keeps_rating_max():
-    exp1 = parse_experiment(CARDINAL_RUN, "pi_1")
-    exp2 = parse_experiment(CARDINAL_RUN, "pi_2")
-    assert exp1["trial_a"].shape == (6, 5)
-    assert exp2["trial_a"].shape == (8, 4)
-    assert exp1["rating_max"] == 5
-    # Cardinal ratings exceed the binary {0,1} range.
-    assert max(exp1["trial_a"].flatten().tolist()) > 1
-
-
 # --- taglines are read from the data, not hardcoded ---------------------------
 def test_stage1_taglines_binary_report_real_dims_and_omit_rating_max():
     exp1 = parse_experiment(BINARY_RUN, "pi_1")
@@ -70,17 +56,6 @@ def test_stage1_taglines_binary_report_real_dims_and_omit_rating_max():
     assert stage1_taglines(exp1, exp2) == (
         "Exp 1  ·  proposed by TTB  ·  5 feats × 8 trials",
         "Exp 2  ·  proposed by Tallying  ·  5 feats × 12 trials",
-    )
-
-
-def test_stage1_taglines_cardinal_match_the_legacy_hardcoded_strings():
-    # The data-driven builder must reproduce what was hardcoded for the cardinal
-    # run (so the existing cardinal figure is unchanged): 5×6 and 4×8, rating_max=5.
-    exp1 = parse_experiment(CARDINAL_RUN, "pi_1")
-    exp2 = parse_experiment(CARDINAL_RUN, "pi_2")
-    assert stage1_taglines(exp1, exp2) == (
-        "Exp 1  ·  proposed by TTB  ·  5 feats × 6 trials  ·  rating_max=5",
-        "Exp 2  ·  proposed by Tallying  ·  4 feats × 8 trials  ·  rating_max=5",
     )
 
 
@@ -110,13 +85,6 @@ def test_key_insight_sentence_binary_is_the_weighted_validity_sentence():
     )
 
 
-def test_key_insight_sentence_cardinal_is_the_magnitude_sentence():
-    arb = parse_arbitration(CARDINAL_RUN)
-    sentence = key_insight_sentence(arb["response"]["interpretation"])
-    assert "cardinal magnitudes" in sentence
-    assert sentence.endswith("(which both TTB and Tallying ignore).")
-
-
 def test_key_insight_sentence_does_not_match_unweighted_compensatory():
     # "unweighted compensatory" contains the substring "weighted compensatory";
     # the selector must not latch onto that earlier, wrong sentence.
@@ -137,7 +105,6 @@ def test_parse_wadd_binary_description_names_wadd():
 
 def test_count_subjects_matches_the_observation_files():
     assert count_subjects(BINARY_RUN) == 25
-    assert count_subjects(CARDINAL_RUN) == 50
 
 
 # --- subtitle labels the run truthfully (no more hardcoded "run 1") -----------
@@ -147,7 +114,3 @@ def test_run_subtitle_binary_names_task_gt_noise_run():
     )
 
 
-def test_run_subtitle_cardinal_is_labeled_cardinal():
-    assert run_subtitle(CARDINAL_RUN) == (
-        "cardinal task  ·  ground truth = WADD  ·  noise = 0.0  ·  run1"
-    )
