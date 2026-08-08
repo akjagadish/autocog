@@ -20,8 +20,8 @@
 #   https://autograd-online-experiment--autograd-4bbea.us-east4.hosted.app
 #
 # Re-run only the analysis later, without recruiting again:
-#   uv run python validation_online/download_data.py --experiment exp1
-#   uv run python validation_online/analyse.py --data validation_online/data/exp1/trials.csv --experiment exp1
+#   uv run python scripts/preregistration/download_data.py --experiment exp1
+#   uv run python scripts/preregistration/analyse.py --data scripts/preregistration/data/exp1/trials.csv --experiment exp1
 
 set -euo pipefail
 cd "$(dirname "$0")/.."          # repo root (so uv + credential paths resolve)
@@ -46,14 +46,14 @@ run_one () {
                --min_rt_ms "$MIN_RT_MS" --study_url "$STUDY_URL" )
   [[ -n "$COMPLETION_CODE" ]] && args+=( --completion_code "$COMPLETION_CODE" )
 
-  uv run python validation_online/run_experiment.py "${args[@]}"
+  uv run python scripts/preregistration/run_experiment.py "${args[@]}"
 
   echo "--- $exp: download_data ---"
-  uv run python validation_online/download_data.py --experiment "$exp"
+  uv run python scripts/preregistration/download_data.py --experiment "$exp"
 
   echo "--- $exp: analyse (N=$N is a plumbing check only) ---"
-  uv run python validation_online/analyse.py \
-    --data "validation_online/data/$exp/trials.csv" --experiment "$exp"
+  uv run python scripts/preregistration/analyse.py \
+    --data "scripts/preregistration/data/$exp/trials.csv" --experiment "$exp"
 }
 
 for exp in "${EXPERIMENTS[@]}"; do
@@ -61,5 +61,5 @@ for exp in "${EXPERIMENTS[@]}"; do
 done
 
 echo
-echo "PILOT complete. Artifacts: validation_online/data/exp1/ and data/exp2/"
+echo "PILOT complete. Artifacts: scripts/preregistration/data/exp1/ and data/exp2/"
 echo "(trials.csv + raw_observations.json + conditions.json per experiment)."

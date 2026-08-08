@@ -47,7 +47,7 @@ values from {0.5, ..., 0.9}, always sorted descending (features are presented
 in descending-validity order); every option vector is unique across the
 whole battery.
 
-Run:  .venv/bin/python validation_online/search.py
+Run:  .venv/bin/python scripts/preregistration/search.py
 """
 
 import itertools

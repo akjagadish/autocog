@@ -17,9 +17,9 @@ writes them out keyed by their unique Firestore doc id (slot_epoch_ms) as the
 participant id, with the validity vector read from each doc's condition.
 
 Usage:
-  .venv/bin/python validation_online/download_firebase.py --experiment exp1 --last 49
+  .venv/bin/python scripts/preregistration/download_firebase.py --experiment exp1 --last 49
   # then:
-  .venv/bin/python validation_online/download_data.py --experiment exp1
+  .venv/bin/python scripts/preregistration/download_data.py --experiment exp1
 """
 
 from __future__ import annotations
@@ -151,7 +151,7 @@ def main() -> int:
     print(f"scanned {scanned} docs; kept {len(kept)} {args.experiment} "
           f"submissions -> {out_dir}/raw_observations.json + conditions.json")
     print(f"per validity vector: {dict(sorted(per_vec.items()))}")
-    print(f"next: .venv/bin/python validation_online/download_data.py "
+    print(f"next: .venv/bin/python scripts/preregistration/download_data.py "
           f"--experiment {args.experiment}")
     return 0
 

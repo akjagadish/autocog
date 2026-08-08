@@ -38,9 +38,9 @@ analyzed; participants with incomplete data are excluded. No response-pattern,
 response-time, or performance exclusions are applied.
 
 Usage:
-  .venv/bin/python validation_online/analyse.py --data validation_online/data/trials.csv
-  .venv/bin/python validation_online/analyse.py --data ... --experiment exp1
-  .venv/bin/python validation_online/analyse.py --selftest
+  .venv/bin/python scripts/preregistration/analyse.py --data scripts/preregistration/data/trials.csv
+  .venv/bin/python scripts/preregistration/analyse.py --data ... --experiment exp1
+  .venv/bin/python scripts/preregistration/analyse.py --selftest
 """
 
 from __future__ import annotations

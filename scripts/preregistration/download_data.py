@@ -25,8 +25,8 @@ incomplete data (technical failure or non-completion) are excluded. No
 response-pattern, response-time, or performance exclusions are applied.
 
 Usage:
-  .venv/bin/python validation_online/download_data.py --experiment exp1
-  .venv/bin/python validation_online/download_data.py --experiment exp2
+  .venv/bin/python scripts/preregistration/download_data.py --experiment exp1
+  .venv/bin/python scripts/preregistration/download_data.py --experiment exp2
 """
 
 from __future__ import annotations

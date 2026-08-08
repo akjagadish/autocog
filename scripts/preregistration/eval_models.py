@@ -19,15 +19,15 @@ fits are then POOLED across vectors AND experiments for the reported metrics
 are separate between-subjects groups, so a given stimulus contributes its choose-B
 proportion from whichever experiment's participants saw it.
 
-Outputs (under ``--out``, default ``validation_online/data/analysis/``):
+Outputs (under ``--out``, default ``scripts/preregistration/data/analysis/``):
   eval_models_per_stimulus.csv  — long format (model, experiment, vector, stimulus, p_b_human, p_b_model)
   eval_models_summary.csv       — per-model MAE / MSE / Pearson r vs pooled humans
   eval_models_metrics.png       — 1x3 bars: MSE | MAE | Pearson r, one bar per model
   eval_models_scatter.png       — per-model human-vs-model P(B) scatter, coloured by experiment
 
 Usage:
-  .venv/bin/python validation_online/eval_models.py
-  .venv/bin/python validation_online/eval_models.py --n_subjects 200 --seed 0
+  .venv/bin/python scripts/preregistration/eval_models.py
+  .venv/bin/python scripts/preregistration/eval_models.py --n_subjects 200 --seed 0
 """
 
 from __future__ import annotations
@@ -265,7 +265,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--data_root", default=str(HERE / "data"),
-                    help="dir holding exp1/ and exp2/ (default: validation_online/data)")
+                    help="dir holding exp1/ and exp2/ (default: scripts/preregistration/data)")
     ap.add_argument("--experiments", nargs="+", default=["exp1", "exp2"],
                     help="experiment subdirs to pool (default: exp1 exp2)")
     ap.add_argument("--n_subjects", type=int, default=200,
@@ -304,7 +304,7 @@ def main() -> int:
     exps_present = sorted(human["experiment"].astype(str).unique())
     scope = ("+".join(exps_present) + " pooled" if len(exps_present) > 1
              else f"{exps_present[0]} only")
-    title = (f"Model fit to validation_online humans — {scope} "
+    title = (f"Model fit to the preregistered study humans — {scope} "
              f"({len(human)} stimuli, {df['participant'].nunique()} participants)")
     try:
         plot_metrics(summary, out_dir / "eval_models_metrics.png", title=title)

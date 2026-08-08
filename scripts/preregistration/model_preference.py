@@ -14,7 +14,7 @@ maximally noisy). A participant's within-subject variance is the mean of that
 over their stimuli. We also test whether it differs across the preferred-model
 groups (Kruskal-Wallis).
 
-Usage:  .venv/bin/python validation_online/model_preference.py --experiment exp1
+Usage:  .venv/bin/python scripts/preregistration/model_preference.py --experiment exp1
 """
 from __future__ import annotations
 

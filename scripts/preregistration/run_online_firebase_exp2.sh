@@ -15,9 +15,9 @@
 # project `autograd-4bbea` — do NOT run while a real study is live there.
 #
 # After completion, build the dataset and analyse:
-#   uv run python validation_online/download_data.py --experiment exp2
-#   uv run python validation_online/analyse.py \
-#       --data validation_online/data/exp2/trials.csv --experiment exp2
+#   uv run python scripts/preregistration/download_data.py --experiment exp2
+#   uv run python scripts/preregistration/analyse.py \
+#       --data scripts/preregistration/data/exp2/trials.csv --experiment exp2
 
 set -euo pipefail
 cd "$(dirname "$0")/.."          # repo root (so uv + credential paths resolve)
@@ -33,7 +33,7 @@ echo "Experiment 2 (Firebase only). Participants open: $STUDY_URL"
 echo "Open $N_SESSIONS fresh/incognito windows (one per test participant)."
 echo
 
-uv run python validation_online/run_experiment.py \
+uv run python scripts/preregistration/run_experiment.py \
   --experiment exp2 \
   --backend firebase \
   --n_sessions "$N_SESSIONS" \

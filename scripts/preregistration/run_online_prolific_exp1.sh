@@ -13,9 +13,9 @@
 #   https://autograd-online-experiment--autograd-4bbea.us-east4.hosted.app
 #
 # After completion, build the dataset and analyse:
-#   uv run python validation_online/download_data.py --experiment exp1
-#   uv run python validation_online/analyse.py \
-#       --data validation_online/data/exp1/trials.csv --experiment exp1
+#   uv run python scripts/preregistration/download_data.py --experiment exp1
+#   uv run python scripts/preregistration/analyse.py \
+#       --data scripts/preregistration/data/exp1/trials.csv --experiment exp1
 
 set -euo pipefail
 cd "$(dirname "$0")/.."          # repo root (so uv + credential paths resolve)
@@ -34,4 +34,4 @@ ARGS=( --experiment exp1 --backend firebase_prolific
 [[ -n "$COMPLETION_CODE" ]] && ARGS+=( --completion_code "$COMPLETION_CODE" )
 
 echo "Experiment 1 — Prolific run (50 completers, 10/vector). Creating a PAID study."
-uv run python validation_online/run_experiment.py "${ARGS[@]}"
+uv run python scripts/preregistration/run_experiment.py "${ARGS[@]}"

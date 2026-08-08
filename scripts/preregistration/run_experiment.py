@@ -26,14 +26,14 @@ which download_data.py turns into that experiment's analysis dataset.
 
 Usage:
   # build only, no upload
-  .venv/bin/python validation_online/run_experiment.py --experiment exp1 --dry_run
+  .venv/bin/python scripts/preregistration/run_experiment.py --experiment exp1 --dry_run
   # full preregistered Prolific run (exp1=50, exp2=100; balanced across vectors)
-  .venv/bin/python validation_online/run_experiment.py --experiment exp1
+  .venv/bin/python scripts/preregistration/run_experiment.py --experiment exp1
   # small no-Prolific test: 2 self-served sessions on Firebase only
-  .venv/bin/python validation_online/run_experiment.py --experiment exp1 \
+  .venv/bin/python scripts/preregistration/run_experiment.py --experiment exp1 \
       --backend firebase --n_sessions 2
 
-Convenience launchers (validation_online/): run_online_firebase_exp1.sh /
+Convenience launchers (scripts/preregistration/): run_online_firebase_exp1.sh /
 run_online_firebase_exp2.sh (no-Prolific tests) and run_online_prolific_exp1.sh /
 run_online_prolific_exp2.sh (full Prolific runs).
 """
