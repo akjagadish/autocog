@@ -14,4 +14,4 @@ set -euo pipefail
 cd "$(dirname "$0")"             # repo root
 
 EXP="${1:-exp1}"
-uv run python validation_online/model_preference.py --experiment "$EXP"
+uv run python scripts/preregistration/model_preference.py --experiment "$EXP"

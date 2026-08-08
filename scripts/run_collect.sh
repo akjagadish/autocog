@@ -35,8 +35,8 @@ for EXP in "${EXPERIMENTS[@]}"; do
          --duration "$DURATION" --min_rt_ms "$MIN_RT_MS" --study_url "$STUDY_URL" )
   [[ -n "$BATCH" ]] && args+=( --n_sessions "$BATCH" )
 
-  uv run python validation_online/run_experiment.py "${args[@]}"
-  uv run python validation_online/download_data.py --experiment "$EXP" --append
+  uv run python scripts/preregistration/run_experiment.py "${args[@]}"
+  uv run python scripts/preregistration/download_data.py --experiment "$EXP" --append
 done
 
 echo

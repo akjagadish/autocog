@@ -20,7 +20,7 @@ for EXP in exp1; do
   echo "=================================================================="
   echo "  PILOT $EXP — recruiting $N Prolific participant(s)"
   echo "=================================================================="
-  uv run python validation_online/run_experiment.py \
+  uv run python scripts/preregistration/run_experiment.py \
     --experiment "$EXP" \
     --backend firebase_prolific \
     --n_sessions "$N" \
@@ -28,10 +28,10 @@ for EXP in exp1; do
     --min_rt_ms "$MIN_RT_MS" \
     --study_url "$STUDY_URL"
 
-  uv run python validation_online/download_data.py --experiment "$EXP"
+  uv run python scripts/preregistration/download_data.py --experiment "$EXP"
 
-  uv run python validation_online/analyse.py \
-    --data "validation_online/data/$EXP/trials.csv" --experiment "$EXP"
+  uv run python scripts/preregistration/analyse.py \
+    --data "scripts/preregistration/data/$EXP/trials.csv" --experiment "$EXP"
 done
 
-echo "PILOT complete. See validation_online/data/exp1/ and data/exp2/."
+echo "PILOT complete. See scripts/preregistration/data/exp1/ and data/exp2/."
