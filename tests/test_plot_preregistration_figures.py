@@ -145,14 +145,35 @@ def test_flagship_drops_suptitle_but_keeps_panel_titles():
 
 
 # --- driver wiring ----------------------------------------------------------
-def test_driver_renders_a_layout_with_png_svg_pdf():
+def test_driver_renders_a_layout_with_png_svg_pdf(tmp_path):
+    """The driver must render a layout to png+svg+pdf.
+
+    The bundle's plot modules hardcode their own `output/` directory and are
+    imported by name, so `render_layout` always writes into the real bundle no
+    matter which path we hand it (earlier tests in this file have already
+    imported those modules, and importlib returns the cached copies). Since
+    `results/` is the paper's record, snapshot whatever the render touches and
+    put it back — a re-render is byte-different (matplotlib stamps a timestamp
+    and random element ids) even when it is visually identical.
+    """
+    import shutil
+
     from scripts.plot_preregistration_figures import render_layout
 
-    paths = render_layout(BUNDLE, "flagship")
-    exts = {p.suffix for p in paths}
-    assert {".png", ".svg", ".pdf"} <= exts
-    for p in paths:
-        assert p.exists()
+    out_dir = BUNDLE / "output"
+    backup = tmp_path / "output_backup"
+    if out_dir.is_dir():
+        shutil.copytree(out_dir, backup)
+    try:
+        paths = render_layout(BUNDLE, "flagship")
+        exts = {p.suffix for p in paths}
+        assert {".png", ".svg", ".pdf"} <= exts
+        for p in paths:
+            assert p.exists()
+    finally:
+        if backup.is_dir():
+            shutil.rmtree(out_dir, ignore_errors=True)
+            shutil.copytree(backup, out_dir)
 
 
 def test_render_bundle_lists_all_entry_points():

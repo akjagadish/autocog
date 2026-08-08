@@ -547,6 +547,9 @@ def test_main_end_to_end_writes_csv_and_png(tmp_path):
         "--csv", str(csv_out),
         "--out", str(png_out),
         "--mse-out", str(mse_out),
+        # --autocorr-out must be given too: its default is
+        # results/recovery/recovery_autocorr.png, i.e. the committed tree.
+        "--autocorr-out", str(tmp_path / "recovery_autocorr.png"),
     ])
     assert rc == 0
     assert csv_out.is_file() and csv_out.stat().st_size > 0
