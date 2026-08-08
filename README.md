@@ -69,11 +69,19 @@ OPENAI_API_KEY=...      # provider=openai
 # AI_SANDBOX_KEY=...    # only for provider=princeton (Princeton AI Sandbox)
 ```
 
-**No key needed for a dry run:** every entry point accepts `--llm_provider
-mock`, which uses a canned client and makes the full pipeline runnable offline
-for free. Use this to verify the harness before spending tokens. Supported
-providers: `gemini` (default), `anthropic`, `openai`, `princeton`, `mock` (see
-[src/llm.py](src/llm.py)).
+Supported providers: `gemini` (default), `anthropic`, `openai`, `princeton`,
+`mock` (see [src/llm.py](src/llm.py)).
+
+> **`--llm_provider mock` is NOT an offline dry run.** `MockClient` is a
+> unit-test fixture that replays a caller-supplied list of canned responses;
+> `make_client` constructs it with an *empty* list, so it raises
+> `MockClient exhausted canned responses` on the first LLM call. Separately,
+> `AutoCog.from_yaml` builds its client eagerly from `configs/default.yaml`
+> before the CLI provider is applied, so a keyless run fails there first.
+> **Running the discovery loop requires a real API key.** The mock provider is
+> useful only inside the test suite, which supplies its own canned responses.
+> Everything under [§7](#7-regenerating-the-analyses) runs offline, because it
+> reads the committed `results/` tree instead of calling an LLM.
 
 ## 4. Run the tests
 
@@ -109,21 +117,29 @@ Entry points are the root `main*.py` scripts (argparse-driven, run from root):
 | `main_heuristic_decision_making.py` | heuristic decision making (graded / cardinal cues) |
 | `main_*_online.py` | live online variants (Firebase + Prolific) |
 
-Examples (start with `mock` to check the harness for free):
+These all consume tokens — there is no free dry-run mode (see the note in
+[§3](#3-secrets-api-keys)). Start with `--n_rounds 1` to check the wiring
+cheaply before committing to a full five-cycle run.
 
 ```bash
-# Free dry run
+# Smallest real run: one cycle. Default provider gemini / gemini-3.1-pro-preview.
 uv run python main_decision_making_binary.py \
-  --ground_truth ttb_sampling --n_rounds 1 --llm_provider mock
+  --ground_truth ttb_sampling --n_rounds 1
 
-# Decision-making ablation, one condition, free dry run
+# One ablation condition, one cycle
 uv run python main_ablation_binary.py \
-  --condition baseline --ground_truth ttb_sampling \
-  --n_rounds 1 --llm_provider mock
+  --condition baseline --ground_truth ttb_sampling --n_rounds 1
 
-# Real run (billed): default provider is gemini / gemini-3.1-pro-preview
+# The full five-cycle run used in the paper
 uv run python main_ablation_binary.py \
   --condition baseline --ground_truth ttb_sampling --n_rounds 5
+```
+
+To check that every *analysis* still runs without spending anything:
+
+```bash
+bash scripts/smoke_analyses.sh          # all groups, ~2 min
+bash scripts/smoke_analyses.sh fig3     # one group
 ```
 
 Key `main_ablation_binary.py` flags:
@@ -163,6 +179,7 @@ configs/                 LLM/run configs (default.yaml, mock.yaml, jsd_threshold
 scripts/                 analysis & plotting (plot_*.py, recovery_*.py, eval_*.py)
   preregistration/         the preregistered follow-up study (build / run / analyse)
   run_*.sh / score_*.sh    batch sweep + scoring wrappers
+  smoke_analyses.sh        runs every reported analysis (see §7)
 tests/                   pytest suite (conftest puts the repo root on sys.path)
 results/                 committed run outputs (see below)
 logs/                    per-run logs (git-ignored)
@@ -236,6 +253,28 @@ level — it is the source of the synthetic `random` family baseline, which
 
 Most scripts write into an `analysis/` subdirectory of the tree they read;
 pass `-h` for the flags.
+
+### Checking that every analysis still runs
+
+```bash
+bash scripts/smoke_analyses.sh            # every group, ~4 min
+bash scripts/smoke_analyses.sh fig3       # fig1 | fig3 | fig4 | fig5 | si | loop
+KEEP=1 bash scripts/smoke_analyses.sh     # keep the outputs to eyeball
+```
+
+One analysis per reported result, at deliberately tiny sample sizes: it checks
+that each script can still find its inputs and run to completion, **not** that
+it reproduces the paper's numbers. Exit status is non-zero if any analysis
+fails, and anything that cannot run here is reported as an explicit `SKIP` with
+its reason (missing credentials or uncommitted raw data) so a gap never reads as
+coverage.
+
+**It does not modify `results/`.** That tree is the paper's record. Every
+analysis writes into a temp directory where it accepts an output flag; a few
+hardcode a path inside `results/`, so the script snapshots git's view of
+`results/` up front and reverts exactly what the run touched on exit. It
+reverts only paths that changed *during* the run, leaving pre-existing local
+edits alone.
 
 ## 8. Scope
 
