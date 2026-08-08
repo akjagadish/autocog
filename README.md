@@ -18,8 +18,7 @@ simulated) humans, and interprets the results. An arbiter then picks a winner
 and guides synthesis of a new theory. Repeat for N rounds.
 
 > This is **research code**. The priority is accuracy and readability over
-> performance. See [.claude/CLAUDE.md](.claude/CLAUDE.md) for working
-> conventions (TDD, analytical tests, "never commit on my behalf", etc.).
+> performance.
 
 ---
 
