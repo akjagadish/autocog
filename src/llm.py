@@ -17,7 +17,9 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel
 
-from src.config import LLMConfig
+from pathlib import Path
+
+from src.config import LLMConfig, load_config
 from src.logger import info as _log_info
 
 
@@ -236,6 +238,71 @@ class GeminiClient:
         return ChatResult(text=resp.text, parsed=parsed, usage=usage)
 
 
+# Anthropic models that reject sampling parameters (`temperature`, `top_p`,
+# `top_k`) with a 400 ("`temperature` is deprecated for this model"): the
+# adaptive/always-on-thinking generation. Older models (Sonnet 4.6, Haiku 4.5,
+# ...) still accept them. Verified against the live API on 2026-09-05:
+# claude-sonnet-5, claude-opus-5, claude-opus-4-8, claude-opus-4-7 and
+# claude-fable-5-1 reject it; claude-sonnet-4-6, claude-opus-4-6 and
+# claude-haiku-4-5 accept it. (claude-mythos-* shares Fable's API surface.)
+_ANTHROPIC_NO_SAMPLING_PREFIXES: tuple[str, ...] = (
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-fable-",
+    "claude-mythos-",
+)
+
+
+# On Anthropic, thinking tokens count toward `max_tokens` (Gemini budgets
+# thinking separately via thinking_config). Adaptive thinking on claude-opus-5
+# used a median of ~25k output tokens per theory-generation call, so the YAML
+# default of 32768 starved the answer: 39/72 calls returned zero text at
+# stop_reason='max_tokens' (2026-09-05). Request the model output ceiling —
+# the SDK streams, so a large cap has no timeout cost and is only billed when
+# used. 128k is the ceiling for every current Opus/Sonnet/Fable model; Haiku
+# 4.5's is 64k.
+_ANTHROPIC_MAX_OUTPUT_TOKENS = 128_000
+_ANTHROPIC_HAIKU_MAX_OUTPUT_TOKENS = 64_000
+
+# A stop_reason of "max_tokens" at the model ceiling is a sampling accident,
+# not a budget problem: under grammar-constrained structured output
+# claude-opus-5 once looped on `\n` escapes inside a JSON string until the
+# cap (2026-09-05; legitimate schema-bound answers peak at ~35k). Resample a
+# bounded number of times before giving up.
+_ANTHROPIC_MAX_TOKENS_RESAMPLES = 2
+
+
+def _anthropic_max_output_tokens(model: str) -> int:
+    if model.startswith("claude-haiku"):
+        return _ANTHROPIC_HAIKU_MAX_OUTPUT_TOKENS
+    return _ANTHROPIC_MAX_OUTPUT_TOKENS
+
+
+def _anthropic_json_schema(schema: type[BaseModel]) -> dict:
+    """JSON schema for `output_config.format`, in the subset the API accepts.
+
+    The SDK's `transform_schema` (the same helper `messages.parse()` uses)
+    adds `additionalProperties: false` and drops keywords the structured-
+    output grammar rejects (numeric bounds, defaults, titles).
+    """
+    try:
+        from anthropic.lib._parse._transform import transform_schema
+    except ImportError:  # private SDK module; degrade to the raw schema
+        raw = schema.model_json_schema()
+        raw.setdefault("additionalProperties", False)
+        return raw
+    return transform_schema(schema.model_json_schema())
+
+
+def _anthropic_temperature_kwarg(model: str, temperature: float) -> dict:
+    """Omit `temperature` for Anthropic models that reject it (see above)."""
+    if model.startswith(_ANTHROPIC_NO_SAMPLING_PREFIXES):
+        return {}
+    return {"temperature": temperature}
+
+
 class AnthropicClient:
     """Anthropic (Claude) backend via the anthropic SDK."""
 
@@ -260,37 +327,88 @@ class AnthropicClient:
         api_messages = [
             {"role": m["role"], "content": m["content"]} for m in messages
         ]
+        # Enforce the schema natively (mirrors Gemini's `response_schema`).
+        # Prose-only instructions are not enough — claude-sonnet-5 answered
+        # the experiment-proposal prompt in pure markdown without this. We
+        # send the schema DICT (not the pydantic class) so the SDK does not
+        # parse the stream itself: a truncated/invalid response then reaches
+        # our own error path below (raw text + usage) instead of dying as a
+        # bare pydantic ValidationError inside get_final_message().
+        schema_kwargs: dict = {}
+        if response_schema is not None and issubclass(response_schema, BaseModel):
+            schema_kwargs["output_config"] = {
+                "format": {
+                    "type": "json_schema",
+                    "schema": _anthropic_json_schema(response_schema),
+                }
+            }
 
         def _do_stream():
             with self.client.messages.stream(
                 model=self.model,
                 system=system,
                 messages=api_messages,
-                temperature=self.temperature,
                 max_tokens=self.max_tokens,
+                **_anthropic_temperature_kwarg(self.model, self.temperature),
+                **schema_kwargs,
             ) as stream:
                 return stream.get_final_message()
 
-        resp = _call_with_retry(
-            _do_stream, label=f"AnthropicClient.chat({self.model})"
-        )
+        label = f"AnthropicClient.chat({self.model})"
+        for resample in range(_ANTHROPIC_MAX_TOKENS_RESAMPLES + 1):
+            resp = _call_with_retry(_do_stream, label=label)
+            if resp.stop_reason != "max_tokens":
+                break
+            if resample < _ANTHROPIC_MAX_TOKENS_RESAMPLES:
+                _log_info(
+                    f"{label}: stop_reason=max_tokens at output_tokens="
+                    f"{resp.usage.output_tokens} — resampling "
+                    f"({resample + 1}/{_ANTHROPIC_MAX_TOKENS_RESAMPLES})."
+                )
+        else:
+            raise RuntimeError(
+                f"{self.model} hit max_tokens={self.max_tokens} on "
+                f"{_ANTHROPIC_MAX_TOKENS_RESAMPLES + 1} consecutive samples "
+                f"(last output_tokens={resp.usage.output_tokens}); giving up."
+            )
 
-        text = "".join(
-            block.text for block in resp.content if block.type == "text"
-        )
         usage = {
             "input_tokens": resp.usage.input_tokens,
             "output_tokens": resp.usage.output_tokens,
         }
+        # Safety-classifier refusals come back as HTTP 200 with no text block.
+        # Name the refusal explicitly rather than surfacing it as a confusing
+        # empty-JSON parse error. Callers' per-attempt retry loops (improver,
+        # theory_generator) catch and log it like any other failed generation
+        # and retry, so the log shows what happened instead of a bare parse error.
+        if resp.stop_reason == "refusal":
+            raise RuntimeError(
+                f"{self.model} refused the request "
+                f"(stop_details={getattr(resp, 'stop_details', None)!r}, "
+                f"usage={usage})"
+            )
+
+        text = "".join(
+            block.text for block in resp.content if block.type == "text"
+        )
+        if not text:
+            # No text block at all (max_tokens stops are already handled
+            # above, so this is an unexpected shape). Name it so the callers'
+            # retry logs say so instead of a bare JSONDecodeError.
+            raise RuntimeError(
+                f"{self.model} returned no text block "
+                f"(stop_reason={resp.stop_reason!r}, usage={usage})"
+            )
 
         parsed = None
-        if response_schema is not None and issubclass(response_schema, BaseModel):
+        if schema_kwargs:
             json_text = _extract_json(text)
             try:
                 parsed = response_schema.model_validate_json(json_text)
             except Exception as exc:
                 raise RuntimeError(
-                    f"structured output parse failed (usage={usage}).\n"
+                    f"structured output parse failed (stop_reason="
+                    f"{resp.stop_reason}, usage={usage}).\n"
                     f"raw text:\n{text!r}"
                 ) from exc
 
@@ -336,7 +454,7 @@ def _extract_json(text: str) -> str:
     return text.strip()
 
 
-_REASONING_PREFIXES = ("gpt-5", "o1", "o3", "o4")
+_REASONING_PREFIXES = ("gpt-5", "gpt-6", "o1", "o3", "o4")
 
 
 def _completion_token_kwarg(model: str, max_tokens: int) -> dict:
@@ -452,6 +570,17 @@ class MockClient:
         return ChatResult(text=text, parsed=parsed, usage={})
 
 
+def client_from_config(
+    config_path: str | Path, llm: LLMConfig | None = None
+) -> LLMClient:
+    """Client for an agent's `from_config`. `llm` (e.g. built from a CLI
+    --llm_provider/--llm_model) overrides the YAML llm section so one run
+    uses a single provider everywhere; the YAML is only read when needed."""
+    if llm is None:
+        llm = load_config(Path(config_path)).llm
+    return make_client(llm)
+
+
 def make_client(cfg: LLMConfig) -> LLMClient:
     """Construct an LLMClient from the llm section of RunConfig."""
     if cfg.provider == "gemini":
@@ -470,6 +599,19 @@ def make_client(cfg: LLMConfig) -> LLMClient:
         return AnthropicClient(
             model=cfg.model,
             client=client,
+            temperature=cfg.temperature,
+            # cfg.max_tokens is an output-only budget sized for Gemini; see
+            # _ANTHROPIC_MAX_OUTPUT_TOKENS for why it is not used here.
+            max_tokens=_anthropic_max_output_tokens(cfg.model),
+        )
+    if cfg.provider == "openai":
+        load_dotenv()
+        import openai
+
+        # Plain OpenAI endpoint; the SDK reads OPENAI_API_KEY from the env.
+        return OpenAIClient(
+            model=cfg.model,
+            client=openai.OpenAI(),
             temperature=cfg.temperature,
             max_tokens=cfg.max_tokens,
         )

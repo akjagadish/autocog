@@ -492,10 +492,11 @@ def _theory_for_slot(
                 experiment_class=EXPERIMENT_CLASS,
                 llm_client=ground_truth.llm_client,
             )
-    return AutoCog.from_yaml(
-        default_yaml,
+    return AutoCog(
         label=fallback_label,
+        theory=Theory.from_yaml(default_yaml),
         experiment_class=EXPERIMENT_CLASS,
+        llm_client=ground_truth.llm_client,
     )
 
 
@@ -750,21 +751,25 @@ def main(n_rounds: int = N_ROUNDS, run_dir: Path = RUN_DIR) -> None:
     pool_dir = run_dir / "observations"
 
     # Build shared resources once.
+    # One LLM config for the whole run: the CLI --llm_provider/--llm_model
+    # overrides the provider/model in configs/default.yaml (other llm knobs
+    # such as max_tokens are kept) and drives the ground-truth client, the
+    # first-round slot models, and every discovery agent. Without this the
+    # agents silently fall back to the YAML provider.
+    from src.config import LLMConfig, load_config
+    _yaml_llm = load_config(Path("configs/default.yaml")).llm.model_dump()
+    llm_cfg = LLMConfig(**{**_yaml_llm, "provider": LLM_PROVIDER, "model": LLM_MODEL})
     ground_truth = AutoCog.from_yaml(
         theory_path=GROUND_TRUTH_YAML,
         label="pi_ground_truth",
         experiment_class=EXPERIMENT_CLASS,
+        llm=llm_cfg,
     )
-    from src.config import LLMConfig
-    from src.llm import make_client
-    ground_truth.llm_client = make_client(
-        LLMConfig(provider=LLM_PROVIDER, model=LLM_MODEL)
-        )
     pool = Observations.load(pool_dir, experiment_class=EXPERIMENT_CLASS)
-    arbiter = Arbiter.from_config(experiment_class=EXPERIMENT_CLASS)
-    improver = Improver.from_config(experiment_class=EXPERIMENT_CLASS)
+    arbiter = Arbiter.from_config(experiment_class=EXPERIMENT_CLASS, llm=llm_cfg)
+    improver = Improver.from_config(experiment_class=EXPERIMENT_CLASS, llm=llm_cfg)
     theory_generator = TheoryGenerator.from_config(
-        experiment_class=EXPERIMENT_CLASS
+        experiment_class=EXPERIMENT_CLASS, llm=llm_cfg
     )
 
     # Single RNG for all ground-truth action-noise draws across this run.

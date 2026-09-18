@@ -17,8 +17,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from src.config import load_config
-from src.llm import LLMClient, make_client
+from src.config import LLMConfig
+from src.llm import LLMClient, client_from_config
 from src.arbiter_verdict import ArbiterVerdict
 from src.experiment import Experiment
 from src.observation import Observations, Round
@@ -49,9 +49,9 @@ class Arbiter:
         *,
         experiment_class: type[Experiment],
         config_path: str | Path = "configs/default.yaml",
+        llm: LLMConfig | None = None,
     ) -> "Arbiter":
-        run_cfg = load_config(Path(config_path))
-        llm_client = make_client(run_cfg.llm)
+        llm_client = client_from_config(config_path, llm)
         return cls(
             experiment_class=experiment_class,
             llm_client=llm_client,

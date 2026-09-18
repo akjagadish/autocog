@@ -1,5 +1,4 @@
 import json
-import re
 from pathlib import Path
 try:
     from typing import Self
@@ -53,11 +52,14 @@ class Promptable(BaseModel):
         Gemini's MLDev API rejects any JSON-schema with `additionalProperties`
         (which Pydantic emits for `dict[str, ...]` fields), so dict-bearing
         Promptables (e.g. `Theory`, `Model`) must be requested in freeform
-        text mode and decoded here. Strips an optional ```json … ``` fence.
+        text mode and decoded here. Tolerates a ```json … ``` fence, prose
+        before/after it, and a prose preamble INSIDE the fence (seen with
+        claude-sonnet-5, 2026-09-05) via the client-side `_extract_json`
+        brace scan; a response with no JSON object still raises.
         """
-        match = re.search(r"```(?:json)?\s*\n(.*?)\n```", text, re.DOTALL)
-        payload = match.group(1) if match else text
-        return cls.model_validate(json.loads(payload))
+        from src.llm import _extract_json  # lazy: keep this module import-light
+
+        return cls.model_validate(json.loads(_extract_json(text)))
 
 
 def _resolve_label(finfo: FieldInfo) -> str | None:

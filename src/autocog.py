@@ -7,8 +7,8 @@ from typing import Any
 
 from scipy import stats
 
-from src.config import load_config
-from src.llm import LLMClient, make_client
+from src.config import LLMConfig
+from src.llm import LLMClient, client_from_config
 from src.experiment import Experiment
 from src.metric import Estimate, Metric
 from src.observation import Observation, Observations
@@ -64,10 +64,10 @@ class AutoCog:
         label: str,
         experiment_class: type[Experiment],
         config_path: str | Path = "configs/default.yaml",
+        llm: LLMConfig | None = None,
     ) -> "AutoCog":
         theory = Theory.from_yaml(theory_path)
-        run_cfg = load_config(Path(config_path))
-        llm_client = make_client(run_cfg.llm)
+        llm_client = client_from_config(config_path, llm)
         return cls(
             label=label,
             theory=theory,
