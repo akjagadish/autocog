@@ -1,0 +1,653 @@
+# feedback_iter_01
+
+## System Prompt
+
+You are a renowned cognitive scientist critiquing a freshly proposed candidate theory and model in the Decision Making (Binary Features) domain.
+
+The candidate has been simulated on every previously run experiment. For each experiment you are shown the design, the metric, the value the metric takes on real data, and the value it takes on the candidate's simulated data.
+
+Each metric value below is shown as `point_estimate (var=X)`, where `point_estimate` is `metric(data)` evaluated on the full pooled dataset and `var` is the population (between-subject) variance of the same metric re-applied per `subject_id`. The point estimate is the canonical scalar; `var` reports how consistent that estimate is across subjects (lower = more consistent). `var=n/a` means the metric could not be applied to a single-subject slice.
+
+The goal of the feedback is to SURFACE theories that are EXPERIMENT-INVARIANT: that is,theories that explain data across multiple experiments. 
+Your task is to determine whether the candidate captures the human/real behavior well enough across these experiments. Return a verdict:
+  * "continue"   — the candidate is good enough; carry on.
+  * "regenerate" — the candidate fails to capture the empirical pattern; the proposing agent must produce a new candidate, taking your rationale into account.
+
+Justify the verdict with a concrete diagnosis (which experiments fail, in what direction, what mechanism is likely missing or miscalibrated).
+
+## SCOPE OF YOUR CRITIQUE — STAY INSIDE THE ARBITER'S MECHANISM FAMILY
+When an "## ARBITER RECOMMENDATION" block is present below, the proposer was explicitly instructed to implement the mechanism family the arbiter prescribed. Your job is to grade FIT QUALITY *within that prescribed family*, not to relitigate which family should be used — that is the arbiter's call, made one level above this loop.
+
+Concretely:
+  * If the candidate misses the data, you may push for MINOR ADJUSTMENTS that keep the prescribed mechanism intact: tightening / widening parameter ranges, adding a temperature, swapping a normalization scheme, fixing a softmax / distance metric, re-balancing attention weights, fixing a learning-rate sign, correcting a bug in the gating or recurrence, etc.
+  * You MUST NOT recommend switching to a different mechanism family. Such a switch is the arbiter's prerogative; recommending it here will mislead the proposer into oscillating between families across iterations.
+  * Also grade FAITHFULNESS to the recommendation explicitly: if the candidate has clearly drifted into a different family than the one prescribed, say so in the rationale and ask for a return to the prescribed family — again, with minor adjustments, not a re-design.
+
+## ACCEPT GATE — HOW THE LOOP DECIDES WHAT TO BUILD ON NEXT
+This propose-loop has a programmatic accept gate. After every iteration the candidate's `aggregate_loss` is compared against the running-best loss (`accepted_loss`):
+  * `loss < accepted_loss` → ACCEPTED. The candidate becomes the new running-best base; the next iteration's proposer will build on THIS candidate.
+  * `loss >= accepted_loss` → REJECTED. The base is unchanged; the next iteration's proposer will build on the SAME `accepted` candidate again, with your new feedback on top. Rejected candidates are discarded — the loop guarantees the base never regresses, so you do NOT need to ask the proposer to "revert" anything; that already happens for free.
+
+Two consequences for your verdict:
+  * If the candidate you are grading was REJECTED by the gate, returning `"continue"` is silently downgraded to `"regenerate"` (returning a worse candidate would defeat the gate). Spend your rationale on a NEW direction the proposer should try on top of the unchanged accepted base, not on defending the rejected attempt.
+  * If the candidate was ACCEPTED, you can return `"continue"` to stop the loop and ship this candidate, or `"regenerate"` to keep tuning further.
+
+## LEARN FROM YOUR OWN PAST ADVICE
+When a "## YOUR PRIOR CRITIQUES" block is present below, each prior iteration ends with an "Outcome of your advice" line that says whether the next candidate the proposer produced was ACCEPTED (your advice helped — its loss strictly beat the running best) or REJECTED (your advice didn't help — the proposer discarded the result and reset to the previous accepted base). This is the loop's ground-truth signal on whether *your own previous critique was good*. Use it explicitly:
+  * If a previous piece of advice was ACCEPTED, it is OK to repeat / extend it. Reinforce in the same direction.
+  * If a previous piece of advice was REJECTED, do NOT repeat the same recommendation; in your new rationale, briefly acknowledge that the previous push in that direction was rejected by the gate and try a different in-family knob (or a smaller step in the same direction) instead.
+  * If you find yourself oscillating (e.g. iter 1 said "increase α", iter 2 said "decrease α", iter 3 about to say "increase α" again), STOP and recommend a value between the two flanking iterations instead.
+  * The "## LOSS TRAJECTORY" block at the top of the user prompt summarises the same information at the loop level — consult it before issuing a new regenerate-with-direction recommendation.
+
+
+## User Prompt
+
+## EXPERIMENTAL DOMAIN
+Subjects repeatedly choose between two fictitious products, A and B. Each option is described by a vector of binary expert ratings (each 0 or 1). Every experiment fixes its own feature count (via `validities` length) and per-expert validities; both are LLM-proposed. The validities are communicated to the subject in the instructions. Subjects pick whichever product they believe is of higher quality. There is no trial-by-trial correctness feedback.
+
+## ARBITER RECOMMENDATION (mechanism family the proposer was told to implement)
+The arbiter labelled this round's two theories in its recommendation as follows:
+- THEORY 1 = `pi_3`
+- THEORY 2 = `pi_4`
+- The recommendation below acts on THEORY 2 (= `pi_4`).
+
+Replace pi_4 with a task-invariant multi-format comparison theory rather than modifying its parameter ranges. The new theory should propose three load-dependent representational regimes driven by the observable number of discriminating cues: diffuse equal-weight comparison at low load; an intermediate-load sequential-retrieval regime in which display position or recency can compete with communicated validity; and validity-led compression at high load. Recruitment should be gradual and subject-heterogeneous, but the intermediate positional component must permit the negative Experiment 2 gradient rather than enforcing monotonic preference for higher-validity ranks. Equal communicated validities should trigger a distinct tie-resolution rule: stable individuals may either select the first displayed member of a tied tier or pool evidence across the entire tied tier. This predicts the approximately half-and-half classification and high between-subject variance in Experiment 1 without treating choices as homogeneous noise. At loads 6–8, the validity-led regime should become dominant enough to preserve the strong leading-cue adherence in Experiment 6 and the near-zero matched contrast in Experiment 3. At low load it should retain majority behavior matching Experiment 4. Broad transition widths, persistent intermediate-regime mass, and stable subject-level differences should reduce the exaggerated crossover predicted in Experiment 5. The theory must make display position, validity-tier structure, and discriminating-cue load explicit observable determinants, with ordinary response noise applied only after those representations generate evidence.
+
+
+## CANDIDATE THEORY
+Load-Indexed Format Arbitration theory: people first register the observable number of cues that discriminate between the options and use it to recruit among three comparison formats. At low discriminating-cue load, they diffusely pool all diagnostic cues with equal weight. At intermediate load, they retrieve diagnostic cues sequentially from the display; retrieval accessibility combines communicated-validity tier with a stable recency gradient, allowing later displayed cues to outweigh earlier, nominally more valid cues. At high load, they compress the display to the highest-validity active tier. This high-load transition is delayed until loads 7–8 but occurs earlier when the display contains a distinctive, partially tied leading-validity tier. Equal-validity tiers invoke a stable person-specific convention: some individuals use the first displayed diagnostic member of the tier, whereas others pool all diagnostic members of that tier. Recruitment changes gradually and retains intermediate-format mass across a broad range of loads. These representations generate signed evidence before ordinary response noise is applied.
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, state, history) -> np.ndarray:
+    stim = np.asarray(state, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(
+            f"Load-Indexed Format Arbitration expects shape (2, n_features); got {stim.shape}."
+        )
+
+    a, b = stim[0], stim[1]
+    n_features = stim.shape[1]
+    validities = np.asarray(parameters["validities"], dtype=float)
+    if validities.ndim != 1 or validities.shape[0] != n_features:
+        raise ValueError(
+            f"validities length {validities.shape[0]} != n_features {n_features}."
+        )
+
+    signs = np.sign(a - b)
+    active = np.flatnonzero(signs != 0.0)
+    load = float(active.size)
+    if active.size == 0:
+        return np.array([0.5, 0.5], dtype=float)
+
+    def stable_sigmoid(x):
+        x = float(x)
+        if x >= 0.0:
+            z = np.exp(-x)
+            return 1.0 / (1.0 + z)
+        z = np.exp(x)
+        return z / (1.0 + z)
+
+    # Observable load gradually opens sequential retrieval and, later,
+    # validity-tier compression. Compression is delayed around loads 6--7,
+    # except when a distinctive partially tied leading tier supports chunking.
+    low_width = float(parameters["transition_width"])
+    entered_retrieval = stable_sigmoid(
+        (load - float(parameters["low_center"])) / low_width
+    )
+
+    global_best = float(np.max(validities))
+    global_top_tier = np.flatnonzero(np.isclose(
+        validities, global_best, rtol=1e-9, atol=1e-12
+    ))
+    partial_top_tie = 1.0 if 1 < global_top_tier.size < n_features else 0.0
+    effective_high_center = (
+        float(parameters["high_center"])
+        - partial_top_tie * float(parameters["partial_tie_acceleration"])
+    )
+    compressed = stable_sigmoid(
+        (load - effective_high_center)
+        / float(parameters["high_transition_width"])
+    )
+
+    w_low = 1.0 - entered_retrieval
+    w_high = entered_retrieval * compressed
+    w_mid = entered_retrieval * (1.0 - compressed)
+
+    # Low-load format: diffuse equal-weight comparison. Normalization makes
+    # the evidence the diagnostic-cue majority margin rather than display size.
+    low_evidence = float(np.mean(signs[active]))
+
+    # Construct communicated-validity tiers. Cues tied in communicated
+    # validity have the same rank; display position remains separately visible.
+    tier_rank = np.asarray(
+        [np.sum(validities > validities[j] + 1e-12) for j in range(n_features)],
+        dtype=float,
+    )
+    rank_scale = max(1.0, float(n_features - 1))
+    normalized_rank = tier_rank / rank_scale
+    if n_features > 1:
+        display_position = np.arange(n_features, dtype=float) / float(n_features - 1)
+    else:
+        display_position = np.zeros(1, dtype=float)
+
+    # Intermediate format: expected evidence from sequential retrieval.
+    # Validity facilitates retrieval, but recency facilitates later display
+    # positions. The latter can reverse a validity-ordered positional gradient.
+    retrieval_log_access = (
+        float(parameters["recency_strength"]) * display_position[active]
+        - float(parameters["validity_strength"]) * normalized_rank[active]
+    )
+    retrieval_log_access -= np.max(retrieval_log_access)
+    retrieval_weights = np.exp(retrieval_log_access)
+    retrieval_weights /= retrieval_weights.sum()
+    mid_evidence = float(np.dot(retrieval_weights, signs[active]))
+
+    # High-load format: compress to the best communicated-validity tier that
+    # is diagnostic on this trial. Stable tie_rule=0 uses its first displayed
+    # member; tie_rule=1 pools the complete active tier before taking direction.
+    best_validity = float(np.max(validities[active]))
+    top_tier = active[np.isclose(
+        validities[active], best_validity, rtol=1e-9, atol=1e-12
+    )]
+
+    tie_rule = int(parameters["tie_rule"])
+    if tie_rule == 0:
+        first_member = int(np.min(top_tier))
+        high_evidence = float(signs[first_member])
+    else:
+        tier_sum = float(np.sum(signs[top_tier]))
+        if tier_sum > 0.0:
+            high_evidence = 1.0
+        elif tier_sum < 0.0:
+            high_evidence = -1.0
+        else:
+            high_evidence = 0.0
+
+    beta = float(parameters["beta"])
+
+    def evidence_probabilities(evidence):
+        logits = np.array([
+            0.5 * beta * float(evidence),
+            -0.5 * beta * float(evidence),
+        ], dtype=float)
+        logits -= np.max(logits)
+        p = np.exp(logits)
+        p /= p.sum()
+        return p
+
+    # Format recruitment is part of representation, not response noise.
+    p_core = (
+        w_low * evidence_probabilities(low_evidence)
+        + w_mid * evidence_probabilities(mid_evidence)
+        + w_high * evidence_probabilities(high_evidence)
+    )
+
+    # Ordinary lapses occur only after each format has generated evidence.
+    epsilon = float(parameters["epsilon"])
+    probs = (1.0 - epsilon) * p_core + epsilon * np.array([0.5, 0.5])
+    probs = np.clip(probs, 0.0, None)
+    total = float(probs.sum())
+    if not np.isfinite(total) or total <= 0.0:
+        return np.array([0.5, 0.5], dtype=float)
+    return probs / total
+
+`policy(probs) -> int`:
+def policy(probs) -> int:
+    probs = np.asarray(probs, dtype=np.float64)
+    probs = np.clip(probs, 0.0, None)
+    total = float(probs.sum())
+    if not np.isfinite(total) or total <= 0.0:
+        probs = np.ones(len(probs), dtype=np.float64) / len(probs)
+    else:
+        probs /= total
+    return int(np.random.choice(len(probs), p=probs))
+
+`parameters`:
+- validities: validities
+- low_center: [4.7, 5.2]
+- high_center: [6.4, 7.0]
+- transition_width: [0.9, 1.3]
+- high_transition_width: [0.65, 1.0]
+- partial_tie_acceleration: [0.8, 1.4]
+- recency_strength: [3.8, 5.8]
+- validity_strength: [0.2, 0.65]
+- tie_rule: {0, 1}
+- beta: [4.8, 6.2]
+- epsilon: [0.0, 0.06]
+
+`rationale`:
+This is a minimal extension of the accepted model. The shared high-load gate is replaced by a separate, later and somewhat sharper compression transition, leaving substantially more sequential-retrieval mass at loads 6–7 while allowing compression to become dominant by load 8. That should reduce Experiment 3's excessive crossover. Recency is strengthened relative to validity so the persistent intermediate group can generate the larger negative positional gradient required by Experiment 6 and can offset tally-congruence sensitivity in Experiment 1. A tier-structure adjustment advances compression only for a distinctive partially tied leading tier. This preserves the successful first-member-versus-tier-pooling classification in Experiment 5 rather than allowing stronger recency to make both subject types behave alike. The slightly later low transition limits spillover of the stronger recency process into low-load trials, protecting Experiment 2. Beta and lapse noise are unchanged, preserving the model's strong leading-cue adherence in Experiment 4.
+
+## LOSS TRAJECTORY (this propose-loop)
+Aggregate loss across iterations of THIS propose-loop (lower = better, 0 = perfect, `+inf` = unscorable). The ACCEPTED / REJECTED tag is the loop's programmatic accept-gate decision: `loss < accepted_loss` -> ACCEPTED (becomes new base), else REJECTED (base unchanged). Use this together with the per-experiment values below to grade fit-quality AND your own past advice (see `## YOUR PRIOR CRITIQUES` below).
+
+- iter 1: loss=0.1660 -> ACCEPTED
+- iter 2 (current candidate you are grading): loss=0.1194 -> ACCEPTED
+Running-best (last accepted) base: iter 2 at loss=0.1194.
+
+## EXPERIMENTAL RESULTS (candidate vs real, per experiment)
+### Experiment 1
+**Design**
+  A=[1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1, 1, 1, 1]
+  A=[1, 1, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 1, 1, 1]
+  A=[1, 1, 1, 0, 0, 0, 0, 0]  B=[0, 0, 0, 1, 1, 1, 1, 1]
+  A=[1, 1, 1, 1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1, 1, 1, 1]
+  A=[1, 1, 1, 1, 1, 0, 0, 0]  B=[0, 0, 0, 0, 0, 1, 1, 1]
+  A=[1, 1, 1, 1, 1, 1, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1]
+  A=[1, 1, 1, 1, 1, 1, 1, 0]  B=[0, 0, 0, 0, 0, 0, 0, 1]
+  A=[1, 1, 1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 1, 1, 1, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 1, 1, 1, 1, 1, 1]  B=[1, 1, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 1, 1, 1, 1, 1]  B=[1, 1, 1, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 1, 1, 1, 1]  B=[1, 1, 1, 1, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 1, 1, 1]  B=[1, 1, 1, 1, 1, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 1, 1]  B=[1, 1, 1, 1, 1, 1, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 1]  B=[1, 1, 1, 1, 1, 1, 1, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1, 1, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    # Contrast top-cue adherence between tally-congruent and
+    # tally-conflicting trials, matching on absolute tally margin.
+    cells = {(d, c): [] for d in (2, 4, 6) for c in (-1, 1)}
+
+    for _, row in data.iterrows():
+        a = np.asarray(row["option_a_ratings"], dtype=float)
+        b = np.asarray(row["option_b_ratings"], dtype=float)
+        response = int(row["response"])
+
+        # Feature 0 is the highest-validity cue in this experiment.
+        if a[0] > b[0]:
+            top_choice = 0
+            top_relative_margin = int(np.sum(a > b) - np.sum(b > a))
+        elif b[0] > a[0]:
+            top_choice = 1
+            top_relative_margin = int(np.sum(b > a) - np.sum(a > b))
+        else:
+            continue
+
+        d = abs(top_relative_margin)
+        if d not in (2, 4, 6) or top_relative_margin == 0:
+            continue
+
+        congruence = 1 if top_relative_margin > 0 else -1
+        top_adherence = 1.0 if response == top_choice else -1.0
+        cells[(d, congruence)].append(top_adherence)
+
+    matched_contrasts = []
+    for d in (2, 4, 6):
+        congruent = cells[(d, 1)]
+        conflicting = cells[(d, -1)]
+        if len(congruent) == 0 or len(conflicting) == 0:
+            continue
+        # Division by two keeps the metric in [-1, 1].
+        matched_contrasts.append(
+            0.5 * (float(np.mean(congruent)) - float(np.mean(conflicting)))
+        )
+
+    if len(matched_contrasts) == 0:
+        return float("nan")
+    return float(np.mean(matched_contrasts))
+```
+
+**Observed (real) value:** -0.0300 (var=0.0056)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.1011 (var=0.0061) (Δ vs real +0.1311)
+  - iter 2 (current): 0.0889 (var=0.0089) (Δ vs real +0.1189)
+**Other theories' values on this metric (for reference):**
+- pi_1: -0.0167 (var=0.0052)
+- pi_2: 0.8033 (var=0.0243)
+- pi_3: -0.0028 (var=0.0068)
+- pi_4: 0.0328 (var=0.0015)
+
+### Experiment 2
+**Design**
+  A=[1, 0, 0, 0, 0, 0, 1, 0]  B=[0, 0, 0, 0, 0, 0, 0, 1]
+  A=[0, 0, 0, 0, 0, 0, 1, 1]  B=[0, 1, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 1, 0, 0, 0, 1, 0]  B=[0, 0, 0, 0, 0, 0, 0, 1]
+  A=[0, 0, 0, 0, 0, 0, 1, 1]  B=[0, 0, 0, 1, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 1, 0, 1, 0]  B=[0, 0, 0, 0, 0, 0, 0, 1]
+  A=[0, 0, 0, 0, 0, 0, 1, 1]  B=[0, 0, 0, 0, 0, 1, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 1]  B=[1, 0, 0, 0, 0, 0, 1, 0]
+  A=[0, 1, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 0, 1]  B=[0, 0, 1, 0, 0, 0, 1, 0]
+  A=[0, 0, 0, 1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 0, 1]  B=[0, 0, 0, 0, 1, 0, 1, 0]
+  A=[0, 0, 0, 0, 0, 1, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    scores = []
+
+    for _, row in data.iterrows():
+        a = np.asarray(row["option_a_ratings"], dtype=float)
+        b = np.asarray(row["option_b_ratings"], dtype=float)
+        d = a - b
+
+        # +1 denotes an A prediction and -1 a B prediction.
+        tally_margin = np.sum(np.sign(d))
+        if tally_margin == 0:
+            continue
+        tally_direction = 1.0 if tally_margin > 0 else -1.0
+
+        # Validities decrease with feature index in this experiment.
+        discriminating = np.flatnonzero(d != 0)
+        if discriminating.size == 0:
+            continue
+        first = int(discriminating[0])
+        ttb_direction = 1.0 if d[first] > 0 else -1.0
+
+        # Agreement trials cannot distinguish the theories.
+        if tally_direction == ttb_direction:
+            continue
+
+        observed_direction = 1.0 if int(row["response"]) == 0 else -1.0
+        scores.append(observed_direction * tally_direction)
+
+    if len(scores) == 0:
+        return float("nan")
+    return float(np.mean(scores))
+```
+
+**Observed (real) value:** 0.6683 (var=0.0367)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.6983 (var=0.0137) (Δ vs real +0.0300)
+  - iter 2 (current): 0.7142 (var=0.0083) (Δ vs real +0.0458)
+**Other theories' values on this metric (for reference):**
+- pi_2: 0.7008 (var=0.0514)
+- pi_1: -0.6542 (var=0.0564)
+- pi_3: 0.6600 (var=0.0188)
+- pi_4: 0.5833 (var=0.0114)
+
+### Experiment 3
+**Design**
+  A=[0, 1, 1, 0, 0, 0, 0, 0]  B=[1, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 1, 1, 1, 0, 0, 0, 0]  B=[1, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 1, 1, 1, 0, 0, 0, 0]  B=[1, 0, 0, 0, 1, 0, 0, 0]
+  A=[0, 1, 1, 1, 0, 1, 0, 0]  B=[1, 0, 0, 0, 1, 0, 0, 0]
+  A=[0, 1, 1, 1, 0, 1, 0, 0]  B=[1, 0, 0, 0, 1, 0, 1, 0]
+  A=[0, 1, 1, 1, 0, 1, 0, 1]  B=[1, 0, 0, 0, 1, 0, 1, 0]
+  A=[1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 1, 1, 0, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 1, 0, 0, 0]  B=[0, 1, 1, 1, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 1, 0, 0, 0]  B=[0, 1, 1, 1, 0, 1, 0, 0]
+  A=[1, 0, 0, 0, 1, 0, 1, 0]  B=[0, 1, 1, 1, 0, 1, 0, 0]
+  A=[1, 0, 0, 0, 1, 0, 1, 0]  B=[0, 1, 1, 1, 0, 1, 0, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    """Return a parity-matched low-to-high load crossover index."""
+    if data is None or len(data) == 0:
+        return float("nan")
+
+    loads = []
+    majority_consistent = []
+
+    for a_cell, b_cell, response in zip(
+        data["option_a_ratings"],
+        data["option_b_ratings"],
+        data["response"],
+    ):
+        a = np.asarray(a_cell, dtype=float)
+        b = np.asarray(b_cell, dtype=float)
+        diff = a - b
+        loads.append(int(np.count_nonzero(diff)))
+
+        tally_margin = float(np.sum(np.sign(diff)))
+        if tally_margin > 0:
+            majority_response = 0
+        elif tally_margin < 0:
+            majority_response = 1
+        else:
+            majority_response = -1
+
+        majority_consistent.append(
+            float(int(response) == majority_response)
+            if majority_response >= 0 else np.nan
+        )
+
+    work = pd.DataFrame({
+        "load": np.asarray(loads, dtype=int),
+        "majority_consistent": np.asarray(majority_consistent, dtype=float),
+    })
+
+    p = {}
+    for load in (3, 4, 6, 7, 8):
+        values = work.loc[
+            work["load"] == load, "majority_consistent"
+        ].dropna()
+        if len(values) == 0:
+            return float("nan")
+        p[load] = float(values.mean())
+
+    odd_crossover = p[3] - p[7]
+    even_crossover = p[4] - 0.5 * (p[6] + p[8])
+    return float(0.5 * (odd_crossover + even_crossover))
+
+```
+
+**Observed (real) value:** 0.3612 (var=0.0106)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.6303 (var=0.0073) (Δ vs real +0.2691)
+  - iter 2 (current): 0.5947 (var=0.0051) (Δ vs real +0.2334)
+**Other theories' values on this metric (for reference):**
+- pi_3: 0.6512 (var=0.0114)
+- pi_2: 0.0066 (var=0.0037)
+- pi_1: 0.0041 (var=0.0094)
+- pi_4: 0.6541 (var=0.0103)
+
+### Experiment 4
+**Design**
+  A=[1, 0, 0, 0, 0, 1, 0, 0]  B=[0, 0, 1, 0, 0, 0, 0, 1]
+  A=[1, 1, 0, 0, 1, 0, 0, 0]  B=[1, 0, 0, 1, 0, 0, 1, 0]
+  A=[1, 0, 0, 0, 1, 1, 0, 0]  B=[0, 1, 1, 1, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 1, 1, 1]  B=[1, 0, 1, 1, 1, 0, 0, 1]
+  A=[1, 0, 0, 0, 0, 1, 1, 1]  B=[0, 1, 1, 1, 1, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0, 1, 1]  B=[0, 0, 1, 1, 1, 1, 0, 0]
+  A=[0, 0, 1, 0, 0, 0, 0, 1]  B=[1, 0, 0, 0, 0, 1, 0, 0]
+  A=[1, 0, 0, 1, 0, 0, 1, 0]  B=[1, 1, 0, 0, 1, 0, 0, 0]
+  A=[0, 1, 1, 1, 0, 0, 0, 0]  B=[1, 0, 0, 0, 1, 1, 0, 0]
+  A=[1, 0, 1, 1, 1, 0, 0, 1]  B=[1, 1, 0, 0, 0, 1, 1, 1]
+  A=[0, 1, 1, 1, 1, 0, 0, 0]  B=[1, 0, 0, 0, 0, 1, 1, 1]
+  A=[0, 0, 1, 1, 1, 1, 0, 0]  B=[1, 1, 0, 0, 0, 0, 1, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    """Rate of validity-leading-cue-consistent choices on overload trials."""
+    scores = []
+
+    for _, row in data.iterrows():
+        a = np.asarray(row["option_a_ratings"], dtype=float)
+        b = np.asarray(row["option_b_ratings"], dtype=float)
+        differences = a - b
+        discriminating = np.flatnonzero(differences != 0)
+
+        # Focus on the 6- and 8-cue overload conditions.
+        if discriminating.size < 6:
+            continue
+
+        # Validities are strictly descending by feature index, so the first
+        # discriminating index is the highest-validity diagnostic cue.
+        leading_cue = int(discriminating[0])
+        lex_response = 0 if differences[leading_cue] > 0 else 1
+        scores.append(float(int(row["response"]) == lex_response))
+
+    if len(scores) == 0:
+        return float("nan")
+    return float(np.mean(scores))
+```
+
+**Observed (real) value:** 0.8756 (var=0.0078)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.8759 (var=0.0023) (Δ vs real +0.0003)
+  - iter 2 (current): 0.8781 (var=0.0018) (Δ vs real +0.0025)
+**Other theories' values on this metric (for reference):**
+- pi_2: 0.5031 (var=0.0037)
+- pi_3: 0.8291 (var=0.0019)
+- pi_1: 0.8391 (var=0.0151)
+- pi_4: 0.8331 (var=0.0025)
+
+### Experiment 5
+**Design**
+  A=[1, 1, 1, 1, 0, 0, 0]  B=[0, 0, 0, 0, 1, 1, 1]
+  A=[1, 1, 1, 0, 0, 0, 1]  B=[0, 0, 0, 1, 1, 1, 0]
+  A=[1, 1, 0, 1, 1, 0, 0]  B=[0, 0, 1, 0, 0, 1, 1]
+  A=[1, 1, 0, 0, 0, 1, 1]  B=[0, 0, 1, 1, 1, 0, 0]
+  A=[1, 0, 0, 0, 1, 1, 1]  B=[0, 1, 1, 1, 0, 0, 0]
+  A=[1, 0, 0, 1, 1, 1, 0]  B=[0, 1, 1, 0, 0, 0, 1]
+  A=[0, 0, 0, 0, 1, 1, 1]  B=[1, 1, 1, 1, 0, 0, 0]
+  A=[0, 0, 0, 1, 1, 1, 0]  B=[1, 1, 1, 0, 0, 0, 1]
+  A=[0, 0, 1, 0, 0, 1, 1]  B=[1, 1, 0, 1, 1, 0, 0]
+  A=[0, 0, 1, 1, 1, 0, 0]  B=[1, 1, 0, 0, 0, 1, 1]
+  A=[0, 1, 1, 1, 0, 0, 0]  B=[1, 0, 0, 0, 1, 1, 1]
+  A=[0, 1, 1, 0, 0, 0, 1]  B=[1, 0, 0, 1, 1, 1, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    def subject_classification(df):
+        aligned = []
+        for _, row in df.iterrows():
+            a = np.asarray(row['option_a_ratings'], dtype=float)
+            b = np.asarray(row['option_b_ratings'], dtype=float)
+            d = np.sign(a - b)
+
+            # Select trials where Experts 2 and 3 agree with each other but
+            # oppose Expert 1: a 2-to-1 conflict within the top-validity tier.
+            if d.size >= 3 and d[0] != 0 and d[1] == d[2] and d[1] == -d[0]:
+                response = int(row['response'])
+                chose_a = 1.0 if response == 0 else -1.0
+                aligned.append(float(chose_a * d[0] > 0))
+
+        if len(aligned) == 0:
+            return np.nan
+        rate = float(np.mean(aligned))
+        if rate > 0.5:
+            return 1.0
+        if rate < 0.5:
+            return 0.0
+        return 0.5
+
+    values = []
+    for _, subj_df in data.groupby('subject_id', sort=False):
+        value = subject_classification(subj_df)
+        if np.isfinite(value):
+            values.append(value)
+
+    if len(values) == 0:
+        return float('nan')
+    return float(np.mean(values))
+```
+
+**Observed (real) value:** 0.5000 (var=0.2000)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.4800 (var=0.2496) (Δ vs real -0.0200)
+  - iter 2 (current): 0.5000 (var=0.2500) (Δ vs real +0.0000)
+**Other theories' values on this metric (for reference):**
+- pi_3: 1.0000 (var=0.0000)
+- pi_4: 0.0000 (var=0.0000)
+- pi_1: 1.0000 (var=0.0000)
+- pi_2: 1.0000 (var=0.0000)
+
+### Experiment 6
+**Design**
+  A=[0, 0, 1, 1, 0, 1, 1, 1]  B=[1, 1, 1, 0, 0, 0, 1, 0]
+  A=[0, 1, 0, 0, 1, 1, 0, 1]  B=[1, 0, 0, 1, 1, 0, 0, 0]
+  A=[0, 1, 1, 1, 1, 0, 0, 1]  B=[1, 0, 1, 0, 1, 1, 0, 0]
+  A=[0, 1, 0, 1, 0, 1, 1, 0]  B=[1, 0, 0, 0, 0, 0, 1, 1]
+  A=[1, 1, 1, 0, 0, 0, 1, 0]  B=[0, 0, 1, 1, 0, 1, 1, 1]
+  A=[1, 0, 0, 1, 1, 0, 0, 0]  B=[0, 1, 0, 0, 1, 1, 0, 1]
+  A=[1, 0, 1, 0, 1, 1, 0, 0]  B=[0, 1, 1, 1, 1, 0, 0, 1]
+  A=[1, 0, 0, 0, 0, 0, 1, 1]  B=[0, 1, 0, 1, 0, 1, 1, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    # Contrast majority-choice rates across the four positions of the
+    # second cue opposing the majority. Coefficients sum to zero, so any
+    # profile that is flat across positions has expected metric zero.
+    weights = {1: -0.24, 3: -0.05, 5: 0.10, 7: 0.19}
+    outcomes = {1: [], 3: [], 5: [], 7: []}
+
+    for _, row in data.iterrows():
+        a = np.asarray(row["option_a_ratings"], dtype=float)
+        b = np.asarray(row["option_b_ratings"], dtype=float)
+        signs = np.sign(a - b)
+        active = np.flatnonzero(signs != 0)
+        if active.size == 0:
+            continue
+
+        majority_sign = np.sign(np.sum(signs[active]))
+        if majority_sign == 0:
+            continue
+
+        # Expert 1 (array index 0) is the highest-validity cue. The target
+        # position is the other active cue pointing in the same direction.
+        top_sign = signs[0]
+        opposing = [int(j) for j in active if j != 0 and signs[j] == top_sign]
+        if len(opposing) != 1 or opposing[0] not in outcomes:
+            continue
+
+        response = int(row["response"])
+        chose_majority = ((response == 0 and majority_sign > 0) or
+                          (response == 1 and majority_sign < 0))
+        outcomes[opposing[0]].append(float(chose_majority))
+
+    if any(len(outcomes[j]) == 0 for j in outcomes):
+        return float("nan")
+
+    rates = {j: float(np.mean(outcomes[j])) for j in outcomes}
+    return float(sum(weights[j] * rates[j] for j in weights))
+
+```
+
+**Observed (real) value:** -0.1132 (var=0.0031)
+**Candidate trajectory (this loop):**
+  - iter 1: -0.0330 (var=0.0013) (Δ vs real +0.0802)
+  - iter 2 (current): -0.0765 (var=0.0009) (Δ vs real +0.0367)
+**Other theories' values on this metric (for reference):**
+- pi_4: 0.0970 (var=0.0005)
+- pi_3: 0.0009 (var=0.0007)
+- pi_1: 0.0003 (var=0.0005)
+- pi_2: 0.0004 (var=0.0004)
+
+## YOUR PRIOR CRITIQUES (for this propose-loop)
+Each block is one of YOUR previous critique iterations: the verdict you returned, the interpretation and rationale you wrote, and an **Outcome of your advice** line that says whether the candidate the proposer produced AFTER following your advice was ACCEPTED (your advice helped — its loss strictly beat the running-best) or REJECTED (your advice didn't help — the gate discarded the candidate). Use this self-history to (a) reinforce advice that was ACCEPTED, (b) avoid repeating advice that was REJECTED, and (c) detect your own oscillation across iterations.
+
+### Iteration 1 (most recent)
+Verdict: regenerate
+Interpretation: The candidate is faithful to the prescribed three-regime mechanism and captures several important invariants. Experiment 2 is close to the observed majority preference (0.698 versus 0.668), Experiment 4 reproduces overload leading-cue adherence almost exactly (0.876 versus 0.876), and the stable tied-tier rule successfully produces the heterogeneous half-and-half classification in Experiment 5 (0.480 versus 0.500, with appropriately high between-subject variance). However, three systematic discrepancies remain. First, Experiment 3’s load crossover is much too large (0.630 versus 0.361), indicating that recruitment changes too decisively from low-load pooling to high-load top-tier compression. Second, Experiment 6 has the correct negative sign but only about one third of the required positional gradient (-0.033 versus -0.113), so sequential retrieval/recency has too little effective influence at overload loads. Third, Experiment 1 produces a positive congruence effect (0.101) where the observed matched contrast is approximately zero or slightly negative (-0.030), suggesting excessive residual sensitivity to the tally configuration in those high-load trials. The model also understates subject variance in Experiments 2, 4, and 6, consistent with overly narrow heterogeneity in regime recruitment and the recency-to-validity balance.
+Rationale: Keep the current mechanism family and the successful tied-tier rule, but recalibrate recruitment and heterogeneity. Do not globally lower beta or raise lapse noise, because that would sacrifice the excellent Experiment 4 fit and likely weaken Experiment 2. Instead, allow a larger and more heterogeneous intermediate-regime contribution specifically around loads 6–7, with a wider subject-level distribution of high-transition centers and recency-to-validity ratios. Strengthen recency among the persistent-intermediate subjects so Experiment 6’s negative gradient can approach -0.113, while retaining a substantial validity-compression subgroup to preserve Experiment 4’s leading-cue adherence. Consider separate low- and high-transition widths or a tier-structure-dependent high-transition center: this can delay compression at loads 6–7 without eliminating strong compression at load 8, thereby reducing Experiment 3’s exaggerated crossover while avoiding additional tally-congruence sensitivity in Experiment 1. The next fit should target the joint constraint—smaller Experiment 3 crossover, more negative Experiment 6 gradient, and near-zero Experiment 1 contrast—rather than changing response noise or abandoning the three-format arbitration account.
+
+**Outcome of your advice:** iter 1 candidate loss=0.1660 -> CURRENT candidate loss=0.1194 -> the gate marked it ACCEPTED.
+
+## RESPONSE FORMAT
+
+Return a JSON object with the following fields:
+- interpretation: Freeform analysis of the model simulation results on existing experiments and how they do or do not support the proposed model/theory.
+- verdict: Either 'regenerate' (regenerate a new model/theory) or 'continue' (keep the current model/theory).
+- rationale: If verdict='regenerate', why the current predict / policy / parameter-ranges should be revised. If verdict='continue', a sketch of why the current theory should be kept.
+
+
+## Response
+
+```json
+{
+  "interpretation": "The candidate is faithful to the arbiter\u2019s three-format mechanism and the accepted revision clearly improved the joint fit: Experiment 3\u2019s crossover fell from 0.630 to 0.595, Experiment 6\u2019s positional gradient became substantially more negative (-0.033 to -0.077), and Experiment 1 moved toward zero. It also retains the excellent leading-cue adherence in Experiment 4 (0.878 versus 0.876) and exactly captures Experiment 5\u2019s half-and-half classification, including strong subject heterogeneity. Nevertheless, the main cross-experiment discrepancy remains substantial. Experiment 3 still predicts much too sharp a low-to-high-load crossover (0.595 versus 0.361), while Experiment 1 still predicts an appreciable positive tally-congruence effect where humans are near zero or slightly negative (0.089 versus -0.030). Experiment 6 now has the correct sign but still only about two thirds of the observed positional gradient (-0.077 versus -0.113). Experiment 2 has also moved slightly away from the target (0.714 versus 0.668), and its simulated between-subject variance remains too low. Thus, the representational regimes are qualitatively correct, but their recruitment remains too homogeneous and insufficiently differentiated between loads 6\u20137 and load 8.",
+  "verdict": "regenerate",
+  "rationale": "The previous advice was accepted and improved all three targeted metrics, so retain the three regimes, the tied-tier convention, and the strategy of preserving sequential retrieval at overload. Extend it selectively rather than globally increasing recency, which would endanger Experiment 4. First, further separate loads 6\u20137 from load 8: retain more intermediate-format mass at 6\u20137 to reduce Experiment 3\u2019s crossover and strengthen Experiment 6\u2019s negative gradient, while making validity compression approach saturation at load 8 so Experiment 1\u2019s residual positive congruence contrast moves toward zero. This can be achieved with a modestly later high-transition center plus a transition normalization or shape that still saturates by load 8, rather than simply widening the gate everywhere. Second, introduce stronger stable, correlated subject heterogeneity within the prescribed family: subjects with stronger recency should also have later compression, whereas validity-led subjects should have earlier compression and weaker recency. That mixture can increase the currently understated variances and improve Experiments 3 and 6 while preserving the pooled leading-cue rate in Experiment 4. Validity-tier distinctiveness may modulate this gate, but it must be defined from observable tier structure rather than experiment identity. Finally, slightly advance\u2014not delay\u2014the low-to-intermediate transition: the last shift toward later low-load recruitment worsened Experiment 2 from 0.698 to 0.714, whereas a small amount of additional retrieval at its low-load conflicts should reduce excessive majority choice toward 0.668. Keep beta, lapse noise, and the successful tie-rule mixture essentially unchanged."
+}
+```
+
+## Usage
+
+```json
+{
+  "input_tokens": 11631,
+  "output_tokens": 2684
+}
+```

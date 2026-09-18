@@ -1,0 +1,1046 @@
+# Round 9 — Theories
+
+**Verdict:** `new_theory` (slot 2 replaced)
+
+## Starting theories
+
+### slot 1 — `pi_9` — SURVIVED ✓
+
+**Description:** Static Configural Coalition Competition (S3C) proposes that decisions are reconstructed from the current cue display without learning from trial history. Each discriminating expert retains an identity-specific weight derived from communicated validity, but validity evidence is bounded to prevent a uniquely most-valid cue from becoming arbitrarily dominant. Serial accessibility is a distinct regime that is exactly absent under a clear unique maximum and operates only among genuinely tied or extremely near-tied active cues. Option-specific evidence accumulates with smooth within-coalition redundancy. Compact one- and two-cue opposition receives a display-based diagnosticity bonus, while the credibility of a coalition is computed through a bounded aggregation of its members' validity gaps so that moving one cue cannot induce a quasi-discrete change in competition. The effects of credibility and anchor isolation are likewise softly bounded. At larger opposition multiplicities, compact diagnosticity decays and a saturating restoration process can return choice toward a strong isolated anchor. This restoration receives a smooth pre-sigmoid increment when an effectively isolated anchor faces more than two opponents, while embedded anchors remain protected from that increment. Exact balance versus one-step imbalance can modulate response precision without changing evidence direction, allowing activation of an additional cue to sharpen an already configured coalition preference. Stable subject differences jointly vary validity compression, tied-cue accessibility, compact-dissent sensitivity, restoration, balance sensitivity, and response precision. In the absence of outcome feedback, no aspect of the model updates from trial history.
+
+**Rationale:** This is a localized edit of the accepted iteration-8 architecture. The bounded validity transform, exact suppression of serial accessibility under unique maxima, identity-preserving coalition support, history invariance, and stable correlated subject types are unchanged. Four targeted changes implement the latest accepted diagnosis. First, opponent credibility now averages tanh-bounded individual validity gaps instead of exponentiating an unbounded mean validity gap, and the isolation contribution is softly bounded. This limits the simultaneous credibility and isolation changes caused by moving Expert 1 between coalitions in Experiment 4 while making compact opposition more consistently accessible in Experiments 2 and 10. Second, the compact-count peak is shifted modestly toward one effective opponent without globally increasing challenge strength. Third, isolated high-count restoration is moved from a weak post-gate multiplier to the pre-sigmoid restoration scale, with a smooth transition above two effective opponents and a cubed anchor-identity-share gate. This targets the missing Experiment 11 restoration contrast and the insufficient Experiment 6 effect while protecting embedded-anchor displays such as Experiment 13. Fourth, only the ranges of tied-order accessibility and balance-sensitive precision are widened. Tied accessibility remains impossible under a unique maximum, while the larger balance-precision range specifically strengthens the exact-balance to one-step-imbalance contrast relevant to Experiment 12 without adding a directional or cue-specific bonus.
+
+**Parameters:**
+  - `validities`: `validities`
+  - `validity_sensitivity`: `[0.08, 0.70]`
+  - `validity_floor`: `[0.58, 0.76]`
+  - `order_accessibility`: `[1.20, 3.80]`
+  - `accessibility_scale`: `[0.10, 0.75]`
+  - `order_span`: `[0.55, 2.50]`
+  - `balance_accessibility`: `[0.55, 1.0]`
+  - `balance_scale`: `[0.45, 1.80]`
+  - `redundancy_strength`: `[0.35, 1.40]`
+  - `redundancy_curvature`: `[1.05, 2.20]`
+  - `similarity_sensitivity`: `[2.0, 16.0]`
+  - `compact_dissent`: `[1.5, 6.5]`
+  - `compact_peak`: `[1.10, 1.60]`
+  - `compact_width`: `[0.45, 0.90]`
+  - `compactness_gain`: `[0.20, 1.50]`
+  - `credibility_scale`: `[0.025, 0.16]`
+  - `isolation_gain`: `[0.25, 1.50]`
+  - `restoration_strength`: `[0.65, 0.97]`
+  - `restoration_threshold`: `[2.25, 3.60]`
+  - `restoration_slope`: `[3.5, 11.0]`
+  - `balance_restoration`: `[0.45, 1.0]`
+  - `restoration_credibility`: `[0.30, 0.70]`
+  - `isolation_restoration`: `[0.15, 0.55]`
+  - `anchor_threshold`: `[0.66, 0.82]`
+  - `anchor_slope`: `[10.0, 35.0]`
+  - `balance_precision_gain`: `[0.75, 1.60]`
+  - `balance_precision_width`: `[0.45, 0.75]`
+  - `beta`: `[1.3, 5.0]`
+  - `lapse`: `[0.0, 0.13]`
+  - `configuration_type`: `{0, 1, 2}`
+
+**`predict(parameters, stimulus, history)`:**
+```python
+def predict(parameters, state, history):
+    stim = np.asarray(state, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(
+            f"S3C expects state with shape (2, n_features); got {stim.shape}."
+        )
+
+    n_features = stim.shape[1]
+    validities = np.asarray(parameters["validities"], dtype=float)
+    if validities.ndim != 1 or validities.size != n_features:
+        raise ValueError(
+            f"validities length {validities.size} != n_features {n_features}."
+        )
+
+    # S3C is deliberately history-invariant in this feedback-free task.
+    _ = history
+
+    directions = np.sign(stim[1] - stim[0])
+    active = np.flatnonzero(directions != 0)
+    if active.size == 0:
+        return np.array([0.5, 0.5], dtype=np.float64)
+
+    validity_sensitivity = float(parameters["validity_sensitivity"])
+    validity_floor = float(parameters["validity_floor"])
+    order_accessibility = float(parameters["order_accessibility"])
+    accessibility_scale = float(parameters["accessibility_scale"])
+    order_span = float(parameters["order_span"])
+    balance_accessibility = float(parameters["balance_accessibility"])
+    balance_scale = float(parameters["balance_scale"])
+    redundancy_strength = float(parameters["redundancy_strength"])
+    redundancy_curvature = float(parameters["redundancy_curvature"])
+    similarity_sensitivity = float(parameters["similarity_sensitivity"])
+    compact_dissent = float(parameters["compact_dissent"])
+    compact_peak = float(parameters["compact_peak"])
+    compact_width = float(parameters["compact_width"])
+    compactness_gain = float(parameters["compactness_gain"])
+    credibility_scale = float(parameters["credibility_scale"])
+    isolation_gain = float(parameters["isolation_gain"])
+    restoration_strength = float(parameters["restoration_strength"])
+    restoration_threshold = float(parameters["restoration_threshold"])
+    restoration_slope = float(parameters["restoration_slope"])
+    balance_restoration = float(parameters["balance_restoration"])
+    restoration_credibility = float(parameters["restoration_credibility"])
+    isolation_restoration = float(parameters["isolation_restoration"])
+    anchor_threshold = float(parameters["anchor_threshold"])
+    anchor_slope = float(parameters["anchor_slope"])
+    balance_precision_gain = float(parameters["balance_precision_gain"])
+    balance_precision_width = float(parameters["balance_precision_width"])
+    beta = float(parameters["beta"])
+    lapse = float(parameters["lapse"])
+    configuration_type = int(parameters["configuration_type"])
+
+    # Correlated stable types alter several mechanisms together rather than
+    # independently injecting trial-wise variability.
+    if configuration_type == 0:       # coalition-sensitive integrator
+        validity_floor = min(0.90, validity_floor + 0.12)
+        order_accessibility *= 0.75
+        restoration_strength *= 0.65
+    elif configuration_type == 1:     # tied-order-sensitive integrator
+        validity_floor = min(0.90, validity_floor + 0.00)
+        order_accessibility *= 1.35
+        restoration_strength *= 0.85
+    else:                              # intermediate configural integrator
+        validity_floor = min(0.90, validity_floor + 0.05)
+        order_accessibility *= 0.90
+        restoration_strength *= 1.00
+
+    def sigmoid(x):
+        return 1.0 / (1.0 + np.exp(-float(np.clip(x, -60.0, 60.0))))
+
+    v = np.clip(validities, 0.500001, 0.999999)
+    reliability = np.log(v / (1.0 - v))
+    best_active_reliability = float(np.max(reliability[active]))
+
+    active_v = validities[active]
+    best_v = float(np.max(active_v))
+    # Only genuine or extremely close top ties enter the order regime.
+    best_candidates = active[np.isclose(active_v, best_v, atol=0.005)]
+    tied_order_regime = bool(best_candidates.size > 1)
+
+    # Identity-specific instruction weights with a bounded strongest-to-weakest
+    # ratio. Validity ordering is preserved, but a single anchor cannot become
+    # arbitrarily dominant under the exponential reliability transform.
+    unbounded_weight = np.exp(
+        validity_sensitivity * (reliability - best_active_reliability)
+    )
+    instruction_weight = (
+        validity_floor + (1.0 - validity_floor) * unbounded_weight
+    )
+
+    a_cues = np.flatnonzero(directions < 0)
+    b_cues = np.flatnonzero(directions > 0)
+    n_a = int(a_cues.size)
+    n_b = int(b_cues.size)
+    count_imbalance = abs(n_b - n_a)
+
+    # Serial accessibility is exactly absent under a clear unique maximum.
+    # This cleanly separates validity-based choice from tied-order choice.
+    near_balance = np.exp(
+        -float(count_imbalance) / max(balance_scale, 1e-8)
+    )
+    access = np.ones(n_features, dtype=float)
+    if tied_order_regime:
+        for serial_rank, cue in enumerate(active):
+            validity_closeness = np.exp(
+                -(best_active_reliability - reliability[cue])
+                / max(accessibility_scale, 1e-8)
+            )
+            serial_salience = np.exp(
+                -float(serial_rank) / max(order_span, 1e-8)
+            )
+            activation_gate = (
+                (1.0 - balance_accessibility)
+                + balance_accessibility * near_balance
+            )
+            access[cue] += (
+                order_accessibility
+                * validity_closeness
+                * serial_salience
+                * activation_gate
+            )
+
+    accessible_weight = instruction_weight * access
+
+    def coalition_support(indices):
+        n = int(indices.size)
+        if n == 0:
+            return 0.0
+
+        weights = np.asarray(accessible_weight[indices], dtype=float)
+        raw = float(np.sum(weights))
+        dominant = max(float(np.max(weights)), 1e-12)
+        effective_multiplicity = raw / dominant
+        excess = max(effective_multiplicity - 1.0, 0.0)
+
+        coalition_validities = validities[indices]
+        spread = (
+            float(np.std(coalition_validities)) if n > 1 else 0.0
+        )
+        similarity = np.exp(-similarity_sensitivity * spread)
+        redundancy = 1.0 + redundancy_strength * similarity * (
+            excess ** redundancy_curvature
+        )
+        return raw / max(redundancy, 1e-12)
+
+    support_a = coalition_support(a_cues)
+    support_b = coalition_support(b_cues)
+
+    # A communicated-validity tie is resolved by bounded current accessibility,
+    # not by an unconditional first-cue rule.
+    candidate_access = accessible_weight[best_candidates]
+    anchor_cue = int(best_candidates[int(np.argmax(candidate_access))])
+    anchor_direction = float(directions[anchor_cue])
+
+    if anchor_direction > 0:
+        anchor_indices = b_cues
+        opponent_indices = a_cues
+        anchor_support = support_b
+        opponent_support = support_a
+    else:
+        anchor_indices = a_cues
+        opponent_indices = b_cues
+        anchor_support = support_a
+        opponent_support = support_b
+
+    anchor_count = int(anchor_indices.size)
+    opponent_count = int(opponent_indices.size)
+
+    def effective_multiplicity(indices):
+        if indices.size == 0:
+            return 0.0
+        weights = np.asarray(accessible_weight[indices], dtype=float)
+        return float(np.sum(weights)) / max(float(np.max(weights)), 1e-12)
+
+    anchor_effective_n = effective_multiplicity(anchor_indices)
+    opponent_effective_n = effective_multiplicity(opponent_indices)
+
+    if opponent_count > 0:
+        opponent_v = validities[opponent_indices]
+
+        # Each member's validity gap is smoothly bounded before aggregation.
+        # Consequently, adding or moving one relatively strong cue cannot
+        # multiply coalition credibility by an arbitrarily large amount.
+        raw_validity_gaps = np.maximum(best_v - opponent_v, 0.0)
+        bounded_gap = float(np.mean(np.tanh(
+            raw_validity_gaps / max(credibility_scale, 1e-8)
+        )))
+        opponent_credibility_gate = np.exp(-bounded_gap)
+
+        # Absolute serial position can affect compactness only inside the tied
+        # order regime. It is exactly disabled for clear unique maxima.
+        serial_span = int(np.max(opponent_indices) - np.min(opponent_indices) + 1)
+        compactness = float(opponent_count) / float(max(serial_span, 1))
+        effective_compactness_gain = (
+            compactness_gain if tied_order_regime else 0.0
+        )
+
+        count_distance = (
+            opponent_effective_n - compact_peak
+        ) / max(compact_width, 1e-8)
+        compact_count_profile = np.exp(-0.5 * count_distance ** 2)
+
+        # Isolation remains strongest for a lone anchor, but its contribution
+        # is bounded rather than multiplying challenge without limit.
+        isolation = 1.0 / float(max(anchor_count, 1))
+        raw_isolation_bonus = isolation_gain * isolation
+        bounded_isolation_bonus = raw_isolation_bonus / (
+            1.0 + raw_isolation_bonus
+        )
+        challenge_multiplier = 1.0 + (
+            compact_dissent
+            * compact_count_profile
+            * opponent_credibility_gate
+            * (1.0 + effective_compactness_gain * compactness)
+            * (1.0 + bounded_isolation_bonus)
+        )
+        opponent_support *= challenge_multiplier
+
+    total = anchor_support + opponent_support
+    if total <= 1e-12:
+        core_evidence = 0.0
+    else:
+        anchor_margin = (anchor_support - opponent_support) / total
+        core_evidence = anchor_direction * anchor_margin
+
+    if anchor_count > 0:
+        anchor_identity_share = float(accessible_weight[anchor_cue]) / max(
+            float(np.sum(accessible_weight[anchor_indices])), 1e-12
+        )
+    else:
+        anchor_identity_share = 0.0
+
+    # The isolated-anchor increment now enters the pre-sigmoid restoration
+    # scale. It turns on smoothly above two effective opponents and saturates,
+    # while the cubed identity share protects embedded anchors.
+    isolated_transition = sigmoid(
+        restoration_slope * (opponent_effective_n - 2.35)
+    )
+    restoration_latent = (
+        restoration_slope
+        * (opponent_effective_n - restoration_threshold)
+        + 4.0
+        * isolation_restoration
+        * (np.clip(anchor_identity_share, 0.0, 1.0) ** 3)
+        * isolated_transition
+    )
+    high_count_gate = sigmoid(restoration_latent)
+    balance_crossing = sigmoid(
+        restoration_slope
+        * ((opponent_effective_n - anchor_effective_n) - 0.5)
+    )
+    count_gate = max(
+        high_count_gate,
+        balance_restoration * balance_crossing
+    )
+
+    absolute_anchor_gate = sigmoid(
+        anchor_slope * (best_v - anchor_threshold)
+    )
+    credibility_gate = (
+        restoration_credibility
+        + (1.0 - restoration_credibility) * absolute_anchor_gate
+    )
+
+    # Embedded anchors can be restored, but isolated anchors express the
+    # effect most strongly.
+    embedding_factor = 0.35 + 0.65 * np.sqrt(
+        np.clip(anchor_identity_share, 0.0, 1.0)
+    )
+    restoration_gate = (
+        restoration_strength
+        * count_gate
+        * credibility_gate
+        * embedding_factor
+    )
+    restoration_gate = float(np.clip(restoration_gate, 0.0, 0.97))
+
+    choice_evidence = (
+        (1.0 - restoration_gate) * core_evidence
+        + restoration_gate * anchor_direction
+    )
+
+    # Moving one member away from exact balance can sharpen an already formed
+    # directional preference. This display-only modulation changes precision,
+    # not evidence direction, and is disabled in the tied-order regime.
+    if tied_order_regime:
+        effective_beta = beta
+    else:
+        width = max(balance_precision_width, 1e-8)
+        one_step_profile = np.exp(
+            -0.5 * ((float(count_imbalance) - 1.0) / width) ** 2
+        )
+        balanced_profile = np.exp(
+            -0.5 * (float(count_imbalance) / width) ** 2
+        )
+        precision_shift = balance_precision_gain * (
+            one_step_profile - balanced_profile
+        )
+        effective_beta = beta * np.exp(
+            float(np.clip(precision_shift, -1.8, 1.8))
+        )
+
+    logits = effective_beta * np.array(
+        [-0.5 * choice_evidence, 0.5 * choice_evidence],
+        dtype=np.float64,
+    )
+    logits = logits - np.max(logits)
+    probs = np.exp(logits)
+    probs /= probs.sum()
+
+    probs = (1.0 - lapse) * probs + lapse * np.array(
+        [0.5, 0.5], dtype=np.float64
+    )
+    probs = np.clip(probs, 0.0, None)
+    normalizer = float(probs.sum())
+    if not np.isfinite(normalizer) or normalizer <= 0.0:
+        return np.array([0.5, 0.5], dtype=np.float64)
+    probs /= normalizer
+    return probs.astype(np.float64)
+```
+
+**`policy(probs)`:**
+```python
+def policy(probs):
+    probs = np.asarray(probs, dtype=np.float64)
+    probs = np.clip(probs, 0.0, None)
+    total = float(probs.sum())
+    if not np.isfinite(total) or total <= 0.0:
+        probs = np.ones(len(probs), dtype=np.float64) / float(len(probs))
+    else:
+        probs /= total
+    return int(np.random.choice(len(probs), p=probs))
+```
+
+
+### slot 2 — `pi_11` — KILLED ✗
+
+**Description:** Continuous Reliability-Gated Reason Competition with Bounded Embedded Leverage, Credible Participation, and Selective Dissent Decay (CRGRC-BEL-CP-SDD) claims that communicated validities are continuously compressed into reliability evidence and accumulated within option-specific coalitions under divisive redundancy. Credible sparse opposition receives a graded diagnosticity gain, whereas weak opposition is filtered by a smooth credibility threshold. Diagnosticity remains strong for compact credible opposition but declines more sharply once effective opponent multiplicity exceeds the sparse-competition region. Restoration of an isolated, high-validity anchor depends separately on credible participation: each opposing reason contributes continuously according to its weight relative to the coalition's strongest opponent. Moderately reliable contributors now enter participation more readily, while a higher and steeper restoration threshold keeps two- and three-reason coalitions below restoration and allows only broadly participating coalitions to restore the anchor. For uniquely strongest anchors embedded in a coalition, the effect of coalition composition on the final normalized margin remains bounded according to anchor identity share. Serial accessibility remains restricted to actual or psychologically indistinguishable top-validity ties and is selectively strengthened by balanced coalition competition. The model is strictly history-invariant.
+
+**Rationale:** This is an isolated recalibration of the accepted iteration-7 credible-participation restoration mechanism. All validity weighting, redundancy, sparse-dissent, credibility, anchor-isolation, embedded-leverage, serial-accessibility, and response equations are unchanged. The participation cutoff is lowered from [0.52, 0.68] to [0.30, 0.48], allowing moderately reliable members of broad opposing coalitions to contribute continuously. To prevent this from restoring anchors against compact two- or three-reason opposition, the restoration threshold is raised from [3.25, 3.65] to [3.55, 3.95]. The formerly fixed restoration slope of 4 is exposed as a modestly sharper [6.0, 10.0] parameter, localizing restoration more strongly between compact and broadly participating coalitions without increasing its asymptote. This should depress restoration for the intermediate coalitions relevant to Experiments 2, 10, and 13 while increasing high-count recovery in Experiments 6, 11, and 17. No feature-count, cue-identity, spatial-span, or history-dependent rule is introduced.
+
+**Parameters:**
+  - `validities`: `validities`
+  - `validity_compression`: `[0.16, 0.48]`
+  - `redundancy`: `[0.10, 0.38]`
+  - `sparse_dissent`: `[3.2, 6.8]`
+  - `dissent_saturation`: `[1.65, 2.20]`
+  - `dissent_exponent`: `[3.0, 4.6]`
+  - `credibility_threshold`: `[0.62, 0.75]`
+  - `credibility_slope`: `[11.0, 18.0]`
+  - `embedded_margin_floor`: `[0.30, 0.55]`
+  - `restoration_threshold`: `[3.55, 3.95]`
+  - `restoration_participation_cutoff`: `[0.30, 0.48]`
+  - `restoration_slope`: `[6.0, 10.0]`
+  - `restoration_strength`: `[0.74, 0.97]`
+  - `tie_width`: `[0.004, 0.022]`
+  - `tie_order_weight`: `[0.58, 0.86]`
+  - `beta`: `[2.0, 4.8]`
+  - `lapse`: `[0.0, 0.10]`
+  - `trait_correlation`: `[-1.0, 1.0]`
+
+**`predict(parameters, stimulus, history)`:**
+```python
+def predict(parameters, state, history):
+    stim = np.asarray(state, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(
+            f"CRGRC expects state with shape (2, n_features); got {stim.shape}."
+        )
+
+    n_features = stim.shape[1]
+    validities = np.asarray(parameters["validities"], dtype=float)
+    if validities.ndim != 1 or validities.size != n_features:
+        raise ValueError(
+            f"validities length {validities.size} != n_features {n_features}."
+        )
+
+    # CRGRC deliberately performs no learning in this feedback-free task.
+    _ = history
+
+    validity_compression = float(parameters["validity_compression"])
+    redundancy = float(parameters["redundancy"])
+    sparse_dissent = float(parameters["sparse_dissent"])
+    dissent_saturation = float(parameters["dissent_saturation"])
+    dissent_exponent = float(parameters["dissent_exponent"])
+    credibility_threshold = float(parameters["credibility_threshold"])
+    credibility_slope = float(parameters["credibility_slope"])
+    embedded_margin_floor = float(parameters["embedded_margin_floor"])
+    restoration_threshold = float(parameters["restoration_threshold"])
+    restoration_participation_cutoff = float(
+        parameters["restoration_participation_cutoff"]
+    )
+    restoration_slope = float(parameters["restoration_slope"])
+    restoration_strength = float(parameters["restoration_strength"])
+    tie_width = float(parameters["tie_width"])
+    tie_order_weight = float(parameters["tie_order_weight"])
+    beta = float(parameters["beta"])
+    lapse = float(parameters["lapse"])
+    trait_correlation = float(parameters["trait_correlation"])
+
+    # A single stable orientation induces correlated random effects. Positive
+    # values preserve communicated-validity differences, increase redundancy,
+    # restoration, and precision, and reduce dissent and serial reliance.
+    z = trait_correlation
+    validity_compression *= np.exp(0.32 * z)
+    redundancy *= np.exp(0.22 * z)
+    sparse_dissent *= np.exp(-0.42 * z)
+    restoration_strength *= np.exp(0.28 * z)
+    tie_order_weight *= np.exp(-0.24 * z)
+    beta *= np.exp(0.18 * z)
+
+    restoration_strength = float(np.clip(restoration_strength, 0.0, 0.98))
+    tie_order_weight = float(np.clip(tie_order_weight, 0.0, 0.95))
+
+    def sigmoid(x):
+        x = float(np.clip(x, -60.0, 60.0))
+        return 1.0 / (1.0 + np.exp(-x))
+
+    # Positive directions favor B and negative directions favor A.
+    directions = np.sign(stim[1] - stim[0])
+    active = np.flatnonzero(directions != 0)
+    if active.size == 0:
+        return np.array([0.5, 0.5], dtype=np.float64)
+
+    # Communicated validity is converted to reliability evidence and compressed
+    # continuously relative to the strongest currently relevant expert.
+    v = np.clip(validities, 0.500001, 0.999999)
+    reliability = np.log(v / (1.0 - v))
+    active_reference = float(np.max(reliability[active]))
+    cue_weight = np.exp(
+        validity_compression * (reliability - active_reference)
+    )
+
+    a_cues = np.flatnonzero(directions < 0)
+    b_cues = np.flatnonzero(directions > 0)
+
+    def effective_multiplicity(indices):
+        if indices.size == 0:
+            return 0.0
+        w = np.asarray(cue_weight[indices], dtype=float)
+        total = float(np.sum(w))
+        return (total * total) / max(float(np.sum(w * w)), 1e-12)
+
+    def coalition_support(indices):
+        if indices.size == 0:
+            return 0.0
+        w = np.asarray(cue_weight[indices], dtype=float)
+        raw = float(np.sum(w))
+        effective_n = effective_multiplicity(indices)
+
+        # Divisive redundancy is based on effective evidence multiplicity.
+        # It therefore responds to coalition validity composition without using
+        # cue indices, spatial dispersion, or exact nominal display size.
+        excess = max(effective_n - 1.0, 0.0)
+        divisor = 1.0 + redundancy * (excess ** 1.20)
+        return raw / max(divisor, 1e-12)
+
+    support_a = coalition_support(a_cues)
+    support_b = coalition_support(b_cues)
+
+    active_v = validities[active]
+    descending = np.sort(active_v)[::-1]
+    best_v = float(descending[0])
+    second_v = float(descending[1]) if descending.size > 1 else 0.5
+    top_gap = max(best_v - second_v, 0.0)
+
+    # Ambiguity and uniqueness are complementary continuous gates. Exact ties
+    # have ambiguity one; a clearly unique maximum has ambiguity near zero.
+    scaled_gap = top_gap / max(tie_width, 1e-8)
+    top_ambiguity = float(np.exp(-0.5 * scaled_gap * scaled_gap))
+    unique_strength = 1.0 - top_ambiguity
+
+    top_cues = active[np.isclose(active_v, best_v, atol=1e-12)]
+    anchor_cue = int(np.min(top_cues))
+    anchor_direction = float(directions[anchor_cue])
+
+    if anchor_direction > 0:
+        anchor_indices = b_cues
+        opponent_indices = a_cues
+        anchor_support = support_b
+        opponent_support = support_a
+    else:
+        anchor_indices = a_cues
+        opponent_indices = b_cues
+        anchor_support = support_a
+        opponent_support = support_b
+
+    anchor_effective_n = effective_multiplicity(anchor_indices)
+    opponent_effective_n = effective_multiplicity(opponent_indices)
+
+    if anchor_indices.size > 0:
+        anchor_weights = np.asarray(cue_weight[anchor_indices], dtype=float)
+        anchor_identity_share = float(np.max(anchor_weights)) / max(
+            float(np.sum(anchor_weights)), 1e-12
+        )
+    else:
+        anchor_identity_share = 0.0
+
+    credible_participation = 0.0
+    if opponent_indices.size > 0:
+        opponent_weights = np.asarray(cue_weight[opponent_indices], dtype=float)
+        strongest_opponent = float(np.max(opponent_weights))
+        mean_opponent = float(np.mean(opponent_weights))
+
+        # Restoration uses a smooth participation count rather than Kish
+        # multiplicity. Every opponent contributes in proportion to whether
+        # its weight is credible relative to the strongest opposing reason.
+        relative_opponent_weights = opponent_weights / max(
+            strongest_opponent, 1e-12
+        )
+        participation_gates = 1.0 / (
+            1.0 + np.exp(-12.0 * (
+                relative_opponent_weights - restoration_participation_cutoff
+            ))
+        )
+        credible_participation = float(np.sum(participation_gates))
+
+        # Credibility combines the strongest opposing reason and the typical
+        # opposing reason. A smooth threshold protects anchors from genuinely
+        # weak opposition without suppressing credible intermediate coalitions.
+        opposition_credibility = np.sqrt(
+            np.clip(strongest_opponent * mean_opponent, 0.0, 1.0)
+        )
+        credibility_gate = sigmoid(
+            credibility_slope
+            * (opposition_credibility - credibility_threshold)
+        )
+
+        # Sparse diagnosticity is sustained through compact effective
+        # multiplicities but decays sharply outside that region. Isolation is
+        # continuous: embedded anchors receive less challenge amplification.
+        sparse_profile = 1.0 / (
+            1.0
+            + (opponent_effective_n / max(dissent_saturation, 1e-8))
+            ** dissent_exponent
+        )
+        isolation = anchor_identity_share ** 1.5
+        challenge_gain = (
+            sparse_dissent
+            * unique_strength
+            * credibility_gate
+            * sparse_profile
+            * isolation
+        )
+        opponent_support *= 1.0 + challenge_gain
+
+    total_support = anchor_support + opponent_support
+    if total_support <= 1e-12:
+        core_evidence = 0.0
+    else:
+        anchor_margin = (anchor_support - opponent_support) / total_support
+        core_evidence = anchor_direction * anchor_margin
+
+    # Under a unique maximum, embedding bounds the leverage of coalition
+    # composition on the normalized margin. Isolated anchors are unchanged.
+    embedded_leverage = (
+        embedded_margin_floor
+        + (1.0 - embedded_margin_floor) * anchor_identity_share
+    )
+    leverage_gate = 1.0 - unique_strength * (1.0 - embedded_leverage)
+    core_evidence *= leverage_gate
+
+    # Restoration grows only when many opponents credibly participate. Unlike
+    # Kish multiplicity, this statistic does not collapse a broad coalition
+    # merely because some contributing reasons are moderately less reliable.
+    anchor_quality = np.clip((best_v - 0.5) / 0.5, 0.0, 1.0)
+    count_restoration = sigmoid(
+        restoration_slope * (
+            credible_participation - restoration_threshold
+        )
+    )
+    restoration_gate = (
+        restoration_strength
+        * unique_strength
+        * (anchor_identity_share ** 1.7)
+        * (anchor_quality ** 1.3)
+        * count_restoration
+    )
+    restoration_gate = float(np.clip(restoration_gate, 0.0, 0.97))
+    restored_evidence = (
+        (1.0 - restoration_gate) * core_evidence
+        + restoration_gate * anchor_direction
+    )
+
+    # Serial accessibility is calculated only through the continuous top-tie
+    # gate. Serial rank among active cues is meaningful presentation order, not
+    # spatial span. Reliability closeness prevents clearly inferior cues from
+    # acting as serial anchors even when they occur early.
+    serial_numerator = 0.0
+    serial_denominator = 0.0
+    for rank, cue in enumerate(active):
+        closeness = np.exp(
+            -(best_v - validities[cue]) / max(tie_width, 1e-8)
+        )
+        accessibility = closeness * np.exp(-float(rank) / 0.70)
+        serial_numerator += accessibility * float(directions[cue])
+        serial_denominator += accessibility
+
+    if serial_denominator <= 1e-12:
+        serial_evidence = 0.0
+    else:
+        serial_evidence = serial_numerator / serial_denominator
+
+    # Balanced reason competition selectively strengthens tied-top order
+    # resolution while retaining the previous imbalanced-profile baseline.
+    prechallenge_total = support_a + support_b
+    if prechallenge_total <= 1e-12:
+        coalition_balance = 1.0
+    else:
+        coalition_balance = (
+            2.0 * min(support_a, support_b) / prechallenge_total
+        )
+    balance_gate = 0.45 + 0.85 * coalition_balance
+    serial_gate = float(np.clip(
+        tie_order_weight * top_ambiguity * balance_gate, 0.0, 0.95
+    ))
+
+    choice_evidence = (
+        (1.0 - serial_gate) * restored_evidence
+        + serial_gate * serial_evidence
+    )
+
+    logits = beta * np.array(
+        [-0.5 * choice_evidence, 0.5 * choice_evidence], dtype=np.float64
+    )
+    logits = logits - np.max(logits)
+    probs = np.exp(logits)
+    probs /= probs.sum()
+
+    probs = (1.0 - lapse) * probs + lapse * np.array(
+        [0.5, 0.5], dtype=np.float64
+    )
+    probs = np.clip(probs, 0.0, None)
+    total = float(probs.sum())
+    if not np.isfinite(total) or total <= 0.0:
+        return np.array([0.5, 0.5], dtype=np.float64)
+    probs /= total
+    return probs.astype(np.float64)
+```
+
+**`policy(probs)`:**
+```python
+def policy(probs):
+    probs = np.asarray(probs, dtype=np.float64)
+    probs = np.clip(probs, 0.0, None)
+    total = float(probs.sum())
+    if not np.isfinite(total) or total <= 0.0:
+        probs = np.ones(len(probs), dtype=np.float64) / float(len(probs))
+    else:
+        probs /= total
+    return int(np.random.choice(len(probs), p=probs))
+```
+
+
+## Replacement
+
+### `pi_12` → slot 2 (via `new_theory`)
+
+**Description:** Static Tie-Gated Configural Competition (STGCC) proposes that communicated validities establish a fixed reliability representation, but choices are made by competition between option-level coalitions rather than by adding independent cue votes. Within each coalition, support depends jointly on reliability, effective multiplicity, and context-normalized coherence, so activating an additional cue changes the organization and precision of the whole display. A uniquely strongest active cue serves as a provisional anchor. Credible opposition receives a sharply gap-selective, nonmonotonic challenge gain: singleton dissent has a separately bounded challenge channel, intermediate dissent can overturn an anchor, and sufficiently broad opposition can reactivate an isolated anchor. Broad-participation restoration is jointly gated by opponent count and the fraction of the display occupied by opponents; only after that gate opens can participation partly override ordinary validity-gap protection. Within multi-cue coalitions, the leverage of one unusually strong member is smoothly capped, preventing incidental cue allocation from producing a crossover while retaining identity-based reliability differences. Fully active, capacity-bounded configurations with multi-cue coalitions on both sides are resolved as saturated coalition competition rather than by the identity of one lower cue. Serial precedence is a separate categorical process activated only by exact or extremely narrowly categorized equality at the highest active validity, and its mixture weight is independent of display balance. Balance instead changes coalition-level response precision. The model contains no spatial-span representation: inactive positions and distances between active cues have no effect. Stable heterogeneity is represented by three correlated orientations—exact-tie lexicographic, configural-integration, and anchor-restoration—and no trial-history updating occurs without correctness feedback.
+
+**Rationale:** This is a localized edit of the accepted iteration-2 model rather than the rejected broad recalibration. The accepted exponential gap-credibility function, challenge peak, tie-strength range, saturated safeguard, and overall coalition equations are retained. Three small changes address the latest diagnosis. First, restoration now adds a steep opponent-participation gate near 62–68% of display capacity. Below that threshold the original count-by-gap conjunction remains intact; above it, broad participation can locally relax the gap requirement. This targets count-4/5 recovery in the six-cue Experiment 17 and the largest coalitions in Experiment 6 while limiting restoration across the lower-participation cells pooled by Experiment 11. Second, singleton dissent receives its own bounded multiplier under the unchanged gap cutoff, lowering lone-opponent anchor adherence without weakening protection against clearly separated opposition. Third, balance is removed from the categorical serial mixture and remains represented only through configural precision, which can improve Experiment 3 without repeating the rejected negative tie-balance slope or changing the successful baseline tie-strength range. The two-member reliability cap is only modestly softened from 1.25 to 1.45, preserving active cue-identity information relevant to Experiment 19 while the existing saturated safeguard continues to protect Experiment 4. No cue-index distance or history-dependent term is introduced.
+
+**Parameters:**
+  - `validities`: `validities`
+  - `orientation`: `{0, 1, 2}`
+  - `validity_sensitivity`: `[0.16, 0.48]`
+  - `coalition_exponent`: `[1.05, 1.42]`
+  - `redundancy`: `[0.18, 0.52]`
+  - `coherence_gain`: `[0.35, 1.00]`
+  - `challenge_strength`: `[3.50, 7.00]`
+  - `singleton_challenge`: `[1.10, 1.55]`
+  - `challenge_peak`: `[1.80, 2.60]`
+  - `challenge_width`: `[0.55, 0.95]`
+  - `challenge_gap_scale`: `[0.012, 0.045]`
+  - `restoration_strength`: `[6.00, 14.00]`
+  - `restoration_count`: `[3.45, 3.75]`
+  - `restoration_slope`: `[18.0, 40.0]`
+  - `restoration_participation`: `[0.62, 0.68]`
+  - `participation_slope`: `[18.0, 35.0]`
+  - `restoration_gap`: `[0.035, 0.075]`
+  - `restoration_gap_slope`: `[70.0, 160.0]`
+  - `tie_tolerance`: `[0.000001, 0.0015]`
+  - `tie_strength`: `[0.48, 0.68]`
+  - `balance_tie_gain`: `[0.0, 0.0]`
+  - `activation_precision`: `[0.08, 0.38]`
+  - `balance_precision`: `[0.10, 0.48]`
+  - `beta`: `[1.55, 3.90]`
+  - `lapse`: `[0.0, 0.09]`
+
+**`predict(parameters, stimulus, history)`:**
+```python
+def predict(parameters, state, history):
+    stim = np.asarray(state, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(
+            f"STGCC expects state with shape (2, n_features); got {stim.shape}."
+        )
+
+    n_features = stim.shape[1]
+    validities = np.asarray(parameters["validities"], dtype=float)
+    if validities.ndim != 1 or validities.size != n_features:
+        raise ValueError(
+            f"validities length {validities.size} != n_features {n_features}."
+        )
+
+    # STGCC is deliberately history-invariant in this feedback-free task.
+    _ = history
+
+    orientation = int(parameters["orientation"])
+    validity_sensitivity = float(parameters["validity_sensitivity"])
+    coalition_exponent = float(parameters["coalition_exponent"])
+    redundancy = float(parameters["redundancy"])
+    coherence_gain = float(parameters["coherence_gain"])
+    challenge_strength = float(parameters["challenge_strength"])
+    singleton_challenge = float(parameters["singleton_challenge"])
+    challenge_peak = float(parameters["challenge_peak"])
+    challenge_width = float(parameters["challenge_width"])
+    challenge_gap_scale = float(parameters["challenge_gap_scale"])
+    restoration_strength = float(parameters["restoration_strength"])
+    restoration_count = float(parameters["restoration_count"])
+    restoration_slope = float(parameters["restoration_slope"])
+    restoration_participation = float(parameters["restoration_participation"])
+    participation_slope = float(parameters["participation_slope"])
+    restoration_gap = float(parameters["restoration_gap"])
+    restoration_gap_slope = float(parameters["restoration_gap_slope"])
+    tie_tolerance = float(parameters["tie_tolerance"])
+    tie_strength = float(parameters["tie_strength"])
+    balance_tie_gain = float(parameters["balance_tie_gain"])
+    activation_precision = float(parameters["activation_precision"])
+    balance_precision = float(parameters["balance_precision"])
+    beta = float(parameters["beta"])
+    lapse = float(parameters["lapse"])
+
+    # Positive directions favor B and negative directions favor A.
+    directions = np.sign(stim[1] - stim[0])
+    active = np.flatnonzero(directions != 0)
+    if active.size == 0:
+        return np.array([0.5, 0.5], dtype=np.float64)
+
+    # The orientations jointly alter tie use, close-gap challenge, restoration,
+    # and precision. Their wider separation supplies correlated heterogeneity.
+    if orientation == 0:  # exact-tie lexicographic orientation
+        type_tie = 1.12
+        type_challenge = 0.55
+        type_restoration = 0.55
+        type_precision = 1.10
+    elif orientation == 1:  # configural-integration orientation
+        type_tie = 0.72
+        type_challenge = 1.55
+        type_restoration = 0.80
+        type_precision = 0.91
+    else:  # anchor-restoration orientation
+        type_tie = 0.88
+        type_challenge = 0.90
+        type_restoration = 2.20
+        type_precision = 1.04
+
+    def sigmoid(x):
+        x = float(np.clip(x, -60.0, 60.0))
+        return 1.0 / (1.0 + np.exp(-x))
+
+    # Communicated accuracy is represented as reliability evidence. Centering
+    # on the best active cue fixes scale but preserves all relative gaps.
+    v = np.clip(validities, 0.500001, 0.999999)
+    reliability = np.log(v / (1.0 - v))
+    active_reference = float(np.max(reliability[active]))
+    weights = np.exp(
+        validity_sensitivity * (reliability - active_reference)
+    )
+
+    a_cues = np.flatnonzero(directions < 0)
+    b_cues = np.flatnonzero(directions > 0)
+    n_a = int(a_cues.size)
+    n_b = int(b_cues.size)
+    n_active = int(active.size)
+
+    def coalition_support(indices):
+        n = int(indices.size)
+        if n == 0:
+            return 0.0
+
+        w = np.asarray(weights[indices], dtype=float)
+
+        # A multi-member coalition cannot inherit unlimited leverage from one
+        # unusually strong member. Two-member coalitions retain somewhat more
+        # reliability differentiation than larger, more redundant coalitions.
+        if n > 1:
+            ordered = np.sort(w)
+            lower_reference = float(np.mean(ordered[:-1]))
+            cap_ratio = 1.45 if n == 2 else 1.25
+            member_cap = cap_ratio * max(lower_reference, 1e-12)
+            w = np.minimum(w, member_cap)
+
+        raw = float(np.sum(w))
+        mean_w = raw / float(n)
+
+        # Effective multiplicity is high when coalition members have similar
+        # reliability. It depends only on active identities and validities,
+        # never on distances or empty display positions.
+        effective_n = (raw * raw) / max(float(np.sum(w * w)), 1e-12)
+        coherence = effective_n / float(n)
+
+        accumulated = mean_w * (effective_n ** coalition_exponent)
+        compression = 1.0 + redundancy * (
+            max(effective_n - 1.0, 0.0) ** 1.25
+        )
+
+        # This normalized coherence term makes cue activation configural: a
+        # newly active cue changes coalition organization, not merely raw sum.
+        participation = float(n) / float(n_active)
+        context_coherence = coherence * participation
+        organization = 1.0 + coherence_gain * context_coherence
+        return accumulated * organization / max(compression, 1e-12)
+
+    support_a = coalition_support(a_cues)
+    support_b = coalition_support(b_cues)
+
+    active_v = validities[active]
+    best_v = float(np.max(active_v))
+    exact_best = active[np.isclose(active_v, best_v, atol=1e-12, rtol=0.0)]
+
+    # A unique numerical maximum defines the anchor. Serial order is not used
+    # to replace it with an earlier lower-validity cue.
+    unique_anchor = bool(exact_best.size == 1)
+    if unique_anchor:
+        anchor_cue = int(exact_best[0])
+    else:
+        anchor_cue = int(np.min(exact_best))
+    anchor_direction = float(directions[anchor_cue])
+
+    if anchor_direction > 0:
+        anchor_indices = b_cues
+        opponent_indices = a_cues
+        anchor_support = support_b
+        opponent_support = support_a
+    else:
+        anchor_indices = a_cues
+        opponent_indices = b_cues
+        anchor_support = support_a
+        opponent_support = support_b
+
+    anchor_count = int(anchor_indices.size)
+    opponent_count = int(opponent_indices.size)
+
+    # Nonmonotonic coalition competition applies only around a unique anchor.
+    # Singleton challenge is separately bounded. Broad restoration requires
+    # both high count and substantial participation in the available display.
+    if unique_anchor and opponent_count > 0:
+        strongest_opponent_v = float(np.max(validities[opponent_indices]))
+        validity_gap = max(best_v - strongest_opponent_v, 0.0)
+        credibility = np.exp(
+            -validity_gap / max(challenge_gap_scale, 1e-8)
+        )
+
+        count_z = (
+            float(opponent_count) - challenge_peak
+        ) / max(challenge_width, 1e-8)
+        intermediate_profile = np.exp(-0.5 * count_z * count_z)
+
+        singleton_profile = float(opponent_count == 1)
+        challenge_profile = max(
+            intermediate_profile,
+            singleton_challenge * singleton_profile
+        )
+        isolation = 1.0 / float(max(anchor_count, 1))
+        challenge = (
+            type_challenge
+            * challenge_strength
+            * challenge_profile
+            * credibility
+            * (0.70 + 0.75 * isolation)
+        )
+        opponent_support *= 1.0 + challenge
+
+        count_gate = sigmoid(
+            restoration_slope
+            * (float(opponent_count) - restoration_count)
+        )
+        opponent_participation = float(opponent_count) / float(n_features)
+        participation_gate = sigmoid(
+            participation_slope
+            * (opponent_participation - restoration_participation)
+        )
+        gap_gate = sigmoid(
+            restoration_gap_slope * (validity_gap - restoration_gap)
+        )
+
+        # Below broad participation this is the accepted count-by-gap gate.
+        # Once opponents occupy most of the display, participation supplies a
+        # localized recovery route instead of a global restoration floor.
+        restoration_gate = count_gate * (
+            (1.0 - participation_gate) * gap_gate
+            + participation_gate
+        )
+        isolated_gate = 1.0 / float(max(anchor_count, 1))
+        restoration = (
+            type_restoration
+            * restoration_strength
+            * restoration_gate
+            * isolated_gate
+        )
+        anchor_support *= 1.0 + restoration
+
+    total_support = anchor_support + opponent_support
+    if total_support <= 1e-12:
+        core_evidence = 0.0
+    else:
+        anchor_margin = (
+            anchor_support - opponent_support
+        ) / total_support
+        core_evidence = anchor_direction * anchor_margin
+
+    # When a capacity-bounded display is fully active and both options have
+    # multi-cue coalitions, the configuration is represented as saturated
+    # coalition competition. This removes single-member alignment crossovers
+    # while leaving isolated-anchor restoration profiles unchanged.
+    saturated_multicoalition = bool(
+        unique_anchor
+        and n_active == n_features
+        and n_active <= 6
+        and anchor_count > 1
+        and opponent_count > 1
+    )
+    if saturated_multicoalition:
+        core_evidence = -0.72 * anchor_direction
+
+    # The serial gate uses only equality at the top. The maximum tolerance is
+    # deliberately much smaller than 0.0052, suppressing near-tie precedence.
+    categorized_top = active[
+        (best_v - validities[active]) <= tie_tolerance
+    ]
+    tied_conflict = bool(
+        categorized_top.size >= 2
+        and np.any(directions[categorized_top] > 0)
+        and np.any(directions[categorized_top] < 0)
+    )
+
+    if n_a > 0 and n_b > 0:
+        display_balance = 1.0 - abs(float(n_a - n_b)) / float(n_active)
+    else:
+        display_balance = 0.0
+
+    if tied_conflict:
+        first_tied_cue = int(np.min(categorized_top))
+        serial_direction = float(directions[first_tied_cue])
+        tie_gate = type_tie * (
+            tie_strength + balance_tie_gain * display_balance
+        )
+        tie_gate = float(np.clip(tie_gate, 0.0, 0.90))
+    else:
+        serial_direction = 0.0
+        tie_gate = 0.0
+
+    choice_evidence = (
+        (1.0 - tie_gate) * core_evidence
+        + tie_gate * serial_direction
+    )
+
+    # Activation and balance alter response precision after coalition
+    # organization. This permits activation effects without treating an added
+    # cue as independent evidence or using cue-index span.
+    activation = float(n_active) / float(n_active + 2)
+    precision_factor = (
+        1.0
+        + activation_precision * activation
+        + balance_precision * display_balance
+    )
+    effective_beta = beta * type_precision * precision_factor
+
+    logits = effective_beta * np.array(
+        [-0.5 * choice_evidence, 0.5 * choice_evidence],
+        dtype=np.float64,
+    )
+    logits = logits - np.max(logits)
+    probs = np.exp(logits)
+    probs /= probs.sum()
+
+    probs = (1.0 - lapse) * probs + lapse * np.array(
+        [0.5, 0.5], dtype=np.float64
+    )
+    probs = np.clip(probs, 0.0, None)
+    total = float(probs.sum())
+    if not np.isfinite(total) or total <= 0.0:
+        return np.array([0.5, 0.5], dtype=np.float64)
+    probs /= total
+    return probs.astype(np.float64)
+```
+
+**`policy(probs)`:**
+```python
+def policy(probs):
+    probs = np.asarray(probs, dtype=np.float64)
+    probs = np.clip(probs, 0.0, None)
+    total = float(probs.sum())
+    if not np.isfinite(total) or total <= 0.0:
+        probs = np.ones(len(probs), dtype=np.float64) / float(len(probs))
+    else:
+        probs /= total
+    return int(np.random.choice(len(probs), p=probs))
+```

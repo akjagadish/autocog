@@ -1,0 +1,1643 @@
+# generation_iter_02_attempt_00
+
+## System Prompt
+
+You are a renowned cognitive scientist and an expert Python programmer.
+
+Your job is to propose a new theory and its model instantiation in the Decision Making (Binary Features) domain based on the feedback provided by an arbiter. The feedback contains diagnoses of mechanistic failures of the previous theory along with suggestions for a new theory family that overcomes those failures. The newly proposed theory and model should display human-like behavior when simulated on experiment(s). 
+The goal of the theory generation process is to SURFACE theories that are EXPERIMENT-INVARIANT: that is,theories that explain data across the majority of experiments. 
+You will see a list of theories that have been proposed in the past but you should only use them as inspiration and not to choose from them. Propose a new theory that is different. 
+If they fail to do so, you will receive feedback on their performance on the same experiment(s) and you will have to propose another new theory and model that meet the requirements, iterating until you succeed.
+
+If you think the failure to capture human behavior is due to arbiter feedback that is inaccurate or unhelpful, you can propose a new theory and model that ignore the feedback, but you must provide rationale for why you are ignoring it and how your proposal overcomes the identified mechanistic failures.
+
+## ACCEPT GATE & LOSS TRAJECTORY — HOW THE LOOP HANDLES YOUR EDITS
+This propose-loop has a programmatic accept gate: after every iteration the candidate's `aggregate_loss` is compared against the running-best loss; strict improvement -> ACCEPTED (the candidate becomes the new running-best base); otherwise -> REJECTED (the candidate is discarded and the base is unchanged). You do NOT need to manually "revert" a regressed edit — the gate already does that for you.
+
+The block rendered below as `## PREVIOUS CANDIDATE (this loop)` is ALWAYS the running-best (last ACCEPTED) candidate, NEVER your most recent attempt if it was rejected. So:
+  * Treat `## PREVIOUS CANDIDATE` as a known-good base. Build on it.
+  * The `## LOSS TRAJECTORY` block tags every iteration ACCEPTED or REJECTED. Use this as ground truth on which past critic advice actually moved the loop forward and which didn't.
+  * The `## PRIOR FEEDBACK ITERATIONS` block annotates each prior critique with the same ACCEPTED/REJECTED tag of the candidate it elicited. Down-weight critic advice whose previous candidates were REJECTED, and reinforce / extend advice whose candidates were ACCEPTED.
+  * Treat the best ACCEPTED iteration's loss as a soft floor — the next edit should plausibly land at-or-below it, otherwise the gate will reject your attempt and the base stays put.
+
+Each metric value below is shown as `point_estimate (var=X)`, where `point_estimate` is `metric(data)` evaluated on the full pooled dataset and `var` is the population (between-subject) variance of the same metric re-applied per `subject_id`. The point estimate is the canonical scalar; `var` reports how consistent that estimate is across subjects (lower = more consistent). `var=n/a` means the metric could not be applied to a single-subject slice.
+
+## PARAMETER NOTATION
+`parameters` is a JSON object mapping each parameter name (snake_case string) to a *string* value that specifies its domain. Every value MUST be a string — never a bare list, number, tuple, or expression. Use exactly one of these notations per parameter:
+
+1. Continuous interval — square brackets, two numeric bounds:
+   "[min, max]"
+   Examples: "[0, 1]", "[1.0, 10.0]", "[10, 1000]"
+
+2. Discrete set — curly braces, comma-separated values:
+   "{v1, v2, ...}"
+   Example: "{1, 2}"
+
+3. Vector of intervals whose length is set by the experiment — a bracketed tuple repeated by a symbolic length variable:
+   "[(min, max)] * length_var"
+   Example: "[(0, 1)] * n_features"
+
+4. Symbolic reference — a bare variable name (no brackets, no angle brackets), used when the parameter takes its value from an experiment-defined constant rather than a range:
+   "variable_name"
+   Example: "n_features"
+
+Rules:
+- Do not use parentheses for intervals; square brackets only. Tuples `(a, b)` are reserved for the vector-of-intervals notation in (3).
+- Do not mix notations within a single value (e.g., no "[0, 1] or {2, 3}").
+- Do not quote numbers inside the notation (write "[0, 1]", not "['0', '1']").
+- Every parameter referenced by `predict` or `policy` must appear as a key in `parameters`, and vice versa.
+- Notations 3 and 4 may ONLY reference the experiment-defined symbolic identifiers listed under "ALLOWED SYMBOLIC IDENTIFIERS" below. Do not invent new identifier names. If a parameter's shape doesn't fit any of those variables, fall back to a literal interval (notation 1) or discrete set (notation 2). Use these names so the model adapts to any experiment in this domain instead of hardcoding shapes.
+
+## ALLOWED SYMBOLIC IDENTIFIERS (for notations 3 and 4 above)
+- n_features: Number of expert ratings per option (LLM-proposed via `validities` length).
+- validities: Per-expert validities (LLM-proposed; each in [0.5, 1.0]); fixed across all trials.
+
+## AVAILABLE IMPORTS inside `predict` and `policy`
+- numpy as np
+- pandas as pd
+- scipy and its submodules
+- torch and torch.nn.functional as F
+- sklearn and its submodules
+- math, random, and other standard Python libraries
+
+## RUNTIME CONTRACT (function signatures and argument shapes)
+`predict(parameters, state, history) -> np.ndarray`:
+- `parameters`: dict[str, value]. One sample drawn from your declared `parameters` ranges, applied for the entire subject run.
+- `state`: the per-trial input delivered by the experiment (shape is domain-specific — see the experiment description above and the `history` key list below, which mirrors the per-trial variables carried in `state`). Convert to an array with `np.asarray(state)` if you need array ops.
+- `history`: dict-of-lists for past trials in this subject's run, NOT a list-of-dicts. The per-trial keys are:
+  Each value below is a Python list in trial order; entry `i` is the value for trial `i`. On the first trial all lists are empty.
+  - `"option_a_ratings"`: List of n_features binary expert ratings (each 0 or 1) for option A on this trial.
+  - `"option_b_ratings"`: List of n_features binary expert ratings (each 0 or 1) for option B on this trial.
+  - `"response"`: 0 if subject chose A, 1 if subject chose B.
+Iterating `for x in history:` iterates the dict KEYS (strings); to walk trials index the lists in lock-step, e.g. `for i in range(len(next(iter(history.values())))): ...`.
+- Returns: 1-D `np.ndarray` of choice probabilities over the experiment's discrete action set, summing to 1.
+
+`policy(probs) -> int`:
+- Receives the probability vector produced by `predict`.
+- Returns: integer index in `[0, len(probs))` identifying the chosen action. If you sample with `np.random.choice(..., p=probs)`, normalise first (`probs = np.asarray(probs, dtype=np.float64); probs /= probs.sum()`) to avoid the "probabilities do not sum to 1" ValueError from float drift.
+
+
+## User Prompt
+
+## EXPERIMENTAL DOMAIN
+Subjects repeatedly choose between two fictitious products, A and B. Each option is described by a vector of binary expert ratings (each 0 or 1). Every experiment fixes its own feature count (via `validities` length) and per-expert validities; both are LLM-proposed. The validities are communicated to the subject in the instructions. Subjects pick whichever product they believe is of higher quality. There is no trial-by-trial correctness feedback.
+
+Each subject completes ~96 trials in a single block, with order randomized independently per subject. On every trial the subject sees two options A and B, each described by `n_features` binary expert ratings (each 0 or 1). The per-feature validities and n_features are fixed per experiment (design-time choices). Validities are communicated to the subject in the instructions. Both `n_features` and `validities` are exposed to your `predict` via the `parameters` dict. The subject chooses A or B; no correctness feedback is provided after the choice.
+
+## ARBITER GUIDE
+The arbiter labelled this round's two theories in its recommendation as follows:
+- THEORY 1 = `pi_6`
+- THEORY 2 = `pi_5`
+- The recommendation below acts on THEORY 2 (= `pi_5`).
+
+Replace pi_5 (WC-ST) with a new theory that keeps the domain-invariant polarity claim but abandons the Weber-threshold and strict validity-blindness. Sketch fff 'Sign-Dominant Flag Difference with a Weighter Minority (SD-FD/M)':
+
+1. NEGATIVE POLARITY (retained, uncontroversial): a rating of '1' is a warning flag; the option with the smaller badness is chosen. This is what makes the population look anti-TTB on dominance/agreement pairs and pro-TTB on conflict pairs (Exps 3fff7).
+
+2. SIGN-DOMINANT DIFFERENCE DETECTION (the key departure from both incumbents): the decision variable is the flag-count difference, and the psychometric function is *saturating in |fff|, essentially magnitude-invariant in the base count*. A one-flag advantage is nearly as diagnostic at 4-vs-5 as at 0-vs-1: predict ~0.85fff0.88 for fff=1 at any base count (Exp 1 = 0.872, Exp 9 = 0.773) rising to ~0.90+ for ffffff2. Base count enters only through a small additive attention/interference cost (of order 0.02fff0.04 per extra shared flag, saturating), which reproduces Exp 10's small positive easy-minus-hard gap (~0.17) without any collapse toward chance. Explicitly no divisive compression by total mass and no ratio/Weber scaling.
+
+3. WEAK, MINORITY-CARRIED VALIDITY MODULATION: instead of a population-wide strong severity term (PW-FMS) or none at all (WC-ST), posit a *mixture*: a majority (~70fff80%) of subjects are essentially validity-blind counters whose composition contrast is ~0, and a minority (~20fff30%) apply a validity-weighted mass / worst-flag reading strongly enough to reverse on composition pairs. The mixture yields a group-mean composition contrast of ~0.10fff0.20 with LARGE between-subject variance (Exp 2: 0.156, var 0.129) fff matching both the mean and the dispersion, which neither incumbent does (pi_5 has zero mean and zero spread; pi_6 has too large a mean). The same mixture makes Exp 8's differential small (~0.05fff0.10) rather than ~0.15.
+
+4. EQUAL-COUNT TIEBREAK: on exact count ties the top discriminating expert's flag is mildly repellent, with moderate strength (p(choose flagged option) ~0.25fff0.40) and moderate spread fff intermediate between PW-FMS's extreme 0.07 and WC-ST's broad prior.
+
+5. HETEROGENEITY: dispersion arises jointly from the counter/weighter mixture (bimodal on composition pairs) and from a modest lapse/sensitivity spread (unimodal on count pairs), matching the observation that per-subject variance is small on the magnitude ladder (0.009fff0.033) but large on composition contrasts (0.06fff0.13).
+
+This theory competes sharply with PW-FMS: it predicts a FLAT magnitude ladder where PW-FMS predicts a monotone decline, and a SMALL, minority-driven composition effect where PW-FMS predicts a large population-wide severity reversal. Future experiments should target (i) fff=1 accuracy at base counts 0,2,4,6 with cue identity held fixed, and (ii) the per-subject correlation between composition reversal and count-ladder accuracy, which PW-FMS says is positive (high-gamma = high-beta subjects) and SD-FD/M says is near zero or negative.
+
+## THEORY LEADERBOARD
+A small set of prior picked theories shown for reference. Overall score is in `[0, 1]`, higher = better, computed as `1 - L2_norm(normalized_per_experiment_distances) / max_L2_norm`. 1.0 means closest to the real value on every experiment+metric pair; 0.0 means farthest. Each entry below carries the same depth of detail as the PREVIOUS MODEL INSTANCE above so you can borrow concrete mechanisms when useful.
+
+### `pi_6` (overall score: 0.937)
+
+**Description**
+**Partially Weighted Flag Mass with Worst-Flag Severity (PW-FMS).**
+
+Subjects read a binary expert rating of '1' as a *warning flag* rather than an endorsement, and choose the option carrying the smaller *badness*. Five claims:
+
+1. **Negative polarity.** Badness grows with the flags an option carries; the option with the smaller badness is preferred. This single mechanism makes the population look 'anti-TTB' on dominance/agreement pairs and 'pro-TTB' on conflict pairs.
+
+2. **Partial validity weighting on a subject-level continuum.** Each cue gets w_j = 1 + gamma*(r_j - mean(r)) with r_j = (v_j-0.5)/0.5 and gamma a subject-level tilt running from 0 (pure equal-weight counter) to strongly validity-tilted. Because the tilt is *centred*, its behavioural consequence scales with the design's validity spread, which is why the same population looks like a counter in one design and like a weigher in another.
+
+3. **Mild divisive compression, not a threshold.** Evidence s = |D| / (1 + c*(mass_a + mass_b)) fed through a plain logistic plus lapse, so discriminability declines *shallowly and monotonically* with base flag count rather than collapsing to chance. The compression denominator is the plain flag mass — the perceived *quantity* of complaints — because that is what sets the scale against which a difference is judged.
+
+4. **Worst-flag severity, and it is strong.** An option is judged not only by *how much* flag mass it carries but also by *how bad its single worst flag is*. The comparative badness signal is D = (mass_a - mass_b) + lam*(sev_a - sev_b), where sev_i = max_j w_j x_ij is the weight of the most reliable expert who flagged option i (0 if unflagged) and lam is a subject-level severity weight, typically above the point of mere cancellation. Severity is a salience term, not a re-weighting of the tally — it enters the numerator of the evidence only, never the compression scale, and it is never gated on the count difference.
+
+5. **A graded-evidence cascade at near-ties, terminating in strong worst-flag repulsion.** When |D| falls inside a subject-specific resolution band tau the weighted comparison is untrustworthy and the subject falls back lexicographically: (i) if the raw flag *counts* differ, take the option with fewer flags (same compression/logistic applied to counts); (ii) if the counts are also equal, ask which single flag is worst and be *strongly* repelled by the option carrying the top discriminating expert's flag (tie_bias ~ 0.07).
+
+6. **Heterogeneous evidence sensitivity is the primary source of population dispersion.** The subject-level inverse temperature beta is broadly distributed, not narrowly clustered: some subjects convert badness differences into choices almost deterministically while others remain shallow even on large gaps. This spread — not lapse spread — is what generates the large between-subject variance in per-subject accuracy observed on the count-driven designs, and it simultaneously softens near-ceiling agreement/dominance contrasts (low-beta tail) while lifting count-driven accuracy (high-beta tail).
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, state, history):
+    import numpy as np
+
+    # ---------------- 1. parse stimulus ----------------
+    a = b = None
+    if isinstance(state, dict):
+        if "option_a_ratings" in state and "option_b_ratings" in state:
+            a = np.asarray(state["option_a_ratings"], dtype=float).ravel()
+            b = np.asarray(state["option_b_ratings"], dtype=float).ravel()
+    if a is None:
+        stim = np.asarray(state, dtype=float)
+        if stim.ndim == 1:
+            if stim.size % 2 != 0:
+                return np.ones(2) / 2.0
+            half = stim.size // 2
+            a, b = stim[:half], stim[half:]
+        else:
+            stim = stim.reshape(stim.shape[0], -1)
+            if stim.shape[0] < 2:
+                return np.ones(2) / 2.0
+            a, b = stim[0], stim[1]
+    a = np.asarray(a, dtype=float).ravel()
+    b = np.asarray(b, dtype=float).ravel()
+    if a.size == 0 or a.size != b.size:
+        return np.ones(2) / 2.0
+    n = a.size
+
+    # ---------------- 2. design validities ----------------
+    val = parameters.get("validities", None)
+    try:
+        val = np.asarray(val, dtype=float).ravel()
+    except Exception:
+        val = np.array([])
+    if val.size != n:
+        val = np.array([0.9]) if n == 1 else np.linspace(0.90, 0.55, n)
+
+    # ---------------- 3. subject-level parameters ----------------
+    gamma = float(parameters["gamma"])
+    beta = float(parameters["beta"])
+    c = float(parameters["comp_c"])
+    tau = float(parameters["tau"])
+    lam = float(parameters["severity"])
+    eps = float(np.clip(float(parameters["epsilon"]), 0.0, 1.0))
+    tie_bias = float(np.clip(float(parameters["tie_bias"]), 0.0, 1.0))
+    gamma = max(gamma, 0.0)
+    beta = max(beta, 0.0)
+    c = max(c, 0.0)
+    tau = max(tau, 0.0)
+    lam = max(lam, 0.0)
+
+    # ---------------- 4. partially weighted flag mass ----------------
+    r = np.clip((val - 0.5) / 0.5, 0.0, 1.0)     # normalised validity strength
+    rbar = float(np.mean(r))
+    w = 1.0 + gamma * (r - rbar)                 # centred tilt: mean weight == 1
+    w = np.clip(w, 0.05, None)                   # weights stay positive
+
+    mass_a = float(np.dot(w, a))
+    mass_b = float(np.dot(w, b))
+
+    # ---------- 4b. worst-flag severity ----------
+    fa = w * a
+    fb = w * b
+    sev_a = float(np.max(fa)) if np.any(a > 0.5) else 0.0
+    sev_b = float(np.max(fb)) if np.any(b > 0.5) else 0.0
+
+    # signed badness difference (A - B); severity enters the NUMERATOR only
+    D = (mass_a - mass_b) + lam * (sev_a - sev_b)
+    scale = mass_a + mass_b                      # compression scale = plain flag mass
+
+    def _logistic_diff(diff, sc):
+        s = abs(diff) / (1.0 + c * max(sc, 0.0))
+        z = float(np.clip(beta * s, -50.0, 50.0))
+        core = 1.0 / (1.0 + np.exp(-z))          # P(choose the LESS bad option)
+        core = float(np.clip(core, 0.0, 1.0))
+        win = 0 if diff < 0 else 1               # less badness is chosen
+        out = np.empty(2, dtype=float)
+        out[win] = core
+        out[1 - win] = 1.0 - core
+        return out
+
+    if abs(D) >= tau and abs(D) > 1e-9:
+        # ------------- 5. divisive compression + logistic on badness -------
+        p_core = _logistic_diff(D, scale)
+    else:
+        # ------------- 6. near-tie cascade -------------------------------
+        ca = float(np.sum(a))
+        cb = float(np.sum(b))
+        if abs(ca - cb) > 1e-9:
+            # (i) badness unresolvable -> fall back on raw flag counting
+            p_core = _logistic_diff(ca - cb, ca + cb)
+        else:
+            # (ii) counts tie too -> worst discriminating flag, strongly repellent
+            owner = None
+            order = np.argsort(-val, kind="stable")
+            for j in order:
+                if a[j] > b[j]:
+                    owner = 0
+                    break
+                if b[j] > a[j]:
+                    owner = 1
+                    break
+            if owner is None:
+                p_core = np.ones(2) / 2.0
+            else:
+                p_core = np.empty(2, dtype=float)
+                p_core[owner] = tie_bias         # option carrying the worst flag
+                p_core[1 - owner] = 1.0 - tie_bias
+
+    if not np.all(np.isfinite(p_core)):
+        p_core = np.ones(2) / 2.0
+
+    # ---------------- 7. attention lapse ----------------
+    p = (1.0 - eps) * p_core + eps * (np.ones(2) / 2.0)
+    p = np.clip(p, 1e-12, 1.0)
+    p = p / p.sum()
+    return p
+
+`policy(probs) -> int`:
+def policy(probs):
+    import numpy as np
+    probs = np.asarray(probs, dtype=np.float64)
+    probs = np.clip(probs, 0.0, None)
+    total = probs.sum()
+    if not np.isfinite(total) or total <= 0:
+        probs = np.ones(len(probs)) / len(probs)
+    else:
+        probs = probs / total
+    return int(np.random.choice(len(probs), p=probs))
+
+`parameters`:
+- gamma: [0.0, 1.25]
+- severity: [0.55, 1.65]
+- beta: [1.8, 5.4]
+- comp_c: [0.12, 0.28]
+- tau: [0.10, 0.55]
+- epsilon: [0.18, 0.40]
+- tie_bias: [0.0, 0.14]
+- validities: validities
+
+**Per-experiment fit (real vs this theory's metric value):**
+- Experiment 1: real=0.7744 (var=0.0262) vs this=0.7733 (var=0.0059)
+- Experiment 2: real=-0.6339 (var=0.0508) vs this=-0.6247 (var=0.0113)
+- Experiment 3: real=-0.5767 (var=0.0708) vs this=-0.6000 (var=0.0208)
+- Experiment 4: real=0.6600 (var=0.0633) vs this=0.6867 (var=0.0243)
+- Experiment 5: real=0.5167 (var=0.1333) vs this=0.5167 (var=0.0572)
+- Experiment 6: real=0.0667 (var=0.0622) vs this=0.1583 (var=0.1034)
+- Experiment 7: real=0.7733 (var=0.0327) vs this=0.7042 (var=0.0140)
+- Experiment 8: real=0.1660 (var=0.0789) vs this=0.1430 (var=0.0116)
+- Experiment 9: real=0.8720 (var=0.0086) vs this=0.7127 (var=0.0095)
+- Experiment 10: real=0.1560 (var=0.1289) vs this=0.2620 (var=0.0844)
+
+
+---
+
+### `pi_5` (overall score: 0.779)
+
+**Description**
+**Weber Counting with Severity Tiebreak and Expert Triage (WC-ST).**
+
+A binary expert rating of '1' is read as a *warning flag*, not an endorsement, so an option's badness grows with the number of 1s it carries and the subject picks the option that seems to carry FEWER flags. Three mechanistic claims, plus one heterogeneity claim:
+
+1. **Negative polarity, validity-blind numerosity.** The decision variable is the raw *count* of flags per option, not a validity-weighted mass. Which experts contributed the flags is irrelevant to the count; the stated validities are acknowledged but never converted into cue weights. This is what makes the model look anti-TTB on dominance/agreement pairs and pro-TTB on conflict pairs, with a single mechanism.
+
+2. **Scalar variability (Weber noise) on the counts.** Perceived numerosity is noisy with noise that scales with magnitude, so discriminability depends on the RATIO-scaled difference, not the raw difference:  s = (c_hi - c_lo) / sqrt(c_hi^2 + c_lo^2 + 1). The small additive constant 1 keeps 0-vs-1 easy. Crucially, the psychometric function over s is *threshold-like* (Weibull with slope exponent kappa > 1), i.e. accelerating near zero: comparisons whose count ratio falls below the subject's Weber threshold theta stay essentially at chance, while comparisons above it jump quickly to a lapse-limited ceiling. This is what produces near-chance 2-vs-3 (~0.53) at the same time as high 1-vs-2 (~0.73), 2-vs-4 (~0.78) and near-ceiling 0-vs-1 / 1-vs-4 / 0-vs-5 (~0.85) — a pattern that neither a flat sign-only rule (FC-LEX) nor a linear/Gaussian margin rule can generate.
+
+3. **Severity tiebreak on exact count ties.** When the two options carry exactly the same number of flags the counting mechanism is silent. The subject then asks which single flag is *worst*: the most reliable expert that discriminates decides, and the option carrying THAT expert's flag is (usually) rejected. The strength/direction of this fallback is a subject-level bias tie_bias = P(choose the option flagged by the top discriminating expert), sitting below 0.5 (mildly repelled). Because this rule keys on the top discriminating expert in exactly the same way for every equal-count pair, it predicts *no* differential across equal-count pairs that share the same top discriminating expert.
+
+4. **Discrete expert triage (minority).** A minority of subjects do not count everyone: they apply an all-or-none trust filter, ignoring the one or two least-valid experts entirely before counting (never a graded weighting — gradedness is ruled out by the equal-count data). Triage subjects therefore *reverse* on pairs whose flag surplus lives entirely on the discarded experts (e.g. 2 high-validity flags vs 3 low-validity flags), which injects genuine bimodal between-subject dispersion exactly where the human data show it, and creates the small positive asymmetry among equal-count pairs whose tie is broken by triage.
+
+WC-ST is a sharp competitor to sign-only flag counting: they agree on polarity and validity-blindness but disagree about magnitude invariance. WC-ST predicts a monotone *ratio-driven* accuracy gradient (0v1 > 1v2 > 2v3 > 3v4 at constant difference; 0v1 < 0v2 < 0v4 at constant smaller count), whereas the sign-only rule predicts one flat plateau.
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, state, history):
+    import numpy as np
+
+    # ---------------- 1. parse stimulus ----------------
+    a = b = None
+    if isinstance(state, dict):
+        if "option_a_ratings" in state and "option_b_ratings" in state:
+            a = np.asarray(state["option_a_ratings"], dtype=float).ravel()
+            b = np.asarray(state["option_b_ratings"], dtype=float).ravel()
+    if a is None:
+        stim = np.asarray(state, dtype=float)
+        if stim.ndim == 1:
+            if stim.size % 2 != 0:
+                return np.ones(2) / 2.0
+            half = stim.size // 2
+            a, b = stim[:half], stim[half:]
+        else:
+            stim = stim.reshape(stim.shape[0], -1)
+            if stim.shape[0] < 2:
+                return np.ones(2) / 2.0
+            a, b = stim[0], stim[1]
+    a = np.asarray(a, dtype=float).ravel()
+    b = np.asarray(b, dtype=float).ravel()
+    if a.size == 0 or a.size != b.size:
+        return np.ones(2) / 2.0
+    n = a.size
+
+    # ---------------- 2. validities ----------------
+    val = parameters.get("validities", None)
+    try:
+        val = np.asarray(val, dtype=float).ravel()
+    except Exception:
+        val = np.array([])
+    if val.size != n:
+        val = np.array([0.9]) if n == 1 else np.linspace(0.9, 0.55, n)
+
+    # ---------------- 3. subject-level parameters ----------------
+    theta = float(parameters["theta"])
+    kappa = float(parameters["kappa"])
+    eps = float(np.clip(float(parameters["epsilon"]), 0.0, 1.0))
+    tie_bias = float(np.clip(float(parameters["tie_bias"]), 0.0, 1.0))
+    ip = float(np.clip(float(parameters["ignore_prone"]), 0.0, 1.0))
+    theta = max(theta, 1e-3)
+    kappa = max(kappa, 0.5)
+
+    # ---------------- 4. discrete expert triage (minority of subjects) ----
+    # most subjects count every expert; a minority discard the 1 (or 2)
+    # least-valid experts outright before counting.
+    if ip < 0.84:
+        n_drop = 0
+    elif ip < 0.96:
+        n_drop = 1
+    else:
+        n_drop = 2
+    mask = np.ones(n, dtype=bool)
+    if n_drop > 0 and n > 2:
+        order_asc = np.argsort(val, kind="stable")   # ascending validity
+        dropped = 0
+        for idx in order_asc:
+            if dropped >= n_drop or (n - dropped) <= 2:
+                break
+            if val[idx] < 0.65:                       # only near-chance experts
+                mask[idx] = False
+                dropped += 1
+    af = a[mask]
+    bf = b[mask]
+    if af.size == 0:
+        af, bf, mask = a, b, np.ones(n, dtype=bool)
+
+    # ---------------- 5. Weber-noisy numerosity comparison --------------
+    ca = float(np.sum(af))
+    cb = float(np.sum(bf))
+
+    if abs(ca - cb) > 1e-9:
+        c_hi = max(ca, cb)
+        c_lo = min(ca, cb)
+        denom = np.sqrt(c_hi * c_hi + c_lo * c_lo + 1.0)
+        s = (c_hi - c_lo) / denom               # ratio-scaled evidence
+        x = (s / theta) ** kappa
+        x = float(np.clip(x, 0.0, 50.0))
+        core = 1.0 - 0.5 * np.exp(-x)           # Weibull psychometric fn
+        core = float(np.clip(core, 0.5, 1.0))
+        winner = 0 if ca < cb else 1            # fewer flags is chosen
+        p_core = np.empty(2, dtype=float)
+        p_core[winner] = core
+        p_core[1 - winner] = 1.0 - core
+    else:
+        # ------------- 6. severity tiebreak on exact count ties ----------
+        idxs = np.where(mask)[0]
+        owner = None
+        order = idxs[np.argsort(-val[idxs], kind="stable")]
+        for j in order:
+            if a[j] > b[j]:
+                owner = 0
+                break
+            if b[j] > a[j]:
+                owner = 1
+                break
+        if owner is None:                        # fall back to full cue set
+            order_all = np.argsort(-val, kind="stable")
+            for j in order_all:
+                if a[j] > b[j]:
+                    owner = 0
+                    break
+                if b[j] > a[j]:
+                    owner = 1
+                    break
+        if owner is None:
+            p_core = np.ones(2) / 2.0
+        else:
+            p_core = np.empty(2, dtype=float)
+            p_core[owner] = tie_bias             # option carrying the worst flag
+            p_core[1 - owner] = 1.0 - tie_bias
+
+    if not np.all(np.isfinite(p_core)):
+        p_core = np.ones(2) / 2.0
+
+    # ---------------- 7. attention lapse ----------------
+    p = (1.0 - eps) * p_core + eps * (np.ones(2) / 2.0)
+    p = np.clip(p, 1e-12, 1.0)
+    p = p / p.sum()
+    return p
+
+`policy(probs) -> int`:
+def policy(probs):
+    import numpy as np
+    probs = np.asarray(probs, dtype=np.float64)
+    probs = np.clip(probs, 0.0, None)
+    total = probs.sum()
+    if not np.isfinite(total) or total <= 0:
+        probs = np.ones(len(probs)) / len(probs)
+    else:
+        probs = probs / total
+    return int(np.random.choice(len(probs), p=probs))
+
+`parameters`:
+- theta: [0.34, 0.46]
+- kappa: [4.5, 7.5]
+- epsilon: [0.12, 0.48]
+- tie_bias: [0.05, 0.45]
+- ignore_prone: [0, 1]
+- validities: validities
+
+**Per-experiment fit (real vs this theory's metric value):**
+- Experiment 1: real=0.7744 (var=0.0262) vs this=0.7900 (var=0.0075)
+- Experiment 2: real=-0.6339 (var=0.0508) vs this=-0.6361 (var=0.0184)
+- Experiment 3: real=-0.5767 (var=0.0708) vs this=-0.5296 (var=0.0160)
+- Experiment 4: real=0.6600 (var=0.0633) vs this=0.6633 (var=0.0347)
+- Experiment 5: real=0.5167 (var=0.1333) vs this=0.5350 (var=0.0250)
+- Experiment 6: real=0.0667 (var=0.0622) vs this=0.1433 (var=0.1053)
+- Experiment 7: real=0.7733 (var=0.0327) vs this=0.5408 (var=0.0203)
+- Experiment 8: real=0.1660 (var=0.0789) vs this=0.2835 (var=0.0155)
+- Experiment 9: real=0.8720 (var=0.0086) vs this=0.5227 (var=0.0061)
+- Experiment 10: real=0.1560 (var=0.1289) vs this=0.0080 (var=0.0347)
+
+
+---
+
+### `pi_4` (overall score: 0.662)
+
+**Description**
+**Flag Counting with Lexicographic Tiebreak (FC-LEX).**
+
+Subjects in this task do not read a binary expert rating of '1' as an endorsement; they read it as a *warning flag*. And, crucially, they do not weight those flags by the validities they were told about in the instructions. On every trial the subject performs a single, extremely cheap operation: count how many 1s each option carries, and reject the option carrying more flags.
+
+Three claims:
+
+1. **Negative polarity.** A '1' is a strike against an option (a flag/complaint/warning), so an option's *badness* is monotone in its number of 1s. The option with the strictly smaller flag count is chosen.
+
+2. **Validity-blind, magnitude-blind counting.** All experts are counted equally: the validities are acknowledged in the instructions but are not converted into cue weights. Furthermore, only the *sign* of the count difference matters. Choice probability is therefore a single flat accuracy h = (1-eps)*sigmoid(beta) + eps/2 on every trial where the counts differ, regardless of whether the difference is 1 flag or 5 flags, and regardless of which experts contributed the flags. There is no psychometric function over a validity-weighted margin: a 1-vs-0 comparison and a 1-vs-5 comparison produce the same accuracy.
+
+3. **Lexicographic tiebreak on equal counts.** When the two options carry exactly the same number of flags the counting rule is silent. The subject then falls back to a one-reason rule: locate the highest-validity expert who discriminates and let that single expert decide. Because the subject is unsure whether that expert's '1' should attract or repel (the counting rule just told them 1s are bad, but the tiebreak is invoked precisely because badness is balanced), the direction of this tiebreak is a free subject-level bias tie_bias, which sits near chance and is mildly repelled-by-1 on average. Equal-count pairs therefore yield near-chance performance, not the strongly graded reversals a weighted-mass model predicts.
+
+The theory is deliberately non-compensatory in *magnitude* while being fully compensatory in *counting*: it agrees with a weighted-evidence account on every design tested so far (because in those designs the option with the single top-validity 1 also happens to carry the fewest flags), but it diverges sharply on equal-count pairs such as [1,0,0,0,0] vs [0,0,0,0,1], on pairs where more 1s coincides with smaller weighted mass, and on margin ladders, where FC-LEX predicts a flat accuracy plateau conditional on the sign of the count difference.
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, state, history):
+    import numpy as np
+
+    # ---------- 1. parse the stimulus into two rating vectors ----------
+    a = b = None
+    if isinstance(state, dict):
+        if "option_a_ratings" in state and "option_b_ratings" in state:
+            a = np.asarray(state["option_a_ratings"], dtype=float).ravel()
+            b = np.asarray(state["option_b_ratings"], dtype=float).ravel()
+    if a is None:
+        stim = np.asarray(state, dtype=float)
+        if stim.ndim == 1:
+            if stim.size % 2 != 0:
+                return np.ones(2) / 2.0
+            half = stim.size // 2
+            a, b = stim[:half], stim[half:]
+        else:
+            stim = stim.reshape(stim.shape[0], -1)
+            if stim.shape[0] < 2:
+                return np.ones(2) / 2.0
+            a, b = stim[0], stim[1]
+
+    a = np.asarray(a, dtype=float).ravel()
+    b = np.asarray(b, dtype=float).ravel()
+    if a.size == 0 or a.size != b.size:
+        return np.ones(2) / 2.0
+    n_features = a.size
+
+    beta = float(parameters["beta"])
+    eps = float(parameters["epsilon"])
+    tie_bias = float(parameters["tie_bias"])
+    eps = min(max(eps, 0.0), 1.0)
+    tie_bias = min(max(tie_bias, 0.0), 1.0)
+
+    # ---------- 2. validity-blind flag count (negative polarity) ----------
+    count_a = float(np.sum(a))
+    count_b = float(np.sum(b))
+    d = count_a - count_b   # positive => A carries MORE warning flags => reject A
+
+    if abs(d) > 1e-9:
+        # Sign-only rule: magnitude of the count difference is ignored.
+        winner = 1 if d > 0 else 0   # fewer flags wins
+        s = 1.0 / (1.0 + np.exp(-beta))   # sigmoid(beta * sign) for the winner
+        p_core = np.zeros(2, dtype=float)
+        p_core[winner] = s
+        p_core[1 - winner] = 1.0 - s
+    else:
+        # ---------- 3. lexicographic tiebreak on equal flag counts ----------
+        val = parameters.get("validities", None)
+        try:
+            val = np.asarray(val, dtype=float).ravel()
+        except Exception:
+            val = np.array([])
+        if val.size != n_features:
+            if n_features == 1:
+                val = np.array([0.9])
+            else:
+                val = np.linspace(0.9, 0.55, n_features)
+
+        order = np.argsort(-val, kind="stable")
+        top1_owner = None   # index of the option carrying the '1' on the top discriminating cue
+        for j in order:
+            if a[j] > b[j]:
+                top1_owner = 0
+                break
+            if b[j] > a[j]:
+                top1_owner = 1
+                break
+
+        if top1_owner is None:
+            p_core = np.ones(2) / 2.0
+        else:
+            p_core = np.zeros(2, dtype=float)
+            p_core[top1_owner] = tie_bias
+            p_core[1 - top1_owner] = 1.0 - tie_bias
+
+    if not np.all(np.isfinite(p_core)):
+        p_core = np.ones(2) / 2.0
+
+    # ---------- 4. attention lapse ----------
+    p = (1.0 - eps) * p_core + eps * (np.ones(2) / 2.0)
+    p = np.clip(p, 1e-12, 1.0)
+    p = p / p.sum()
+    return p
+
+`policy(probs) -> int`:
+def policy(probs):
+    import numpy as np
+    probs = np.asarray(probs, dtype=np.float64)
+    probs = np.clip(probs, 0.0, None)
+    total = probs.sum()
+    if not np.isfinite(total) or total <= 0:
+        probs = np.ones(len(probs)) / len(probs)
+    else:
+        probs = probs / total
+    return int(np.random.choice(len(probs), p=probs))
+
+`parameters`:
+- beta: [1.3, 2.7]
+- epsilon: [0.05, 0.25]
+- tie_bias: [0.10, 0.70]
+- validities: validities
+
+**Per-experiment fit (real vs this theory's metric value):**
+- Experiment 1: real=0.7744 (var=0.0262) vs this=0.8083 (var=0.0076)
+- Experiment 2: real=-0.6339 (var=0.0508) vs this=-0.6325 (var=0.0187)
+- Experiment 3: real=-0.5767 (var=0.0708) vs this=-0.5608 (var=0.0168)
+- Experiment 4: real=0.6600 (var=0.0633) vs this=0.6133 (var=0.0274)
+- Experiment 5: real=0.5167 (var=0.1333) vs this=0.8367 (var=0.0105)
+- Experiment 6: real=0.0667 (var=0.0622) vs this=-0.0117 (var=0.0319)
+- Experiment 7: real=0.7733 (var=0.0327) vs this=0.8217 (var=0.0065)
+- Experiment 8: real=0.1660 (var=0.0789) vs this=0.0065 (var=0.0132)
+- Experiment 9: real=0.8720 (var=0.0086) vs this=0.8093 (var=0.0072)
+- Experiment 10: real=0.1560 (var=0.1289) vs this=0.0120 (var=0.0219)
+
+
+## LOSS TRAJECTORY (this propose-loop)
+Aggregate loss across iterations of THIS propose-loop (lower = better, 0 = perfect, `+inf` = unscorable). The ACCEPTED / REJECTED tag is the loop's programmatic accept-gate decision — only ACCEPTED candidates have ever been used as the base for a subsequent iteration. Use this together with PRIOR FEEDBACK ITERATIONS below to grade which past critic advice actually paid off.
+
+- iter 1: loss=0.0501 -> ACCEPTED
+- iter 2: loss=0.0323 -> ACCEPTED
+Running-best (last ACCEPTED) base: iter 2 at loss=0.0323 — this is the source shown verbatim below under `## PREVIOUS CANDIDATE (this loop)`. Push the next edit's loss strictly below that floor or the gate will reject it.
+
+## EXPERIMENTAL RESULTS
+### Experiment 1
+**Design**
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1]
+  A=[0, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 0, 0]
+  A=[0, 1, 1, 0, 0]  B=[1, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0]  B=[1, 0, 1, 1, 1]
+  A=[1, 0, 1, 1, 1]  B=[1, 1, 0, 0, 0]
+  A=[1, 0, 1, 0, 0]  B=[0, 1, 0, 1, 0]
+  A=[0, 1, 0, 1, 0]  B=[1, 0, 1, 0, 0]
+  A=[1, 1, 1, 1, 0]  B=[1, 1, 1, 0, 1]
+  A=[1, 1, 1, 0, 1]  B=[1, 1, 1, 1, 0]
+  A=[1, 1, 0, 0, 0]  B=[0, 0, 1, 0, 0]
+  A=[0, 0, 1, 0, 0]  B=[1, 1, 0, 0, 0]
+  A=[1, 1, 1, 0, 0]  B=[0, 0, 0, 1, 1]
+  A=[0, 0, 0, 1, 1]  B=[1, 1, 1, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+
+    def ttb_winner(a, b):
+        # features are ordered by descending validity (index 0 = 0.9, ... index 4 = 0.55)
+        for j in range(len(a)):
+            if a[j] > b[j]:
+                return 0
+            if b[j] > a[j]:
+                return 1
+        return -1
+
+    def tally_winner(a, b):
+        a_wins = sum(1 for x, y in zip(a, b) if x > y)
+        b_wins = sum(1 for x, y in zip(a, b) if y > x)
+        if a_wins > b_wins:
+            return 0
+        if b_wins > a_wins:
+            return 1
+        return -1
+
+    hits = 0
+    n = 0
+    for _, row in data.iterrows():
+        try:
+            a = [int(v) for v in row["option_a_ratings"]]
+            b = [int(v) for v in row["option_b_ratings"]]
+        except Exception:
+            continue
+        if len(a) != len(b) or len(a) == 0:
+            continue
+        w_ttb = ttb_winner(a, b)
+        w_tal = tally_winner(a, b)
+        # keep only trials where the two heuristics make opposite, well-defined predictions
+        if w_ttb < 0 or w_tal < 0 or w_ttb == w_tal:
+            continue
+        resp = row["response"]
+        if resp is None or (isinstance(resp, float) and np.isnan(resp)):
+            continue
+        n += 1
+        if int(resp) == w_ttb:
+            hits += 1
+
+    if n == 0:
+        return 0.5
+    return float(hits) / float(n)
+```
+
+**Observed (real) value:** 0.7744 (var=0.0262)
+**Previous candidate values (this loop):**
+  - iter 1: 0.7322 (var=0.0121) (Δ vs real -0.0422)
+  - iter 2 (most recent): 0.7872 (var=0.0082) (Δ vs real +0.0128)
+**Other theories' values on this metric (for reference):**
+- pi_1: 0.8172 (var=0.0109)
+- pi_2: 0.1522 (var=0.0104)
+- pi_3: 0.7611 (var=0.0116)
+- pi_4: 0.8083 (var=0.0076)
+- pi_5: 0.7900 (var=0.0075)
+- pi_6: 0.7733 (var=0.0059)
+
+### Experiment 2
+**Design**
+  A=[1, 1, 1, 0, 0, 0]  B=[0, 0, 0, 1, 1, 0]
+  A=[0, 0, 0, 1, 1, 0]  B=[1, 1, 1, 0, 0, 0]
+  A=[1, 1, 1, 1, 0, 0]  B=[0, 0, 0, 0, 1, 0]
+  A=[0, 0, 0, 0, 1, 0]  B=[1, 1, 1, 1, 0, 0]
+  A=[1, 1, 1, 1, 1, 0]  B=[0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 0]
+  A=[1, 1, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 0]
+  A=[0, 0, 1, 1, 1, 0]  B=[1, 1, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1, 0]
+  A=[0, 1, 1, 1, 1, 0]  B=[1, 0, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1, 1]
+  A=[0, 1, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0]  B=[1, 1, 0, 1, 1, 1]
+  A=[1, 1, 0, 1, 1, 1]  B=[1, 1, 1, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0]  B=[0, 0, 1, 1, 0, 0]
+  A=[0, 0, 1, 1, 0, 0]  B=[1, 1, 0, 0, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    agree_hits = []
+    conflict_hits = []
+    for _, row in data.iterrows():
+        a = np.asarray(row['option_a_ratings'], dtype=float)
+        b = np.asarray(row['option_b_ratings'], dtype=float)
+        if a.shape[0] != b.shape[0] or a.shape[0] == 0:
+            continue
+        diff = a - b
+        nz = np.nonzero(diff)[0]
+        if nz.size == 0:
+            continue
+        # features are listed in descending validity order in this design
+        ttb_choice = 0 if diff[nz[0]] > 0 else 1
+        margin = int(np.sum(a > b) - np.sum(b > a))
+        if margin == 0:
+            continue
+        tally_choice = 0 if margin > 0 else 1
+        try:
+            resp = int(row['response'])
+        except (TypeError, ValueError):
+            continue
+        chose_ttb = 1.0 if resp == ttb_choice else 0.0
+        if tally_choice == ttb_choice and abs(margin) >= 3:
+            agree_hits.append(chose_ttb)
+        elif tally_choice != ttb_choice and abs(margin) >= 2:
+            conflict_hits.append(chose_ttb)
+    if len(agree_hits) == 0 or len(conflict_hits) == 0:
+        return 0.0
+    return float(np.mean(agree_hits) - np.mean(conflict_hits))
+```
+
+**Observed (real) value:** -0.6339 (var=0.0508)
+**Previous candidate values (this loop):**
+  - iter 1: -0.6914 (var=0.0069) (Δ vs real -0.0575)
+  - iter 2 (most recent): -0.6761 (var=0.0184) (Δ vs real -0.0422)
+**Other theories' values on this metric (for reference):**
+- pi_2: 0.7178 (var=0.0313)
+- pi_1: -0.0008 (var=0.0076)
+- pi_3: -0.6858 (var=0.0254)
+- pi_4: -0.6325 (var=0.0187)
+- pi_5: -0.6361 (var=0.0184)
+- pi_6: -0.6247 (var=0.0113)
+
+### Experiment 3
+**Design**
+  A=[1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0]  B=[0, 0, 0, 1, 1]
+  A=[1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 1]  B=[0, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1]
+  A=[1, 0, 0, 0, 0]  B=[0, 0, 0, 1, 0]
+  A=[1, 1, 0, 0, 0]  B=[1, 0, 1, 1, 1]
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 0, 0]
+  A=[0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1]
+  A=[0, 0, 0, 1, 1]  B=[1, 1, 1, 0, 0]
+  A=[0, 0, 0, 0, 0]  B=[1, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1]
+  A=[0, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0]
+  A=[0, 0, 0, 1, 0]  B=[1, 0, 0, 0, 0]
+  A=[1, 0, 1, 1, 1]  B=[1, 1, 0, 0, 0]
+  A=[0, 1, 1, 0, 0]  B=[1, 0, 0, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    def key(x):
+        return ''.join([str(int(v)) for v in list(x)])
+
+    # Class I / II 'polarity-reversal' pairs: the option favoured by the
+    # top-validity expert ALSO carries the larger weighted mass of 1s.
+    rev = {
+        ('11111', '00000'), ('00000', '11111'),
+        ('11100', '00011'), ('00011', '11100'),
+        ('10000', '00000'), ('00000', '10000'),
+        ('10000', '00010'), ('00010', '10000'),
+    }
+    # Class IV 'agreement' pairs: top-cue option carries the SMALLER mass of 1s.
+    agr = {
+        ('10000', '01111'), ('01111', '10000'),
+        ('10000', '01100'), ('01100', '10000'),
+    }
+
+    hits_rev = []
+    hits_agr = []
+    for a, b, r in zip(data['option_a_ratings'], data['option_b_ratings'], data['response']):
+        try:
+            ka = key(a)
+            kb = key(b)
+        except Exception:
+            continue
+        pair = (ka, kb)
+        in_rev = pair in rev
+        in_agr = pair in agr
+        if not (in_rev or in_agr):
+            continue
+        aa = int(list(a)[0])
+        bb = int(list(b)[0])
+        if aa == bb:
+            continue
+        winner = 0 if aa == 1 else 1
+        hit = 1.0 if int(r) == winner else 0.0
+        if in_rev:
+            hits_rev.append(hit)
+        else:
+            hits_agr.append(hit)
+
+    if len(hits_rev) == 0 or len(hits_agr) == 0:
+        return 0.0
+    return float(np.mean(hits_rev) - np.mean(hits_agr))
+```
+
+**Observed (real) value:** -0.5767 (var=0.0708)
+**Previous candidate values (this loop):**
+  - iter 1: -0.6087 (var=0.0104) (Δ vs real -0.0321)
+  - iter 2 (most recent): -0.6192 (var=0.0224) (Δ vs real -0.0425)
+**Other theories' values on this metric (for reference):**
+- pi_1: 0.0012 (var=0.0066)
+- pi_3: -0.6121 (var=0.0311)
+- pi_2: 0.5846 (var=0.0241)
+- pi_4: -0.5608 (var=0.0168)
+- pi_5: -0.5296 (var=0.0160)
+- pi_6: -0.6000 (var=0.0208)
+
+### Experiment 4
+**Design**
+  A=[1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 0, 0, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 0, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1]
+  A=[1, 1, 1, 0, 0]  B=[1, 0, 0, 1, 1]
+  A=[1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1]
+  A=[0, 0, 1, 0, 0]  B=[0, 0, 0, 1, 0]
+  A=[0, 1, 0, 0, 1]  B=[0, 0, 1, 1, 0]
+  A=[0, 0, 0, 0, 0]  B=[1, 0, 0, 0, 0]
+  A=[0, 1, 0, 0, 0]  B=[1, 0, 0, 0, 0]
+  A=[0, 1, 1, 0, 0]  B=[1, 0, 0, 0, 0]
+  A=[0, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0]
+  A=[1, 0, 0, 1, 1]  B=[1, 1, 1, 0, 0]
+  A=[0, 0, 0, 0, 1]  B=[1, 0, 0, 0, 0]
+  A=[0, 0, 0, 1, 0]  B=[0, 0, 1, 0, 0]
+  A=[0, 0, 1, 1, 0]  B=[0, 1, 0, 0, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+
+    def as_str(x):
+        return ''.join([str(int(v)) for v in list(x)])
+
+    dom_hits = []
+    conf_hits = []
+
+    for _, row in data.iterrows():
+        a = [int(v) for v in list(row['option_a_ratings'])]
+        b = [int(v) for v in list(row['option_b_ratings'])]
+        if len(a) != len(b) or len(a) == 0:
+            continue
+        # Cue order = feature index order (validities are strictly descending by design)
+        winner = None
+        for j in range(len(a)):
+            if a[j] > b[j]:
+                winner = 0
+                break
+            if b[j] > a[j]:
+                winner = 1
+                break
+        if winner is None:
+            continue
+        try:
+            resp = int(row['response'])
+        except Exception:
+            continue
+        hit = 1.0 if resp == winner else 0.0
+
+        sa = as_str(a)
+        sb = as_str(b)
+        key = tuple(sorted([sa, sb]))
+
+        # DOMINANCE base pair: [1,0,0,0,0] vs [0,0,0,0,0]  (trials 1 and 9)
+        if key == ('00000', '10000'):
+            dom_hits.append(hit)
+        # CONFLICT base pair: [1,0,0,0,0] vs [0,1,1,1,1]  (trials 4 and 12)
+        elif key == ('01111', '10000'):
+            conf_hits.append(hit)
+
+    if len(dom_hits) == 0 or len(conf_hits) == 0:
+        return 0.0
+
+    return float(np.mean(conf_hits) - np.mean(dom_hits))
+```
+
+**Observed (real) value:** 0.6600 (var=0.0633)
+**Previous candidate values (this loop):**
+  - iter 1: 0.6883 (var=0.0152) (Δ vs real +0.0283)
+  - iter 2 (most recent): 0.6467 (var=0.0340) (Δ vs real -0.0133)
+**Other theories' values on this metric (for reference):**
+- pi_3: 0.6550 (var=0.0311)
+- pi_1: 0.0183 (var=0.0212)
+- pi_2: -0.6800 (var=0.0529)
+- pi_4: 0.6133 (var=0.0274)
+- pi_5: 0.6633 (var=0.0347)
+- pi_6: 0.6867 (var=0.0243)
+
+### Experiment 5
+**Design**
+  A=[0, 0, 0, 0, 0]  B=[1, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1]
+  A=[0, 0, 0, 0, 1]  B=[0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1]
+  A=[0, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1]
+  A=[1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1]
+  A=[0, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0]  B=[0, 0, 1, 1, 1]
+  A=[0, 0, 1, 1, 1]  B=[1, 1, 0, 0, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1]
+  A=[0, 0, 0, 0, 1]  B=[1, 0, 0, 0, 0]
+  A=[0, 0, 1, 0, 0]  B=[0, 0, 0, 1, 0]
+  A=[0, 0, 0, 1, 0]  B=[0, 0, 1, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+
+    # design-time validities (fixed by the experiment)
+    val_default = np.array([0.97, 0.66, 0.60, 0.56, 0.52], dtype=float)
+
+    def weights(n):
+        if n == len(val_default):
+            v = val_default.copy()
+        elif n == 1:
+            v = np.array([0.9])
+        else:
+            v = np.linspace(0.9, 0.55, n)
+        r = np.clip((v - 0.5) / 0.5, 1e-6, 1.0)
+        return r / float(np.mean(r))
+
+    hits_strong = []
+    hits_any = []
+
+    for _, row in data.iterrows():
+        try:
+            a = np.asarray(row["option_a_ratings"], dtype=float).ravel()
+            b = np.asarray(row["option_b_ratings"], dtype=float).ravel()
+            resp = int(row["response"])
+        except Exception:
+            continue
+        if a.size == 0 or a.size != b.size:
+            continue
+        w = weights(a.size)
+        ca = float(a.sum())
+        cb = float(b.sum())
+        if abs(ca - cb) < 1e-9:
+            continue  # equal-count pairs are not informative here
+        ma = float(np.dot(w, a))
+        mb = float(np.dot(w, b))
+        fewer = 0 if ca < cb else 1
+        # does the option with FEWER flags carry the LARGER validity-weighted mass?
+        conflict = (ma > mb) if fewer == 0 else (mb > ma)
+        if not conflict:
+            continue
+        hit = 1.0 if resp == fewer else 0.0
+        hits_any.append(hit)
+        if abs(ma - mb) > 1.5:
+            hits_strong.append(hit)
+
+    if len(hits_strong) > 0:
+        return float(np.mean(hits_strong))
+    if len(hits_any) > 0:
+        return float(np.mean(hits_any))
+    return float("nan")
+
+```
+
+**Observed (real) value:** 0.5167 (var=0.1333)
+**Previous candidate values (this loop):**
+  - iter 1: 0.5550 (var=0.0882) (Δ vs real +0.0383)
+  - iter 2 (most recent): 0.5350 (var=0.1084) (Δ vs real +0.0183)
+**Other theories' values on this metric (for reference):**
+- pi_4: 0.8367 (var=0.0105)
+- pi_3: 0.2383 (var=0.0433)
+- pi_1: 0.8500 (var=0.0208)
+- pi_2: 0.1383 (var=0.0121)
+- pi_5: 0.5350 (var=0.0250)
+- pi_6: 0.5167 (var=0.0572)
+
+### Experiment 6
+**Design**
+  A=[1, 0, 0, 0, 1]  B=[0, 1, 1, 0, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1]
+  A=[0, 1, 0, 0, 0]  B=[0, 0, 1, 0, 0]
+  A=[0, 0, 0, 0, 0]  B=[1, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1]
+  A=[0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1]
+  A=[1, 0, 0, 0, 0]  B=[0, 0, 0, 1, 1]
+  A=[1, 1, 0, 0, 0]  B=[0, 0, 1, 1, 1]
+  A=[0, 1, 1, 0, 0]  B=[1, 0, 0, 0, 1]
+  A=[0, 0, 0, 0, 1]  B=[1, 0, 0, 0, 0]
+  A=[0, 0, 1, 0, 0]  B=[0, 1, 0, 0, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 1]  B=[0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0]
+  A=[0, 0, 0, 1, 1]  B=[1, 0, 0, 0, 0]
+  A=[0, 0, 1, 1, 1]  B=[1, 1, 0, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+
+    tgt1 = tuple(sorted([(1, 0, 0, 0, 1), (0, 1, 1, 0, 0)]))
+    tgt2 = tuple(sorted([(1, 0, 0, 0, 0), (0, 0, 0, 0, 1)]))
+
+    x1 = []
+    x2 = []
+
+    for _, row in data.iterrows():
+        try:
+            a = tuple(int(v) for v in row["option_a_ratings"])
+            b = tuple(int(v) for v in row["option_b_ratings"])
+            r = int(row["response"])
+        except Exception:
+            continue
+        if len(a) != 5 or len(b) != 5:
+            continue
+        key = tuple(sorted([a, b]))
+        if key != tgt1 and key != tgt2:
+            continue
+        chosen = a if r == 0 else b
+        other = b if r == 0 else a
+        # feature 0 (validity 0.90) must discriminate on these pairs
+        if chosen[0] == other[0]:
+            continue
+        hit = 1.0 if chosen[0] == 1 else 0.0
+        if key == tgt1:
+            x1.append(hit)
+        else:
+            x2.append(hit)
+
+    if len(x1) == 0 or len(x2) == 0:
+        return 0.0
+    return float(np.mean(x1) - np.mean(x2))
+```
+
+**Observed (real) value:** 0.0667 (var=0.0622)
+**Previous candidate values (this loop):**
+  - iter 1: -0.0200 (var=0.0427) (Δ vs real -0.0867)
+  - iter 2 (most recent): 0.0683 (var=0.0355) (Δ vs real +0.0017)
+**Other theories' values on this metric (for reference):**
+- pi_3: 0.5383 (var=0.0564)
+- pi_4: -0.0117 (var=0.0319)
+- pi_1: -0.0100 (var=0.0127)
+- pi_2: -0.0150 (var=0.0488)
+- pi_5: 0.1433 (var=0.1053)
+- pi_6: 0.1583 (var=0.1034)
+
+### Experiment 7
+**Design**
+  A=[0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 0, 0, 0]
+  A=[0, 0, 1, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0]
+  A=[0, 0, 1, 0, 0, 0]  B=[1, 0, 0, 1, 0, 0]
+  A=[1, 0, 0, 1, 0, 0]  B=[0, 0, 1, 0, 0, 0]
+  A=[0, 1, 1, 0, 0, 0]  B=[1, 0, 1, 1, 0, 0]
+  A=[1, 0, 1, 1, 0, 0]  B=[0, 1, 1, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 1]  B=[0, 1, 1, 1, 1, 0]
+  A=[0, 1, 1, 1, 1, 0]  B=[1, 1, 0, 0, 0, 1]
+  A=[0, 0, 1, 0, 0, 1]  B=[1, 1, 0, 1, 1, 0]
+  A=[1, 1, 0, 1, 1, 0]  B=[0, 0, 1, 0, 0, 1]
+  A=[1, 1, 0, 0, 0, 0]  B=[0, 0, 0, 1, 1, 1]
+  A=[0, 0, 0, 1, 1, 1]  B=[1, 1, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 1, 1]  B=[1, 1, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1, 1]
+  A=[1, 0, 0, 0, 0, 0]  B=[0, 1, 0, 0, 0, 0]
+  A=[0, 1, 0, 0, 0, 0]  B=[1, 0, 0, 0, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+
+    hits = 0
+    tot = 0
+    for _, row in data.iterrows():
+        try:
+            a = np.asarray(list(row['option_a_ratings']), dtype=float).ravel()
+            b = np.asarray(list(row['option_b_ratings']), dtype=float).ravel()
+        except Exception:
+            continue
+        if a.size == 0 or a.size != b.size:
+            continue
+        n = a.size
+        ca = float(a.sum())
+        cb = float(b.sum())
+        d = ca - cb
+        # keep only constant-difference-of-one comparisons with a LARGE base count
+        if abs(abs(d) - 1.0) > 1e-9:
+            continue
+        if min(ca, cb) < 2.0 - 1e-9:
+            continue
+        # drop triage-sensitive pairs: the sign of the count difference must be
+        # preserved when the two least-valid experts are discarded
+        k = n - 2
+        if k < 1:
+            continue
+        dh = float(a[:k].sum()) - float(b[:k].sum())
+        if abs(dh) < 1e-9:
+            continue
+        if np.sign(dh) != np.sign(d):
+            continue
+        winner = 0 if d < 0 else 1  # fewer flags wins
+        try:
+            resp = int(row['response'])
+        except Exception:
+            continue
+        if resp not in (0, 1):
+            continue
+        tot += 1
+        if resp == winner:
+            hits += 1
+
+    if tot == 0:
+        return 0.5
+    return float(hits) / float(tot)
+```
+
+**Observed (real) value:** 0.7733 (var=0.0327)
+**Previous candidate values (this loop):**
+  - iter 1: 0.7575 (var=0.0098) (Δ vs real -0.0158)
+  - iter 2 (most recent): 0.7608 (var=0.0119) (Δ vs real -0.0125)
+**Other theories' values on this metric (for reference):**
+- pi_4: 0.8217 (var=0.0065)
+- pi_5: 0.5408 (var=0.0203)
+- pi_1: 0.5058 (var=0.0051)
+- pi_2: 0.1475 (var=0.0108)
+- pi_3: 0.7983 (var=0.0115)
+- pi_6: 0.7042 (var=0.0140)
+
+### Experiment 8
+**Design**
+  A=[0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 1, 0, 0, 0, 0, 0, 0]  B=[1, 0, 1, 0, 0, 0, 0, 0]
+  A=[1, 0, 1, 0, 0, 0, 0, 0]  B=[0, 1, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 0, 0, 0]
+  A=[0, 0, 1, 1, 1, 0, 0, 0]  B=[1, 1, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1, 0, 0, 0]
+  A=[0, 1, 1, 1, 1, 0, 0, 0]  B=[1, 1, 1, 0, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 1, 0, 0]
+  A=[0, 0, 1, 1, 1, 1, 0, 0]  B=[1, 1, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1, 1, 1, 0]
+  A=[0, 1, 1, 1, 1, 1, 1, 0]  B=[1, 1, 1, 0, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 1, 1, 1]
+  A=[0, 0, 0, 0, 0, 1, 1, 1]  B=[1, 1, 0, 0, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 1, 0, 0, 0, 0, 0, 0]
+  A=[0, 1, 0, 0, 0, 0, 0, 0]  B=[1, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 1, 1]  B=[1, 1, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+
+    if data is None or len(data) == 0:
+        return 0.0
+
+    easy_pairs = {(0, 1), (1, 2), (2, 4), (3, 6)}
+    hard_pairs = {(2, 3), (3, 4)}
+
+    easy_hits = []
+    hard_hits = []
+
+    for _, row in data.iterrows():
+        try:
+            a = np.asarray(list(row["option_a_ratings"]), dtype=float).ravel()
+            b = np.asarray(list(row["option_b_ratings"]), dtype=float).ravel()
+            resp = int(row["response"])
+        except Exception:
+            continue
+        if a.size == 0 or a.size != b.size:
+            continue
+        ca = int(round(float(np.sum(a))))
+        cb = int(round(float(np.sum(b))))
+        if ca == cb:
+            continue
+        cp = (min(ca, cb), max(ca, cb))
+        # winner = option with FEWER flags (both theories agree on this direction)
+        winner = 0 if ca < cb else 1
+        hit = 1.0 if resp == winner else 0.0
+
+        n = a.size
+        if n >= 3:
+            low_flag = bool(np.any(a[-2:] > 0.5) or np.any(b[-2:] > 0.5))
+        else:
+            low_flag = False
+
+        if cp in easy_pairs:
+            easy_hits.append(hit)
+        elif cp in hard_pairs and not low_flag:
+            hard_hits.append(hit)
+
+    if len(easy_hits) == 0 or len(hard_hits) == 0:
+        return 0.0
+
+    return float(np.mean(easy_hits) - np.mean(hard_hits))
+```
+
+**Observed (real) value:** 0.1660 (var=0.0789)
+**Previous candidate values (this loop):**
+  - iter 1: 0.0925 (var=0.0133) (Δ vs real -0.0735)
+  - iter 2 (most recent): 0.0790 (var=0.0150) (Δ vs real -0.0870)
+**Other theories' values on this metric (for reference):**
+- pi_5: 0.2835 (var=0.0155)
+- pi_4: 0.0065 (var=0.0132)
+- pi_1: -0.3640 (var=0.0215)
+- pi_2: 0.0000 (var=0.0073)
+- pi_3: 0.1210 (var=0.0253)
+- pi_6: 0.1430 (var=0.0116)
+
+### Experiment 9
+**Design**
+  A=[0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 0, 0, 0]
+  A=[0, 0, 1, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0]  B=[1, 0, 1, 0, 0, 0]
+  A=[1, 0, 1, 0, 0, 0]  B=[1, 0, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0]  B=[1, 1, 1, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0]  B=[1, 1, 0, 0, 0, 0]
+  A=[1, 1, 0, 1, 0, 0]  B=[1, 1, 1, 1, 0, 0]
+  A=[1, 1, 1, 1, 0, 0]  B=[1, 1, 0, 1, 0, 0]
+  A=[1, 1, 0, 1, 1, 0]  B=[1, 1, 1, 1, 1, 0]
+  A=[1, 1, 1, 1, 1, 0]  B=[1, 1, 0, 1, 1, 0]
+  A=[1, 1, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 0]
+  A=[0, 0, 1, 1, 1, 0]  B=[1, 1, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0]  B=[0, 0, 0, 1, 1, 0]
+  A=[0, 0, 0, 1, 1, 0]  B=[1, 0, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 1]  B=[0, 1, 0, 0, 1, 0]
+  A=[0, 1, 0, 0, 1, 0]  B=[1, 0, 0, 0, 0, 1]
+  A=[0, 0, 1, 0, 0, 0]  B=[0, 0, 0, 1, 0, 0]
+  A=[0, 0, 0, 1, 0, 0]  B=[0, 0, 1, 0, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+
+    if data is None or len(data) == 0:
+        return 0.5
+
+    hits = 0
+    total = 0
+    for _, row in data.iterrows():
+        try:
+            a = np.asarray(list(row['option_a_ratings']), dtype=float).ravel()
+            b = np.asarray(list(row['option_b_ratings']), dtype=float).ravel()
+        except Exception:
+            continue
+        if a.size == 0 or a.size != b.size:
+            continue
+        ca = float(np.sum(a))
+        cb = float(np.sum(b))
+        if abs(ca - cb) != 1.0:
+            continue
+        # strictly nested pairs only (the difference is a single shared cue)
+        nested = bool(np.all(a <= b + 1e-9)) or bool(np.all(b <= a + 1e-9))
+        if not nested:
+            continue
+        # high base-count region only: the smaller option already carries >= 2 flags
+        if min(ca, cb) < 2.0:
+            continue
+        try:
+            resp = int(row['response'])
+        except Exception:
+            continue
+        if resp not in (0, 1):
+            continue
+        better = 0 if ca < cb else 1  # fewer warning flags is the 'correct' option
+        total += 1
+        if resp == better:
+            hits += 1
+
+    if total == 0:
+        return 0.5
+    return float(hits) / float(total)
+```
+
+**Observed (real) value:** 0.8720 (var=0.0086)
+**Previous candidate values (this loop):**
+  - iter 1: 0.8727 (var=0.0057) (Δ vs real +0.0007)
+  - iter 2 (most recent): 0.8453 (var=0.0083) (Δ vs real -0.0267)
+**Other theories' values on this metric (for reference):**
+- pi_6: 0.7127 (var=0.0095)
+- pi_5: 0.5227 (var=0.0061)
+- pi_1: 0.1333 (var=0.0092)
+- pi_2: 0.1760 (var=0.0144)
+- pi_3: 0.7907 (var=0.0112)
+- pi_4: 0.8093 (var=0.0072)
+
+### Experiment 10
+**Design**
+  A=[0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 0, 0, 0, 0]
+  A=[0, 0, 1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0, 0]  B=[1, 0, 1, 0, 0, 0, 0]
+  A=[1, 0, 1, 0, 0, 0, 0]  B=[1, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0, 0]  B=[1, 1, 1, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0, 0]  B=[1, 1, 0, 0, 0, 0, 0]
+  A=[1, 1, 0, 1, 0, 0, 0]  B=[1, 1, 1, 1, 0, 0, 0]
+  A=[1, 1, 1, 1, 0, 0, 0]  B=[1, 1, 0, 1, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 0, 0, 0]
+  A=[1, 1, 1, 1, 0, 0, 0]  B=[1, 1, 0, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 0, 0]
+  A=[0, 0, 1, 1, 1, 0, 0]  B=[1, 1, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 1, 1, 0, 0]  B=[1, 1, 1, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0, 0]  B=[0, 0, 0, 1, 1, 0, 0]
+  A=[0, 0, 1, 0, 0, 0, 0]  B=[0, 0, 0, 1, 0, 0, 0]
+  A=[0, 0, 0, 1, 0, 0, 0]  B=[0, 0, 1, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 1, 1]  B=[1, 0, 0, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 1, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+
+    hits_no_top = []   # fewer-flag option does NOT carry the top expert's flag (P7-type)
+    hits_top = []      # fewer-flag option DOES carry the top expert's flag (P6-type)
+
+    for _, row in data.iterrows():
+        try:
+            a = [int(v) for v in row['option_a_ratings']]
+            b = [int(v) for v in row['option_b_ratings']]
+            resp = int(row['response'])
+        except Exception:
+            continue
+        if len(a) != len(b) or len(a) < 1:
+            continue
+        ca = sum(a)
+        cb = sum(b)
+        # matched-composition contrast: 2-flag vs 3-flag pairs
+        if sorted([ca, cb]) != [2, 3]:
+            continue
+        # top-validity expert (index 0) must discriminate the two options
+        if a[0] == b[0]:
+            continue
+        # which side has fewer flags?
+        if ca < cb:
+            fewer_side = 0
+            fewer_vec = a
+        else:
+            fewer_side = 1
+            fewer_vec = b
+        chose_fewer = 1.0 if resp == fewer_side else 0.0
+        if fewer_vec[0] == 1:
+            hits_top.append(chose_fewer)
+        else:
+            hits_no_top.append(chose_fewer)
+
+    if len(hits_top) == 0 or len(hits_no_top) == 0:
+        return 0.0
+
+    return float(np.mean(hits_no_top) - np.mean(hits_top))
+
+```
+
+**Observed (real) value:** 0.1560 (var=0.1289)
+**Previous candidate values (this loop):**
+  - iter 1: 0.1580 (var=0.0920) (Δ vs real +0.0020)
+  - iter 2 (most recent): 0.1440 (var=0.0657) (Δ vs real -0.0120)
+**Other theories' values on this metric (for reference):**
+- pi_5: 0.0080 (var=0.0347)
+- pi_6: 0.2620 (var=0.0844)
+- pi_1: -0.7480 (var=0.0373)
+- pi_2: -0.0380 (var=0.0144)
+- pi_3: 0.3800 (var=0.1248)
+- pi_4: 0.0120 (var=0.0219)
+
+## PREVIOUS CANDIDATE (this loop)
+The RUNNING-BEST (last ACCEPTED) candidate in this critique loop — i.e. the source the loop's accept gate kept as the best base so far. If your most recent attempt was REJECTED by the gate, this is NOT that attempt; it is the previously-accepted base the gate rolled back to. Iterate on this source — the next critic feedback should be applied on top of it.
+
+**Description**
+**Sign-Dominant Flag Difference with Interference-Free Configural Dominance and a Weighting Sub-population (SD-FD/CD-M v2).**
+
+A binary expert rating of '1' is read as a *warning flag*, not an endorsement, so an option's badness grows with the flags it carries and subjects pick the option that seems *less* flagged. Six claims:
+
+1. **Negative polarity (domain-invariant).** Badness is monotone in flags; the less-flagged option is chosen. This single fact makes the population look anti-TTB on dominance/agreement pairs and pro-TTB on conflict pairs (Exps 2–4, 7).
+
+2. **Sign-dominant, magnitude-invariant difference detection.** The primary decision variable is the *flag-count difference*, and the psychometric function is almost completely saturating in |Δ| (t_c = sign(Δ)·|Δ|^rho with rho≈0.08). A one-flag advantage is nearly as diagnostic as a four-flag advantage: Exp 1 (Δ=1,2,3), Exp 7 (Δ=1) and Exp 2's conflict cell (Δ=2,3,4) all sit near 0.77. No divisive compression by total mass, no Weber threshold.
+
+3. **Configural dominance is a distinct, INTERFERENCE-FREE read.** When one option's flag set is a subset of the other's, the options differ on a single side and the comparison is solved perceptually rather than by tallying. Crucially the shared flags are *aligned* in such a comparison, so they do not interfere: nested pairs get a fixed multiplicative gain (1+nu) and **no base-count cost at all**. This predicts a flat nested plateau at ~0.87 that is invariant to base count — 0-vs-1 dominance (Exp 4), 0-vs-5 (Exps 2, 3) and nested Δ=1 at base 2–4 (Exp 9, 0.872) are all equally accurate — while non-nested Δ=1 pairs at the same base counts sit much lower (Exp 7, 0.773). The previous version multiplied the nested boost on top of a full-gain base-0 term, which over-saturated dominance/agreement pairs (Exps 2/3/4) and forced the boost to be too large to hold Exp 9 up.
+
+4. **A small additive base-count interference cost, applying only to NON-nested comparisons.** When the two flag sets cross-cut, each extra shared flag on the table costs a few points of discriminability (gain = 1 − kappa·min(base,6), saturating, never collapsing to chance). This supplies Exp 8's and Exp 10's small positive easy-minus-hard gaps.
+
+5. **A bimodal counter/weigher mixture whose expression is design-scaled.** About half the population are validity-blind counters (phi = 0); the rest blend in a validity-weighted flag mass (weights u_j = r_j/mean(r), r_j = 2v_j − 1) with weight phi ∈ [0.5, 0.95]. Because the weights are proportional (not centred), the weigher's override strength scales with the design's validity spread: decisive reversal when one expert dominates (Exp 5), mild perturbation in graded designs (Exps 8, 10), negligible on agreement pairs (Exps 2, 3). Dispersion is bimodal on composition contrasts and unimodal (sensitivity/lapse driven) on the magnitude ladder.
+
+6. **Count-ties are solved by everyone the same way, with load-graded repulsion.** When the raw flag counts are exactly equal the count read is silent for counters and weighers alike; all subjects fall back on 'who complained loudest' and are repelled by the option carrying the top discriminating expert's flag. The repulsion *weakens as more flags are already on the table* (p(choose the top-flagged option) rises with the shared flag load), because with many complaints on both sides the identity of the loudest complaint is less salient. This yields the small POSITIVE differential between heavy and light equal-count pairs seen in Exp 6 (+0.067) without any new mechanism.
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, state, history):
+    import numpy as np
+
+    # ---------------- 1. parse stimulus ----------------
+    a = b = None
+    if isinstance(state, dict):
+        if "option_a_ratings" in state and "option_b_ratings" in state:
+            a = np.asarray(state["option_a_ratings"], dtype=float).ravel()
+            b = np.asarray(state["option_b_ratings"], dtype=float).ravel()
+    if a is None:
+        stim = np.asarray(state, dtype=float)
+        if stim.ndim == 1:
+            if stim.size % 2 != 0:
+                return np.ones(2) / 2.0
+            half = stim.size // 2
+            a, b = stim[:half], stim[half:]
+        else:
+            stim = stim.reshape(stim.shape[0], -1)
+            if stim.shape[0] < 2:
+                return np.ones(2) / 2.0
+            a, b = stim[0], stim[1]
+    a = np.asarray(a, dtype=float).ravel()
+    b = np.asarray(b, dtype=float).ravel()
+    if a.size == 0 or a.size != b.size:
+        return np.ones(2) / 2.0
+    n = a.size
+
+    # ---------------- 2. design validities ----------------
+    val = parameters.get("validities", None)
+    try:
+        val = np.asarray(val, dtype=float).ravel()
+    except Exception:
+        val = np.array([])
+    if val.size != n:
+        val = np.array([0.9]) if n == 1 else np.linspace(0.90, 0.55, n)
+    val = np.clip(val, 0.5, 1.0)
+
+    # ---------------- 3. subject-level parameters ----------------
+    beta = max(float(parameters["beta"]), 0.0)
+    rho = float(np.clip(float(parameters["rho"]), 0.0, 1.0))
+    nu = max(float(parameters["nu"]), 0.0)
+    kappa = max(float(parameters["kappa"]), 0.0)
+    mu = max(float(parameters["mu"]), 0.0)
+    eps = float(np.clip(float(parameters["epsilon"]), 0.0, 1.0))
+    tie_bias = float(np.clip(float(parameters["tie_bias"]), 0.0, 1.0))
+    tie_slope = max(float(parameters["tie_slope"]), 0.0)
+    wp = float(np.clip(float(parameters["w_prone"]), 0.0, 1.0))
+
+    # bimodal mixture: ~52% pure counters (phi = 0), rest weighers (phi in [0.5,0.95])
+    W_THRESH = 0.52
+    if wp < W_THRESH:
+        phi = 0.0
+    else:
+        phi = 0.50 + 0.45 * (wp - W_THRESH) / (1.0 - W_THRESH)
+    phi = float(np.clip(phi, 0.0, 1.0))
+
+    # ---------------- 4. flag counts and weighted flag mass ------------
+    r = np.clip((val - 0.5) / 0.5, 1e-6, 1.0)
+    rbar = float(np.mean(r))
+    if rbar <= 1e-9:
+        u = np.ones(n)
+    else:
+        u = r / rbar                      # mean-1 proportional validity weights
+
+    ca = float(np.sum(a))
+    cb = float(np.sum(b))
+    d = ca - cb                            # >0 : A carries more warning flags
+    ma = float(np.dot(u, a))
+    mb = float(np.dot(u, b))
+    base = min(ca, cb)                     # shared flag load already on the table
+
+    # configural dominance: one flag set is a subset of the other
+    nested = bool(np.all(a <= b + 1e-9) or bool(np.all(b <= a + 1e-9)))
+
+    # ---------------- 5. decision ----------------
+    if abs(d) > 1e-9:
+        # sign-dominant (saturating) count evidence, positive => choose A
+        t_c = -np.sign(d) * (abs(d) ** rho)
+        # validity-weighted flag-mass evidence, positive => choose A
+        t_m = mu * (mb - ma)
+        V = (1.0 - phi) * t_c + phi * t_m
+
+        if nested:
+            # dominance read: shared flags are aligned, so they do not interfere
+            gain = 1.0 + nu
+        else:
+            # cross-cutting sets: small additive interference from shared flags
+            gain = max(0.25, 1.0 - kappa * min(base, 6.0))
+        z = float(np.clip(beta * gain * V, -50.0, 50.0))
+        pA = 1.0 / (1.0 + np.exp(-z))
+        p_core = np.array([pA, 1.0 - pA], dtype=float)
+    else:
+        # ---------- 6. exact count tie: load-graded worst-flag repulsion ----------
+        owner = None
+        order = np.argsort(-val, kind="stable")
+        for j in order:
+            if a[j] > b[j] + 1e-9:
+                owner = 0
+                break
+            if b[j] > a[j] + 1e-9:
+                owner = 1
+                break
+        if owner is None:
+            p_core = np.ones(2) / 2.0
+        else:
+            # repulsion weakens as more flags are already on the table
+            tb = float(np.clip(tie_bias + tie_slope * min(ca, 4.0), 0.0, 0.5))
+            p_core = np.empty(2, dtype=float)
+            p_core[owner] = tb             # option carrying the top discriminating flag
+            p_core[1 - owner] = 1.0 - tb
+
+    if not np.all(np.isfinite(p_core)):
+        p_core = np.ones(2) / 2.0
+
+    # ---------------- 7. attention lapse ----------------
+    p = (1.0 - eps) * p_core + eps * (np.ones(2) / 2.0)
+    p = np.clip(p, 1e-12, 1.0)
+    p = p / p.sum()
+    return p
+
+`policy(probs) -> int`:
+def policy(probs):
+    import numpy as np
+    probs = np.asarray(probs, dtype=np.float64)
+    probs = np.clip(probs, 0.0, None)
+    total = probs.sum()
+    if not np.isfinite(total) or total <= 0:
+        probs = np.ones(len(probs)) / len(probs)
+    else:
+        probs = probs / total
+    return int(np.random.choice(len(probs), p=probs))
+
+`parameters`:
+- beta: [1.9, 3.2]
+- rho: [0.0, 0.16]
+- nu: [0.12, 0.55]
+- kappa: [0.04, 0.13]
+- mu: [0.40, 0.65]
+- epsilon: [0.04, 0.32]
+- tie_bias: [0.14, 0.42]
+- tie_slope: [0.0, 0.13]
+- w_prone: [0, 1]
+- validities: validities
+
+`rationale`: Minimal-diff edit on the ACCEPTED base (loss 0.0501), staying entirely inside the SD-FD/CD-M family. Three code lines changed plus range retunes, each targeting one of the critic's three systematic mismatches.
+
+(1) **Re-balance nested gain vs baseline sensitivity by removing the base-count cost from nested trials.** The critic diagnosed that nu was doing too much and beta too little: non-nested count pairs were under-accurate (Exp1 0.732 vs 0.774) while nested large-Δ pairs were over-saturated (Exp2 -0.691 vs -0.634, Exp3 -0.609 vs -0.577). Diagnosing the arithmetic: the old gain was (1+nu)·(1−kappa·base), so a base-0 nested pair (0-vs-1, 0-vs-5 in Exps 2/3/4) got the FULL (1+nu)≈2.2 multiplier and reached ~0.95 accuracy, whereas the data imply dominance accuracy is only ~0.86–0.88 — essentially the SAME as nested Δ=1 at base 2–4 (Exp9 = 0.872). The principled fix is that in a dominance read the shared flags are aligned and therefore do not interfere: nested → gain = (1+nu) with no base cost, non-nested → gain = 1−kappa·base. This makes the nested plateau flat in base count (as the Exp4 vs Exp9 comparison demands) and lets nu shrink to ~0.35 while beta rises to ~2.55. Net effect: non-nested pairs (Exps 1, 7, and the conflict cells of 2/3) gain ~+0.04, base-0 nested pairs (agreement/rev cells of Exps 2/3, dominance base of Exp4) lose ~0.07, and Exp9 is held at ~0.87. Hand-computing the cells gives Exp1≈0.78, Exp2≈-0.63, Exp3≈-0.55, Exp4≈+0.67, Exp7≈0.77, Exp9≈0.87 — all closer to the observed values than the base.
+
+(2) **kappa raised to [0.04, 0.13]** as instructed, which now bites only on the cross-cutting pairs that constitute Exp8's hard cell (2-vs-3, 3-vs-4 at base 2–3) while leaving the nested easy (0,1) trial untouched, so the easy-minus-hard gap widens from 0.09 toward ~0.13–0.15 without dragging Exp9/Exp10.
+
+(3) **Load-graded tie repulsion (one added line + one parameter).** Exp6 was structurally pinned at ~0 because both target pairs are exact count ties broken by the same top expert. Following the critic's suggestion, tie repulsion now weakens with the shared flag load (tb = tie_bias + tie_slope·min(count,4)): the 2-flag-each pair gets ~0.41 and the 1-flag-each pair ~0.35, giving a small positive differential (~+0.06 vs real +0.067) with realistic binomial spread. This also nudges Exp3's equal-count rev trial upward, further softening that contrast in the right direction.
+
+(4) **Widened heterogeneity ranges** (beta [1.9,3.2], epsilon [0.04,0.32]) to lift the under-dispersed between-subject variance on the count/polarity contrast metrics (Exps 1/2/3/4/8) without touching the weigher fraction, which Exps 5/10 already calibrate well.
+
+## PRIOR FEEDBACK ITERATIONS
+The critic's verdicts on each previous in-loop candidate, in order. Each block ends with an **Outcome of this advice** line saying whether the candidate the proposer produced AFTER this advice was ACCEPTED (loss strictly beat the running best) or REJECTED (the gate discarded it). Address the most recent iteration's feedback in your next edit, but down-weight past advice whose candidates were REJECTED.
+
+### Iteration 1
+Verdict: regenerate
+Interpretation: Point estimates are strikingly good across all ten designs: Exp9 nested 
+cell 0.873 vs 0.872 (the configural-dominance detector is doing exactly the work the arbiter asked for and resolves the Exp7 vs Exp9 dissociation that sank both incumbents), Exp10 0.158 vs 0.156, Exp5 0.555 vs 0.517 with large spread (0.088 vs 0.133) reproducing the bimodal counter/weigher mixture, Exp4 0.688 vs 0.660, Exp7 0.758 vs 0.773. The negative-polarity claim is clearly carrying Exps 2/3/4 in the right direction. Three residual mismatches are systematic rather than noise: (i) overall sensitivity is slightly LOW on non-nested count pairs (Exp1 0.732 vs 0.774) while simultaneously slightly TOO extreme on nested large-\u0394 pairs (Exp2 -0.691 vs -0.634, Exp3 -0.609 vs -0.577), i.e. the nested gain multiplier (1+nu) is a bit too generous relative to the baseline beta; (ii) Exp8's easy-minus-hard gap is undershot (0.093 vs 0.166), suggesting the base-count interference kappa is too small at the top of its range for the 8-feature design; (iii) Exp6's differential is -0.020 vs +0.067 \u2014 as designed, both target pairs are exact count ties routed to the identical top-flag repulsion, so the model is structurally pinned at ~0 with no way to produce a small positive gap. Most conspicuously, between-subject variance is systematically compressed almost everywhere the metric is a contrast (Exp2 0.007 vs 0.051, Exp3 0.010 vs 0.071, Exp4 0.015 vs 0.063, Exp8 0.013 vs 0.079, Exp1 0.012 vs 0.026): the mixture supplies dispersion on composition contrasts (Exps 5, 10) but the sensitivity/lapse ranges are too narrow to generate the observed spread on count/polarity contrasts.
+Rationale: The candidate is faithful to the prescribed SD-FD/M family (negative polarity, saturating sign-dominant \u0394 with rho\u22480.08, small additive base-count cost, minority weigher mixture, moderate tie repulsion) and was ACCEPTED at loss 0.0501 \u2014 keep the architecture intact and only turn knobs. Four minor, in-family adjustments: (1) Re-balance the nested boost against baseline sensitivity: nu is currently doing too much and beta too little, which simultaneously depresses Exp1/Exp7 (non-nested count pairs) and over-saturates the nested large-\u0394 agreement pairs in Exps 2/3. Shift beta up modestly (e.g. [2.0, 3.2]) and pull nu down (e.g. [0.5, 1.0]), or cap the total gain product so nested |\u0394|>=3 pairs top out near ~0.92 rather than ~0.97; target Exp1 \u2248 0.77, Exp2 \u2248 -0.63, Exp3 \u2248 -0.58, keeping Exp9 at ~0.87. (2) Raise the base-count interference upper bound (kappa \u2192 [0.04, 0.13]) so Exp8's easy-minus-hard gap climbs from 0.09 toward ~0.15 without breaking Exp10 or Exp9. (3) Widen the heterogeneity ranges to fix the pervasive under-dispersion on contrast metrics: broaden epsilon (e.g. [0.03, 0.32]) and beta jointly so per-subject variance on Exps 1/2/3/4/8 rises toward the observed 0.03-0.08; do NOT achieve this by inflating the weigher fraction, which is already well-calibrated by Exps 5/10. (4) Optionally let the tie repulsion strength be mildly modulated by the number of flags on the table (weaker repulsion when more flags are present) so Exp6's differential moves from -0.02 to a small positive ~+0.05 with realistic spread \u2014 this is a one-line change to tie_bias, not a new mechanism. No family switch is warranted; do not reintroduce Weber/divisive compression or a population-wide severity term.
+
+**Outcome of this advice:** iter 1 candidate loss=0.0501 -> iter 2 candidate loss=0.0323 -> the gate marked it ACCEPTED.
+
+### Iteration 2 (most recent — address this)
+Verdict: regenerate
+Interpretation: Iteration 2 is a clear improvement (loss 0.0501 
+darr 0.0323) and every one of my four prior recommendations that could be checked moved in the right direction: Exp1 0.732
+darr0.787 (real 0.774, now a small overshoot instead of a large undershoot), Exp4 0.647 vs 0.660, Exp6 -0.020
+darr+0.068 vs real +0.067 (the load-graded tie repulsion fixed the structural pin at ~0 without adding a new mechanism), Exp5 0.535 vs 0.517 with realistic spread (0.108 vs 0.133), Exp10 0.144 vs 0.156, Exp7 0.761 vs 0.773. The interference-free nested read remains the theory's strongest asset: it is the only candidate that simultaneously reproduces the Exp9 nested plateau (0.845 vs 0.872) and the much lower non-nested \u0394=1 accuracy in Exp7 (0.761 vs 0.773) \u2014 the dissociation that sank pi_5 (0.523/0.541) and pi_6 (0.713/0.704). Between-subject variances also improved on the polarity contrasts (Exp2 0.007
+darr0.018, Exp3 0.010
+darr0.022, Exp4 0.015
+darr0.034), though they still sit roughly half of the observed values. Two systematic residuals remain. (i) Exp8 is the single largest miss and it went the WRONG way (0.093
+darr0.079 vs real 0.166) despite raising kappa \u2014 diagnostically this is because Exp8's 'easy' cells (2-vs-4, 3-vs-6) share the same base counts as the 'hard' cells (2-vs-3, 3-vs-4) and differ only in |\u0394|; with rho\u22480.08 the model is essentially magnitude-blind, so no base-count cost of any size can generate that gap. My kappa advice therefore mis-diagnosed the lever. (ii) Exps 2 and 3 remain ~0.04 too negative (-0.676 vs -0.634; -0.619 vs -0.577), i.e. the base-0 nested agreement/reversal cells are still slightly over-saturated relative to the conflict cells, and Exp9 has slipped a touch low (0.845 vs 0.872), suggesting nu was trimmed marginally too far when the base cost was removed from nested trials.
+Rationale: The candidate is faithful to the prescribed SD-FD/M family (negative polarity, sign-dominant saturating \u0394, interference-free nested read, minority weigher mixture, moderate tie repulsion) and was ACCEPTED, so keep the architecture and turn three knobs \u2014 no family switch, no Weber/divisive compression, no population-wide severity term. (1) EXP8 \u2014 use rho, not kappa. My iter-1 push on kappa did not help (Exp8 fell 0.093
+darr0.079), so drop that direction. Exp8's easy/hard contrast is a pure |\u0394| contrast at matched base counts, so it can only be produced by partially un-saturating the difference exponent: widen rho to roughly [0.12, 0.32] (a mild, still strongly compressive magnitude term). Target Exp8 \u2248 0.13\u20130.15 while holding Exp9 \u2248 0.87, Exp7 \u2248 0.77, Exp10 \u2248 0.15 (all \u0394=1 cells, untouched by rho). Leave kappa where it is (~[0.04, 0.10]) rather than pushing it further. (2) COMPENSATE THE POLARITY CONTRASTS. Raising rho will lift the large-\u0394 nested agreement/reversal cells in Exps 2/3 and push those contrasts even more negative, so pair it with a small reduction in overall gain \u2014 e.g. beta lower bound down (~[1.7, 3.0]) and/or a slightly higher epsilon floor \u2014 aiming for Exp2 \u2248 -0.63, Exp3 \u2248 -0.58, Exp1 \u2248 0.775 (currently a mild +0.013 overshoot, so a small gain reduction is affordable). Simultaneously nudge nu back up a little (~[0.20, 0.60]) to restore Exp9 from 0.845 to ~0.87; the nested plateau should be flat in base count, which the interference-free read already guarantees. (3) DISPERSION. Between-subject variance is still ~2x too small on Exps 1/2/3/4/8 (e.g. Exp8 0.015 vs 0.079, Exp1 0.008 vs 0.026). Widening beta/epsilon alone bought only part of the gap last round, so add per-subject heterogeneity in the *gain-shaping* parameters rather than only in beta/eps: let nu and kappa vary meaningfully across subjects (they currently do, but narrowly) and consider a right-skewed epsilon range (e.g. [0.02, 0.40]) so a minority of high-lapse subjects broadens the contrast distributions. Do NOT inflate the weigher fraction to buy variance \u2014 Exps 5 and 10 are already well calibrated by the current mixture.
+
+**Outcome of this advice:** iter 2 candidate loss=0.0323 -> next candidate accept-status=PENDING (this is the advice you are addressing now).
+
+
+## IMPLEMENTATION GUARDRAILS
+- The parameters should be within the specified ranges.
+- The model's predictions should be valid probability distributions (non-negative and sum to 1).
+- When converting logits to probabilities via softmax, always use the numerically stable form: subtract the max before exponentiating (`x = x - np.max(x); p = np.exp(x); p /= p.sum()`). A naive `np.exp(x) / np.sum(np.exp(x))` overflows to Inf/NaN for large logits. Alternatively, use `scipy.special.softmax`.
+
+
+## PROPOSAL — MINIMAL-DIFF EDIT (do NOT rewrite from scratch)
+The RUNNING-BEST (last ACCEPTED) candidate is shown verbatim above under `## PREVIOUS CANDIDATE (this loop)`. This is the base the loop's accept gate is currently keeping; the most recent critic feedback (see `## PRIOR FEEDBACK ITERATIONS`) should be applied on top of it. Apply the SMALLEST edit that addresses the critic's diagnosis while staying inside the arbiter's prescribed mechanism family:
+  - Re-emit the previous source verbatim, then change ONLY the lines needed to address the critic (a parameter range, a normalization, a softmax temperature, an attention scheme, a gating term, a buggy indexing line, etc.).
+  - Keep all unaffected functions, equations, parameter names, and the overall mechanism intact.
+  - Do NOT rewrite `predict` / `policy` end-to-end if a few lines would do, and do NOT switch mechanism families — that is the arbiter's decision, not yours in this loop.
+  - Briefly explain the minimal edit in `rationale`.
+If you genuinely believe a larger rewrite is required, you may do one, but justify in `rationale` why the minimal-diff path was insufficient.
+
+## RESPONSE FORMAT
+Return a JSON object with the following fields:
+- theory: The theoretical claim this theory makes about cognition.
+- predict: Python source defining def predict(parameters, state, history) -> np.ndarray.
+- policy: Python source defining def policy(probs) -> int.
+- parameters: Parameter ranges (e.g. "[1.0, 10.0]") or choices (e.g. "{1, 2}"), sampled per subject.
+- rationale: Reasoning behind this theory design; used to explain why this theory is better then the previous ones.
+
+
+## Response
+
+```json
+{
+  "theory": "**Sign-Dominant Flag Difference with Interference-Free Configural Dominance and a Weighting Sub-population (SD-FD/CD-M v3).**\n\nA binary expert rating of '1' is read as a *warning flag*, not an endorsement, so an option's badness grows with the flags it carries and subjects pick the option that seems *less* flagged. Six claims (unchanged in structure from v2; the quantitative commitments on interference, dominance gain and weigher tilt are sharpened):\n\n1. **Negative polarity (domain-invariant).** Badness is monotone in flags; the less-flagged option is chosen. This single fact makes the population look anti-TTB on dominance/agreement pairs and pro-TTB on conflict pairs (Exps 2\u20134, 7).\n\n2. **Sign-dominant, near-magnitude-invariant difference detection.** The primary decision variable is the flag-count difference passed through a strongly compressive exponent (t_c = sign(\u0394)\u00b7|\u0394|^rho, rho \u2248 0.05\u20130.20). A one-flag advantage is nearly as diagnostic as a four-flag advantage: Exp 1 (\u0394 = 1,2,3 all pooled at 0.774), Exp 7 (\u0394 = 1 at 0.773) and Exp 2's conflict cells (\u0394 = 2,3,4) all sit at essentially the same accuracy. No divisive compression by total mass, no Weber threshold.\n\n3. **Configural dominance is a distinct, INTERFERENCE-FREE read.** When one option's flag set is a subset of the other's, the options differ on one side only and the comparison is solved perceptually rather than by tallying: shared flags are aligned and do not interfere, so nested pairs get a fixed multiplicative gain (1+nu) and *no* base-count cost. This yields a flat nested plateau (Exp 9 nested \u0394=1 at base 2\u20134 = 0.872, 0-vs-1 dominance in Exp 4, 0-vs-5 in Exps 2/3) sitting far above the non-nested \u0394=1 accuracy at the same base counts (Exp 7 = 0.773) \u2014 the dissociation no incumbent could produce.\n\n4. **A base-count interference cost on NON-nested comparisons, and it is substantial.** When the two flag sets cross-cut, every shared flag already on the table costs real discriminability (gain = 1 \u2212 kappa\u00b7min(base,6), kappa \u2248 0.06\u20130.15, saturating and never collapsing to chance). This is the mechanism that separates cross-cutting comparisons at base 2\u20133 (Exps 7, 8-hard, 10) from clutter-free ones at base 0\u20131 (Exps 1\u20134), and it is the main reason the large-\u0394 agreement/reversal cells of Exps 2/3 are not at ceiling.\n\n5. **A bimodal counter/weigher mixture whose expression is design-scaled, with a strong weigher tilt.** About half the population are validity-blind counters (phi = 0); the rest blend in a validity-weighted flag mass (u_j = r_j/mean(r), r_j = 2v_j \u2212 1) with substantial weight. Because the weights are proportional (not centred), the weigher's override scales with the design's validity spread: decisive reversal when one expert dominates (Exp 5), a clear composition contrast in graded designs (Exps 8, 10), negligible impact when mass and count agree (Exps 2, 3, 9). Critically, the weigher sub-population is what produces the *easy-minus-hard* gap of Exp 8: on 2-vs-3 and 3-vs-4 pairs the fewer-flag option carries the top experts' flags, so weighers actively err there, whereas on 1-vs-2 and 0-vs-1 pairs mass and count agree. Dispersion is bimodal on composition contrasts and unimodal (sensitivity/lapse driven) on the magnitude ladder.\n\n6. **Count-ties are solved by everyone the same way, with load-graded repulsion.** When the raw flag counts are exactly equal the count read is silent for counters and weighers alike; all subjects fall back on 'who complained loudest' and are repelled by the option carrying the top discriminating expert's flag. The repulsion weakens as more flags are already on the table, yielding Exp 6's small positive differential (+0.067) with no extra mechanism.",
+  "predict": "def predict(parameters, state, history):\n    import numpy as np\n\n    # ---------------- 1. parse stimulus ----------------\n    a = b = None\n    if isinstance(state, dict):\n        if \"option_a_ratings\" in state and \"option_b_ratings\" in state:\n            a = np.asarray(state[\"option_a_ratings\"], dtype=float).ravel()\n            b = np.asarray(state[\"option_b_ratings\"], dtype=float).ravel()\n    if a is None:\n        stim = np.asarray(state, dtype=float)\n        if stim.ndim == 1:\n            if stim.size % 2 != 0:\n                return np.ones(2) / 2.0\n            half = stim.size // 2\n            a, b = stim[:half], stim[half:]\n        else:\n            stim = stim.reshape(stim.shape[0], -1)\n            if stim.shape[0] < 2:\n                return np.ones(2) / 2.0\n            a, b = stim[0], stim[1]\n    a = np.asarray(a, dtype=float).ravel()\n    b = np.asarray(b, dtype=float).ravel()\n    if a.size == 0 or a.size != b.size:\n        return np.ones(2) / 2.0\n    n = a.size\n\n    # ---------------- 2. design validities ----------------\n    val = parameters.get(\"validities\", None)\n    try:\n        val = np.asarray(val, dtype=float).ravel()\n    except Exception:\n        val = np.array([])\n    if val.size != n:\n        val = np.array([0.9]) if n == 1 else np.linspace(0.90, 0.55, n)\n    val = np.clip(val, 0.5, 1.0)\n\n    # ---------------- 3. subject-level parameters ----------------\n    beta = max(float(parameters[\"beta\"]), 0.0)\n    rho = float(np.clip(float(parameters[\"rho\"]), 0.0, 1.0))\n    nu = max(float(parameters[\"nu\"]), 0.0)\n    kappa = max(float(parameters[\"kappa\"]), 0.0)\n    mu = max(float(parameters[\"mu\"]), 0.0)\n    eps = float(np.clip(float(parameters[\"epsilon\"]), 0.0, 1.0))\n    tie_bias = float(np.clip(float(parameters[\"tie_bias\"]), 0.0, 1.0))\n    tie_slope = max(float(parameters[\"tie_slope\"]), 0.0)\n    wp = float(np.clip(float(parameters[\"w_prone\"]), 0.0, 1.0))\n\n    # bimodal mixture: ~52% pure counters (phi = 0), rest weighers (phi in [0.5,0.95])\n    W_THRESH = 0.52\n    if wp < W_THRESH:\n        phi = 0.0\n    else:\n        phi = 0.50 + 0.45 * (wp - W_THRESH) / (1.0 - W_THRESH)\n    phi = float(np.clip(phi, 0.0, 1.0))\n\n    # ---------------- 4. flag counts and weighted flag mass ------------\n    r = np.clip((val - 0.5) / 0.5, 1e-6, 1.0)\n    rbar = float(np.mean(r))\n    if rbar <= 1e-9:\n        u = np.ones(n)\n    else:\n        u = r / rbar                      # mean-1 proportional validity weights\n\n    ca = float(np.sum(a))\n    cb = float(np.sum(b))\n    d = ca - cb                            # >0 : A carries more warning flags\n    ma = float(np.dot(u, a))\n    mb = float(np.dot(u, b))\n    base = min(ca, cb)                     # shared flag load already on the table\n\n    # configural dominance: one flag set is a subset of the other\n    nested = bool(np.all(a <= b + 1e-9) or bool(np.all(b <= a + 1e-9)))\n\n    # ---------------- 5. decision ----------------\n    if abs(d) > 1e-9:\n        # sign-dominant (saturating) count evidence, positive => choose A\n        t_c = -np.sign(d) * (abs(d) ** rho)\n        # validity-weighted flag-mass evidence, positive => choose A\n        t_m = mu * (mb - ma)\n        V = (1.0 - phi) * t_c + phi * t_m\n\n        if nested:\n            # dominance read: shared flags are aligned, so they do not interfere\n            gain = 1.0 + nu\n        else:\n            # cross-cutting sets: additive interference from shared flags\n            gain = max(0.25, 1.0 - kappa * min(base, 6.0))\n        z = float(np.clip(beta * gain * V, -50.0, 50.0))\n        pA = 1.0 / (1.0 + np.exp(-z))\n        p_core = np.array([pA, 1.0 - pA], dtype=float)\n    else:\n        # ---------- 6. exact count tie: load-graded worst-flag repulsion ----------\n        owner = None\n        order = np.argsort(-val, kind=\"stable\")\n        for j in order:\n            if a[j] > b[j] + 1e-9:\n                owner = 0\n                break\n            if b[j] > a[j] + 1e-9:\n                owner = 1\n                break\n        if owner is None:\n            p_core = np.ones(2) / 2.0\n        else:\n            # repulsion weakens as more flags are already on the table\n            tb = float(np.clip(tie_bias + tie_slope * min(ca, 4.0), 0.0, 0.5))\n            p_core = np.empty(2, dtype=float)\n            p_core[owner] = tb             # option carrying the top discriminating flag\n            p_core[1 - owner] = 1.0 - tb\n\n    if not np.all(np.isfinite(p_core)):\n        p_core = np.ones(2) / 2.0\n\n    # ---------------- 7. attention lapse ----------------\n    p = (1.0 - eps) * p_core + eps * (np.ones(2) / 2.0)\n    p = np.clip(p, 1e-12, 1.0)\n    p = p / p.sum()\n    return p",
+  "policy": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs = np.clip(probs, 0.0, None)\n    total = probs.sum()\n    if not np.isfinite(total) or total <= 0:\n        probs = np.ones(len(probs)) / len(probs)\n    else:\n        probs = probs / total\n    return int(np.random.choice(len(probs), p=probs))",
+  "parameters": {
+    "beta": "[2.0, 3.3]",
+    "rho": "[0.05, 0.20]",
+    "nu": "[0.25, 0.72]",
+    "kappa": "[0.06, 0.15]",
+    "mu": "[0.45, 0.85]",
+    "epsilon": "[0.03, 0.36]",
+    "tie_bias": "[0.14, 0.42]",
+    "tie_slope": "[0.0, 0.13]",
+    "w_prone": "[0, 1]",
+    "validities": "validities"
+  },
+  "rationale": "Minimal-diff edit on the ACCEPTED base (loss 0.0323): the `predict` / `policy` code is re-emitted VERBATIM and only four parameter ranges are retuned. No mechanism, equation or parameter name changes. I partially depart from the critic's headline lever (rho) and explain why with the cell-level arithmetic.\n\n**Why not push rho to [0.12,0.32].** Exp8's easy cells are (0,1),(1,2),(2,4),(3,6) and its hard cells are (2,3),(3,4), so rho does lift the easy side. But the SAME |\u0394|>=2 cells dominate Exps 2 and 3, which are currently ~0.042 TOO NEGATIVE, i.e. their large-\u0394 cells are already OVER-accurate. Exp2's agreement cells are \u0394=3 (base 1) and \u0394=5 (nested), its conflict cells \u0394=3,4 (base 1) and \u0394=2 (base 3); raising rho from 0.08 to 0.28 multiplies z by 1.15\u20131.37 on every one of them, pushing both acc_ag and acc_cf up and driving Exp2 from -0.676 to roughly -0.74 (Exp3 similarly). Exp1 (which, after the metric's `tally_winner==-1` exclusion, contains exactly the \u0394=1,2,3 count trials and no ties) is already a +0.013 overshoot and would rise too. A large rho therefore buys ~+0.02 on Exp8 while costing ~0.06 on Exps 2/3 combined. I widen rho only mildly to [0.05, 0.20] (mid 0.125 vs 0.08) as a nod to the magnitude term.\n\n**The lever that moves Exp8 in the same direction as Exps 1/2/3: kappa on non-nested pairs.** Because the interference cost now applies ONLY to cross-cutting pairs (the v2 edit), kappa is a clean knob on exactly the cells that are over-accurate: Exp2's \u0394=3 base-1 agreement cell and all three conflict cells, Exp3's base-1 agreement cells and its base-2 reversal cell, and Exp1's base-1/base-2 trials. Raising kappa to [0.06, 0.15] (mid ~0.105 vs 0.085) lowers non-nested gains at base 1/2/3 from 0.915/0.83/0.745 to 0.895/0.79/0.685, which (i) moves Exp2 from -0.676 toward ~-0.655 and Exp3 from -0.619 toward ~-0.60 (both the right way), (ii) trims Exp1's +0.013 overshoot to ~0.777, and (iii) widens Exp8's easy-minus-hard gap, since the hard cells sit at bases 2\u20133 while the easy set contains a cost-free nested (0,1) cell and a cheap base-1 cell. Exp9 is completely untouched (nested read is interference-free).\n\n**mu up ([0.45,0.85]) is the second Exp8 lever, and it is free elsewhere.** In Exp8 the fewer-flag option carries the TOP experts' flags on both hard pairs ([11000000] vs [00111000]; [11100000] vs [01111000]), so the weigher half of the mixture actively errs there (t_m is negative), while on (0,1) and (1,2) mass and count agree and weighers are correct. Strengthening the weigher tilt therefore depresses the hard cells much more than the easy cells and adds real between-subject spread on this contrast (observed var 0.079 vs modelled 0.015). The same increase moves Exp5 from 0.535 toward the observed 0.517 (weigher errors become more deterministic) and Exp10 from 0.144 toward 0.156 \u2014 both currently small overshoots/undershoots in the right direction. Crucially I do NOT change the weigher FRACTION (w_prone threshold fixed at 0.52), which Exps 5/10 already calibrate.\n\n**nu up ([0.25,0.72]) restores the nested plateau.** As the critic noted, nu was trimmed slightly too far when the base cost was removed from nested trials: Exp9 slipped to 0.845 (real 0.872) and Exp4 to 0.647 (real 0.660). Raising the nested gain from ~1.34 to ~1.50 lifts Exp9 to ~0.86 and Exp4's dominance cell (which enters the metric as 1-acc) to give ~0.66, at a cost of only ~0.005 on Exp2's single \u0394=5 nested agreement cell.\n\n**Dispersion.** All four widened ranges (beta [2.0,3.3], nu, kappa, epsilon [0.03,0.36]) are gain-shaping parameters, so per-subject variance rises on precisely the contrast metrics that were ~2x under-dispersed (Exps 1/2/3/4/8) without inflating the weigher fraction. Expected net: Exp8 ~0.10\u20130.12, Exp2 ~-0.65, Exp3 ~-0.60, Exp9 ~0.86, Exp4 ~0.66, Exp1 ~0.78, Exp5 ~0.52, Exp10 ~0.15, Exp6 unchanged at ~0.068, with the only regression a ~0.01\u20130.02 dip on Exp7 \u2014 a strictly smaller squared-error total than the current base."
+}
+```
+
+## Usage
+
+```json
+{
+  "input_tokens": 40073,
+  "output_tokens": 27976
+}
+```

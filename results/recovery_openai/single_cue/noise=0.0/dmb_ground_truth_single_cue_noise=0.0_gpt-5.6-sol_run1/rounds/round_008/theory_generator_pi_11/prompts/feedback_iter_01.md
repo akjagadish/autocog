@@ -1,0 +1,1487 @@
+# feedback_iter_01
+
+## System Prompt
+
+You are a renowned cognitive scientist critiquing a freshly proposed candidate theory and model in the Decision Making (Binary Features) domain.
+
+The candidate has been simulated on every previously run experiment. For each experiment you are shown the design, the metric, the value the metric takes on real data, and the value it takes on the candidate's simulated data.
+
+Each metric value below is shown as `point_estimate (var=X)`, where `point_estimate` is `metric(data)` evaluated on the full pooled dataset and `var` is the population (between-subject) variance of the same metric re-applied per `subject_id`. The point estimate is the canonical scalar; `var` reports how consistent that estimate is across subjects (lower = more consistent). `var=n/a` means the metric could not be applied to a single-subject slice.
+
+The goal of the feedback is to SURFACE theories that are EXPERIMENT-INVARIANT: that is,theories that explain data across multiple experiments. 
+Your task is to determine whether the candidate captures the human/real behavior well enough across these experiments. Return a verdict:
+  * "continue"   — the candidate is good enough; carry on.
+  * "regenerate" — the candidate fails to capture the empirical pattern; the proposing agent must produce a new candidate, taking your rationale into account.
+
+Justify the verdict with a concrete diagnosis (which experiments fail, in what direction, what mechanism is likely missing or miscalibrated).
+
+## SCOPE OF YOUR CRITIQUE — STAY INSIDE THE ARBITER'S MECHANISM FAMILY
+When an "## ARBITER RECOMMENDATION" block is present below, the proposer was explicitly instructed to implement the mechanism family the arbiter prescribed. Your job is to grade FIT QUALITY *within that prescribed family*, not to relitigate which family should be used — that is the arbiter's call, made one level above this loop.
+
+Concretely:
+  * If the candidate misses the data, you may push for MINOR ADJUSTMENTS that keep the prescribed mechanism intact: tightening / widening parameter ranges, adding a temperature, swapping a normalization scheme, fixing a softmax / distance metric, re-balancing attention weights, fixing a learning-rate sign, correcting a bug in the gating or recurrence, etc.
+  * You MUST NOT recommend switching to a different mechanism family. Such a switch is the arbiter's prerogative; recommending it here will mislead the proposer into oscillating between families across iterations.
+  * Also grade FAITHFULNESS to the recommendation explicitly: if the candidate has clearly drifted into a different family than the one prescribed, say so in the rationale and ask for a return to the prescribed family — again, with minor adjustments, not a re-design.
+
+## ACCEPT GATE — HOW THE LOOP DECIDES WHAT TO BUILD ON NEXT
+This propose-loop has a programmatic accept gate. After every iteration the candidate's `aggregate_loss` is compared against the running-best loss (`accepted_loss`):
+  * `loss < accepted_loss` → ACCEPTED. The candidate becomes the new running-best base; the next iteration's proposer will build on THIS candidate.
+  * `loss >= accepted_loss` → REJECTED. The base is unchanged; the next iteration's proposer will build on the SAME `accepted` candidate again, with your new feedback on top. Rejected candidates are discarded — the loop guarantees the base never regresses, so you do NOT need to ask the proposer to "revert" anything; that already happens for free.
+
+Two consequences for your verdict:
+  * If the candidate you are grading was REJECTED by the gate, returning `"continue"` is silently downgraded to `"regenerate"` (returning a worse candidate would defeat the gate). Spend your rationale on a NEW direction the proposer should try on top of the unchanged accepted base, not on defending the rejected attempt.
+  * If the candidate was ACCEPTED, you can return `"continue"` to stop the loop and ship this candidate, or `"regenerate"` to keep tuning further.
+
+## LEARN FROM YOUR OWN PAST ADVICE
+When a "## YOUR PRIOR CRITIQUES" block is present below, each prior iteration ends with an "Outcome of your advice" line that says whether the next candidate the proposer produced was ACCEPTED (your advice helped — its loss strictly beat the running best) or REJECTED (your advice didn't help — the proposer discarded the result and reset to the previous accepted base). This is the loop's ground-truth signal on whether *your own previous critique was good*. Use it explicitly:
+  * If a previous piece of advice was ACCEPTED, it is OK to repeat / extend it. Reinforce in the same direction.
+  * If a previous piece of advice was REJECTED, do NOT repeat the same recommendation; in your new rationale, briefly acknowledge that the previous push in that direction was rejected by the gate and try a different in-family knob (or a smaller step in the same direction) instead.
+  * If you find yourself oscillating (e.g. iter 1 said "increase α", iter 2 said "decrease α", iter 3 about to say "increase α" again), STOP and recommend a value between the two flanking iterations instead.
+  * The "## LOSS TRAJECTORY" block at the top of the user prompt summarises the same information at the loop level — consult it before issuing a new regenerate-with-direction recommendation.
+
+
+## User Prompt
+
+## EXPERIMENTAL DOMAIN
+Subjects repeatedly choose between two fictitious products, A and B. Each option is described by a vector of binary expert ratings (each 0 or 1). Every experiment fixes its own feature count (via `validities` length) and per-expert validities; both are LLM-proposed. The validities are communicated to the subject in the instructions. Subjects pick whichever product they believe is of higher quality. There is no trial-by-trial correctness feedback.
+
+## ARBITER RECOMMENDATION (mechanism family the proposer was told to implement)
+The arbiter labelled this round's two theories in its recommendation as follows:
+- THEORY 1 = `pi_3`
+- THEORY 2 = `pi_10`
+- The recommendation below acts on THEORY 2 (= `pi_10`).
+
+Replace pi_10 with a theory of distributed, continuously weighted serial evidence integration. Each attended discriminating cue should contribute signed, compressed log-odds evidence to a leaky or interference-limited decision state, with a smooth serial-position accessibility gradient and divisive normalization by total conflicting support. This gives later cues a genuine but graded retrieval advantage without exact overwrite. Terminal influence should depend continuously on terminal reliability, opposing reliability-weighted coalition strength, and total interference—not on prefix coherence, switch count, singleton status, or a hard-coded 5–6 cue window. Load should primarily increase readout noise or interference, while unanimous evidence should show only a small vigilance decline. Stable subject heterogeneity can enter through recency-gradient strength, leak/interference, validity compression, attention, decision gain, and lapse rate, but the mechanism should remain stimulus-local and history-free unless future data establish learning. Such a theory should predict near-zero coherent-versus-fragmented and localized-window contrasts in Experiments 1, 2, and 7; preserve tally modulation in Experiment 3; permit very strong terminal control in Experiments 6, 12, 13, and 15; allow strong opposing coalitions to suppress terminal choices in Experiments 10 and 14; and avoid pi_3’s excessive unanimous-evidence fatigue in Experiment 17. It would therefore compete with pi_3 on its successful recency phenomena while explaining why recency is graded rather than an obligatory overwrite process.
+
+
+## CANDIDATE THEORY
+Reliability-Compressed Recurrent Evidence Field. Decision makers inspect discriminating experts in descending instructed-validity order and encode each attended rating as signed, compressed log-odds evidence. Evidence remains distributed across cue traces, but accessibility declines smoothly with ordinal distance from response, producing graded recency rather than categorical replacement. Choice depends on the signed sum of accessible traces. Simultaneously active support for both products generates divisive interference, and increasing evidence load raises readout noise, especially under conflict. Cue-attention uncertainty contributes additional encoding noise, while a small vigilance decrement allows only a modest decline for long unanimous displays. Thus terminal control emerges continuously from terminal reliability, the accessibility gradient, opposing reliability-weighted coalition strength, and total interference. The mechanism has no sequence-class rules, physical-gap effects, fixed capacity boundary, or cross-trial learning.
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, state, history) -> np.ndarray:
+    stim = np.asarray(state, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(
+            f"Recurrent evidence field expects shape (2, n_features); got {stim.shape}."
+        )
+
+    n_features = stim.shape[1]
+    validities = np.asarray(parameters["validities"], dtype=float)
+    if validities.ndim != 1 or validities.size != n_features:
+        raise ValueError(
+            f"validities length {validities.size} != n_features {n_features}."
+        )
+
+    compression = float(parameters["validity_compression"])
+    retention = float(parameters["memory_retention"])
+    attention = float(parameters["cue_attention"])
+    conflict_normalization = float(parameters["conflict_normalization"])
+    load_noise = float(parameters["load_noise"])
+    vigilance_decline = float(parameters["vigilance_decline"])
+    decision_gain = float(parameters["decision_gain"])
+    lapse = float(parameters["lapse_rate"])
+
+    diff = stim[0] - stim[1]
+    cue_order = np.argsort(-validities, kind="stable")
+    discriminating = [int(j) for j in cue_order if diff[j] != 0.0]
+    m = len(discriminating)
+    if m == 0:
+        return np.array([0.5, 0.5], dtype=np.float64)
+
+    # Communicated validity is converted to normative log-odds and then
+    # strongly compressed. Normalizing by the experiment's typical positive
+    # log-odds preserves its reliability profile without allowing arbitrary
+    # differences in scale to determine response gain.
+    v = np.clip(validities, 0.5001, 0.999)
+    log_odds = np.log(v / (1.0 - v))
+    positive = log_odds[log_odds > 0.0]
+    reliability_scale = float(np.mean(positive)) if positive.size else 1.0
+    if not np.isfinite(reliability_scale) or reliability_scale <= 0.0:
+        reliability_scale = 1.0
+    relative_reliability = np.clip(
+        log_odds / reliability_scale, 1e-4, 20.0
+    )
+    cue_strength = np.power(relative_reliability, compression)
+    cue_strength = np.clip(cue_strength, 0.05, 8.0)
+
+    # Every reason retains a separate trace. Accessibility follows a smooth
+    # exponential serial-position gradient: no reason is exactly overwritten,
+    # and no capacity or sequence-length boundary is imposed.
+    signed_traces = []
+    unsigned_traces = []
+    omission_variance = 0.0
+    for serial_position, j in enumerate(discriminating):
+        lag = (m - 1) - serial_position
+        accessibility = retention ** float(lag)
+        strength = float(cue_strength[j])
+        direction = float(np.sign(diff[j]))
+
+        expected_trace = attention * accessibility * strength
+        signed_traces.append(direction * expected_trace)
+        unsigned_traces.append(expected_trace)
+
+        # Bernoulli attention uncertainty is represented at readout as the
+        # variance of a potentially omitted trace.
+        omission_variance += (
+            attention * (1.0 - attention)
+            * (accessibility * strength) ** 2
+        )
+
+    signed_traces = np.asarray(signed_traces, dtype=float)
+    unsigned_traces = np.asarray(unsigned_traces, dtype=float)
+    integrated_evidence = float(np.sum(signed_traces))
+
+    positive_mass = float(np.sum(signed_traces[signed_traces > 0.0]))
+    negative_mass = float(-np.sum(signed_traces[signed_traces < 0.0]))
+    total_mass = positive_mass + negative_mass
+
+    # Simultaneous opposing coalitions produce divisive interference. The
+    # smooth balance index is zero for unanimous evidence and approaches one
+    # when accessible support is evenly divided.
+    if total_mass > 0.0 and np.isfinite(total_mass):
+        conflict_balance = (
+            4.0 * positive_mass * negative_mass
+            / max(total_mass * total_mass, 1e-12)
+        )
+        conflict_balance = float(np.clip(conflict_balance, 0.0, 1.0))
+        opposing_mass = 2.0 * min(positive_mass, negative_mass)
+        interference_load = opposing_mass / (1.0 + total_mass)
+    else:
+        conflict_balance = 0.0
+        interference_load = 0.0
+
+    conflict_divisor = 1.0 + conflict_normalization * interference_load * np.sqrt(
+        max(1.0, float(m - 1))
+    )
+
+    # Load mainly increases readout uncertainty under conflict. A small
+    # residual component remains for coherent displays, avoiding perfect
+    # performance while not producing excessive unanimous-evidence fatigue.
+    load_component = np.log1p(max(0.0, float(m - 1)))
+    load_multiplier = 0.12 + 0.88 * conflict_balance
+    readout_sd = np.sqrt(
+        1.0
+        + omission_variance
+        + load_noise * load_component * load_multiplier
+    )
+
+    # A weak, continuous vigilance decline is the only load penalty that also
+    # applies fully to unanimous evidence.
+    vigilance = np.exp(-vigilance_decline * max(0.0, float(m - 2)))
+
+    decision_variable = (
+        decision_gain
+        * vigilance
+        * integrated_evidence
+        / max(conflict_divisor * readout_sd, 1e-12)
+    )
+    decision_variable = float(np.clip(decision_variable, -60.0, 60.0))
+
+    p_a = 1.0 / (1.0 + np.exp(-decision_variable))
+    core = np.array([p_a, 1.0 - p_a], dtype=np.float64)
+    probs = (1.0 - lapse) * core + lapse * np.array([0.5, 0.5])
+
+    probs = np.clip(probs, 0.0, None)
+    total = float(np.sum(probs))
+    if not np.isfinite(total) or total <= 0.0:
+        return np.array([0.5, 0.5], dtype=np.float64)
+    return probs / total
+
+`policy(probs) -> int`:
+def policy(probs) -> int:
+    probs = np.asarray(probs, dtype=np.float64)
+    probs = np.clip(probs, 0.0, None)
+    total = float(np.sum(probs))
+    if not np.isfinite(total) or total <= 0.0:
+        probs = np.ones(len(probs), dtype=np.float64) / float(len(probs))
+    else:
+        probs /= total
+    return int(np.random.choice(len(probs), p=probs))
+
+`parameters`:
+- validities: validities
+- validity_compression: [0.0, 0.10]
+- memory_retention: [0.38, 0.54]
+- cue_attention: [0.86, 0.99]
+- conflict_normalization: [0.15, 0.55]
+- load_noise: [0.03, 0.16]
+- vigilance_decline: [0.008, 0.025]
+- decision_gain: [3.5, 6.5]
+- lapse_rate: [0.04, 0.16]
+
+`rationale`:
+This is a minimal three-range recalibration of the accepted mechanism. First, validity compression is reduced from [0.22, 0.48] to [0.0, 0.10], making exceptionally high-validity early cues less dominant and allowing low-validity terminal cues to remain potent in Experiments 4, 11, 12, and 13. Second, memory retention is shifted upward from [0.22, 0.44] to [0.38, 0.54], preserving more distributed earlier evidence and thereby moderating excessive generic recency, tally separation, and arrangement sensitivity in Experiments 1, 3, 5, and 6. These changes are deliberately paired: flatter reliability favors terminal evidence in steep-validity environments, whereas greater retention strengthens opposing coalitions when cue reliabilities are similar. Finally, the still-weak vigilance-decline range is raised modestly to recover the small unanimous-load decline in Experiment 15 without introducing pi_3-style fatigue. All equations, stimulus-local integration dynamics, conflict normalization, history independence, and prohibitions on sequence classes or hard windows are otherwise unchanged.
+
+## LOSS TRAJECTORY (this propose-loop)
+Aggregate loss across iterations of THIS propose-loop (lower = better, 0 = perfect, `+inf` = unscorable). The ACCEPTED / REJECTED tag is the loop's programmatic accept-gate decision: `loss < accepted_loss` -> ACCEPTED (becomes new base), else REJECTED (base unchanged). Use this together with the per-experiment values below to grade fit-quality AND your own past advice (see `## YOUR PRIOR CRITIQUES` below).
+
+- iter 1: loss=0.1710 -> ACCEPTED
+- iter 2 (current candidate you are grading): loss=0.1577 -> ACCEPTED
+Running-best (last accepted) base: iter 2 at loss=0.1577.
+
+## EXPERIMENTAL RESULTS (candidate vs real, per experiment)
+### Experiment 1
+**Design**
+  A=[1, 0, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1, 1, 1]
+  A=[0, 1, 1, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 1, 1]
+  A=[0, 0, 1, 1, 1, 1, 1]  B=[1, 1, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0, 0]  B=[0, 0, 0, 1, 1, 1, 1]
+  A=[0, 0, 0, 1, 1, 1, 1]  B=[1, 1, 1, 0, 0, 0, 0]
+  A=[1, 0, 0, 1, 0, 1, 0]  B=[0, 1, 0, 1, 0, 1, 0]
+  A=[0, 1, 0, 1, 0, 1, 0]  B=[1, 0, 0, 1, 0, 1, 0]
+  A=[1, 1, 1, 0, 1, 0, 1]  B=[0, 0, 1, 0, 1, 0, 1]
+  A=[0, 0, 1, 0, 1, 0, 1]  B=[1, 1, 1, 0, 1, 0, 1]
+  A=[1, 1, 1, 1, 0, 1, 0]  B=[0, 0, 0, 1, 0, 1, 0]
+  A=[0, 0, 0, 1, 0, 1, 0]  B=[1, 1, 1, 1, 0, 1, 0]
+  A=[1, 1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1, 1]
+  A=[1, 1, 0, 0, 0, 0, 0]  B=[1, 0, 1, 1, 1, 1, 1]
+  A=[1, 0, 1, 1, 1, 1, 1]  B=[1, 1, 0, 0, 0, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    # Contrast TTB-consistent choice rates between trials where the
+    # equal-weight tally supports versus opposes the TTB winner.
+    support_choices = []
+    oppose_choices = []
+
+    for _, row in data.iterrows():
+        a = np.asarray(row["option_a_ratings"], dtype=float)
+        b = np.asarray(row["option_b_ratings"], dtype=float)
+        d = a - b
+
+        differing = np.flatnonzero(d != 0)
+        if differing.size == 0:
+            continue
+
+        # Features are already ordered from highest to lowest validity.
+        ttb_direction = float(np.sign(d[differing[0]]))  # +1: A, -1: B
+        ttb_response = 0 if ttb_direction > 0 else 1
+        chose_ttb = float(int(row["response"]) == ttb_response)
+
+        # Positive iff the tally margin points toward the TTB winner.
+        tally_a_margin = float(np.sign(d).sum())
+        oriented_tally_margin = ttb_direction * tally_a_margin
+
+        if oriented_tally_margin > 0:
+            support_choices.append(chose_ttb)
+        elif oriented_tally_margin < 0:
+            oppose_choices.append(chose_ttb)
+
+    if len(support_choices) == 0 or len(oppose_choices) == 0:
+        return float("nan")
+
+    return float(np.mean(support_choices) - np.mean(oppose_choices))
+```
+
+**Observed (real) value:** 0.4944 (var=0.0204)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.8254 (var=0.0069) (Δ vs real +0.3310)
+  - iter 2 (current): 0.8953 (var=0.0027) (Δ vs real +0.4008)
+**Other theories' values on this metric (for reference):**
+- pi_1: 0.0000 (var=0.0049)
+- pi_2: 0.7368 (var=0.0343)
+- pi_3: 0.4743 (var=0.0168)
+- pi_4: 0.5279 (var=0.0111)
+- pi_5: 0.5949 (var=0.0094)
+- pi_6: 0.6093 (var=0.0085)
+- pi_7: 0.5681 (var=0.0095)
+- pi_8: 0.5276 (var=0.0147)
+- pi_9: 0.8585 (var=0.0048)
+- pi_10: 0.7281 (var=0.0159)
+
+### Experiment 2
+**Design**
+  A=[1, 1, 0, 1, 0, 1, 0, 0]  B=[0, 1, 0, 1, 0, 1, 0, 1]
+  A=[1, 1, 0, 1, 0, 1, 0, 0]  B=[1, 0, 0, 1, 0, 1, 1, 0]
+  A=[0, 1, 1, 0, 1, 0, 1, 0]  B=[0, 1, 0, 0, 1, 0, 1, 1]
+  A=[1, 0, 1, 1, 0, 1, 0, 0]  B=[1, 0, 1, 0, 0, 1, 1, 0]
+  A=[0, 1, 0, 1, 1, 1, 0, 0]  B=[0, 1, 0, 1, 0, 1, 0, 1]
+  A=[1, 0, 1, 0, 1, 1, 0, 0]  B=[1, 0, 1, 0, 1, 0, 0, 1]
+  A=[0, 1, 0, 1, 0, 1, 1, 0]  B=[0, 1, 0, 1, 0, 1, 0, 1]
+  A=[1, 1, 0, 0, 1, 0, 1, 0]  B=[0, 1, 1, 0, 0, 1, 0, 1]
+  A=[0, 1, 0, 1, 0, 1, 0, 1]  B=[1, 1, 0, 1, 0, 1, 0, 0]
+  A=[1, 0, 0, 1, 0, 1, 1, 0]  B=[1, 1, 0, 1, 0, 1, 0, 0]
+  A=[0, 1, 0, 0, 1, 0, 1, 1]  B=[0, 1, 1, 0, 1, 0, 1, 0]
+  A=[1, 0, 1, 0, 0, 1, 1, 0]  B=[1, 0, 1, 1, 0, 1, 0, 0]
+  A=[0, 1, 0, 1, 0, 1, 0, 1]  B=[0, 1, 0, 1, 1, 1, 0, 0]
+  A=[1, 0, 1, 0, 1, 0, 0, 1]  B=[1, 0, 1, 0, 1, 1, 0, 0]
+  A=[0, 1, 0, 1, 0, 1, 0, 1]  B=[0, 1, 0, 1, 0, 1, 1, 0]
+  A=[0, 1, 1, 0, 0, 1, 0, 1]  B=[1, 1, 0, 0, 1, 0, 1, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    """Rate at which choices follow the highest-validity discriminating cue."""
+    if len(data) == 0:
+        return float("nan")
+
+    matches = []
+    for _, row in data.iterrows():
+        a = np.asarray(row["option_a_ratings"], dtype=float)
+        b = np.asarray(row["option_b_ratings"], dtype=float)
+
+        # Features are already ordered from highest to lowest validity.
+        diff = a - b
+        discriminating = np.flatnonzero(diff != 0)
+        if discriminating.size == 0:
+            # An all-tie pair provides no directional diagnosticity.
+            continue
+
+        first = int(discriminating[0])
+        ttb_response = 0 if diff[first] > 0 else 1
+        matches.append(float(int(row["response"]) == ttb_response))
+
+    if not matches:
+        return float("nan")
+    return float(np.mean(matches))
+```
+
+**Observed (real) value:** 0.1938 (var=0.0049)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.4060 (var=0.0097) (Δ vs real +0.2123)
+  - iter 2 (current): 0.2065 (var=0.0039) (Δ vs real +0.0127)
+**Other theories' values on this metric (for reference):**
+- pi_2: 0.4942 (var=0.0026)
+- pi_1: 0.8694 (var=0.0103)
+- pi_3: 0.1931 (var=0.0026)
+- pi_4: 0.2060 (var=0.0019)
+- pi_5: 0.1969 (var=0.0043)
+- pi_6: 0.2027 (var=0.0056)
+- pi_7: 0.1940 (var=0.0026)
+- pi_8: 0.1765 (var=0.0015)
+- pi_9: 0.3002 (var=0.0056)
+- pi_10: 0.2408 (var=0.0078)
+
+### Experiment 3
+**Design**
+  A=[1, 1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 1, 0, 0, 0, 0, 0, 0]  B=[1, 1, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 0, 1, 1, 0, 0, 0, 0, 0]  B=[0, 1, 0, 0, 1, 0, 0, 0, 0]
+  A=[0, 1, 0, 0, 1, 0, 0, 0, 0]  B=[1, 0, 1, 1, 0, 0, 0, 0, 0]
+  A=[1, 0, 1, 0, 1, 1, 0, 0, 0]  B=[0, 1, 0, 1, 0, 0, 1, 0, 0]
+  A=[0, 1, 0, 1, 0, 0, 1, 0, 0]  B=[1, 0, 1, 0, 1, 1, 0, 0, 0]
+  A=[1, 0, 1, 0, 1, 0, 1, 1, 0]  B=[0, 1, 0, 1, 0, 1, 0, 0, 1]
+  A=[0, 1, 0, 1, 0, 1, 0, 0, 1]  B=[1, 0, 1, 0, 1, 0, 1, 1, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    """Proportion of choices agreeing with the least-valid discriminating cue."""
+    if len(data) == 0:
+        return float("nan")
+
+    agreements = []
+    for a_cell, b_cell, response in zip(
+        data["option_a_ratings"],
+        data["option_b_ratings"],
+        data["response"]
+    ):
+        a = np.asarray(a_cell, dtype=float)
+        b = np.asarray(b_cell, dtype=float)
+        differing = np.flatnonzero(a != b)
+        if differing.size == 0:
+            continue
+
+        # Features are displayed in descending validity order, so the
+        # largest differing index is the final discriminating reason.
+        final_idx = int(differing[-1])
+        final_cue_choice = 0 if a[final_idx] > b[final_idx] else 1
+        agreements.append(float(int(response) == final_cue_choice))
+
+    if not agreements:
+        return float("nan")
+    return float(np.mean(agreements))
+```
+
+**Observed (real) value:** 0.5750 (var=0.0026)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.7154 (var=0.0036) (Δ vs real +0.1404)
+  - iter 2 (current): 0.6898 (var=0.0056) (Δ vs real +0.1148)
+**Other theories' values on this metric (for reference):**
+- pi_3: 0.7129 (var=0.0033)
+- pi_2: 0.1462 (var=0.0111)
+- pi_1: 0.1419 (var=0.0079)
+- pi_4: 0.5346 (var=0.0080)
+- pi_5: 0.5996 (var=0.0042)
+- pi_6: 0.6577 (var=0.0054)
+- pi_7: 0.7098 (var=0.0021)
+- pi_8: 0.6569 (var=0.0032)
+- pi_9: 0.4806 (var=0.0078)
+- pi_10: 0.7527 (var=0.0062)
+
+### Experiment 4
+**Design**
+  A=[1, 1, 0, 0]  B=[0, 0, 1, 1]
+  A=[0, 0, 1, 1]  B=[1, 1, 0, 0]
+  A=[1, 0, 1, 0]  B=[0, 1, 0, 1]
+  A=[0, 1, 0, 1]  B=[1, 0, 1, 0]
+  A=[1, 0, 0, 1]  B=[0, 1, 1, 0]
+  A=[0, 1, 1, 0]  B=[1, 0, 0, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    # Signed association between choice and the lowest-validity (fourth) cue.
+    # +1 means the response follows that cue, -1 means it opposes that cue.
+    products = []
+    for _, row in data.iterrows():
+        a = np.asarray(row['option_a_ratings'], dtype=float)
+        b = np.asarray(row['option_b_ratings'], dtype=float)
+        terminal_direction = np.sign(a[-1] - b[-1])  # +1 favors A, -1 favors B
+        if terminal_direction == 0:
+            continue
+        response = int(row['response'])
+        choice_direction = 1.0 if response == 0 else -1.0
+        products.append(choice_direction * terminal_direction)
+    if len(products) == 0:
+        return float('nan')
+    return float(np.mean(products))
+```
+
+**Observed (real) value:** 0.6650 (var=0.0621)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.4888 (var=0.0190) (Δ vs real -0.1763)
+  - iter 2 (current): 0.6392 (var=0.0105) (Δ vs real -0.0258)
+**Other theories' values on this metric (for reference):**
+- pi_2: 0.0075 (var=0.0116)
+- pi_3: 0.5262 (var=0.0122)
+- pi_1: -0.2525 (var=0.0072)
+- pi_4: 0.6104 (var=0.0504)
+- pi_5: 0.6737 (var=0.0181)
+- pi_6: 0.6704 (var=0.0140)
+- pi_7: 0.6104 (var=0.0134)
+- pi_8: 0.6408 (var=0.0101)
+- pi_9: 0.2967 (var=0.0253)
+- pi_10: 0.5654 (var=0.0275)
+
+### Experiment 5
+**Design**
+  A=[1, 1, 1, 1, 1, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 1, 1, 1, 1, 1]
+  A=[0, 0, 0, 0, 0, 1, 1, 1, 1, 1]  B=[1, 1, 1, 1, 1, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 1, 1, 1, 1, 1, 0, 0]  B=[1, 1, 1, 0, 0, 0, 0, 0, 1, 1]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 1, 1]  B=[0, 0, 0, 1, 1, 1, 1, 1, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    block_terminal = []
+    mixed_terminal = []
+
+    for _, row in data.iterrows():
+        a = np.asarray(row["option_a_ratings"], dtype=float)
+        b = np.asarray(row["option_b_ratings"], dtype=float)
+        d = a - b
+
+        # The block permutation has one option favored by cues 1--5 and
+        # the other option favored by cues 6--10.
+        is_block = (
+            d.size == 10
+            and np.all(d[:5] == d[0])
+            and np.all(d[5:] == d[5])
+            and d[0] == -d[5]
+        )
+
+        # In this design the final two cues agree. Identify whether the
+        # response selected the option favored by those terminal cues.
+        terminal_response = 0 if d[-1] > 0 else 1
+        chose_terminal = float(int(row["response"]) == terminal_response)
+
+        if is_block:
+            block_terminal.append(chose_terminal)
+        else:
+            mixed_terminal.append(chose_terminal)
+
+    if len(block_terminal) == 0 or len(mixed_terminal) == 0:
+        return float("nan")
+
+    return float(np.mean(mixed_terminal) - np.mean(block_terminal))
+```
+
+**Observed (real) value:** 0.0033 (var=0.0049)
+**Candidate trajectory (this loop):**
+  - iter 1: -0.0983 (var=0.0069) (Δ vs real -0.1017)
+  - iter 2 (current): -0.0650 (var=0.0046) (Δ vs real -0.0683)
+**Other theories' values on this metric (for reference):**
+- pi_3: 0.0150 (var=0.0104)
+- pi_4: 0.4617 (var=0.0125)
+- pi_1: 0.6621 (var=0.0603)
+- pi_2: -0.0008 (var=0.0123)
+- pi_5: 0.0071 (var=0.0075)
+- pi_6: -0.0142 (var=0.0089)
+- pi_7: 0.0079 (var=0.0079)
+- pi_8: 0.0112 (var=0.0099)
+- pi_9: -0.0658 (var=0.0097)
+- pi_10: 0.1788 (var=0.0194)
+
+### Experiment 6
+**Design**
+  A=[0, 0, 0, 1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1, 0, 0, 0]
+  A=[0, 0, 0, 0, 1, 0, 0, 0]  B=[0, 0, 0, 1, 0, 0, 0, 0]
+  A=[0, 0, 1, 1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1, 1, 0, 0]
+  A=[0, 0, 0, 0, 1, 1, 0, 0]  B=[0, 0, 1, 1, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1, 1, 1, 0]
+  A=[0, 0, 0, 0, 1, 1, 1, 0]  B=[1, 1, 1, 1, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1, 1, 1, 1]
+  A=[0, 0, 0, 0, 1, 1, 1, 1]  B=[1, 1, 1, 1, 0, 0, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    early_choices = []
+
+    for _, row in data.iterrows():
+        a = np.asarray(row["option_a_ratings"], dtype=float)
+        b = np.asarray(row["option_b_ratings"], dtype=float)
+        diff = a - b
+        discriminating = np.flatnonzero(diff != 0)
+
+        # Restrict to the 7- and 8-reason overload conditions.
+        if discriminating.size < 7:
+            continue
+
+        # The first discriminating cue identifies the option favored by the
+        # high-validity, early run, regardless of physical A/B orientation.
+        first_direction = diff[discriminating[0]]
+        response = int(row["response"])
+        chose_early_option = (
+            (first_direction > 0 and response == 0) or
+            (first_direction < 0 and response == 1)
+        )
+        early_choices.append(float(chose_early_option))
+
+    if not early_choices:
+        return float("nan")
+    return float(np.mean(early_choices))
+```
+
+**Observed (real) value:** 0.3067 (var=0.0051)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.1263 (var=0.0030) (Δ vs real -0.1804)
+  - iter 2 (current): 0.0650 (var=0.0015) (Δ vs real -0.2417)
+**Other theories' values on this metric (for reference):**
+- pi_4: 0.7804 (var=0.0054)
+- pi_3: 0.3379 (var=0.0051)
+- pi_1: 0.8433 (var=0.0097)
+- pi_2: 0.6654 (var=0.0060)
+- pi_5: 0.3113 (var=0.0065)
+- pi_6: 0.3067 (var=0.0061)
+- pi_7: 0.3404 (var=0.0071)
+- pi_8: 0.3050 (var=0.0041)
+- pi_9: 0.1708 (var=0.0061)
+- pi_10: 0.2900 (var=0.0177)
+
+### Experiment 7
+**Design**
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 1, 1, 1, 0, 0, 0, 0]
+  A=[0, 0, 0, 1, 1, 1, 0, 0, 0, 0]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 0, 1, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 0, 1, 1, 0, 0, 0, 0]
+  A=[0, 0, 1, 0, 1, 1, 0, 0, 0, 0]  B=[1, 1, 0, 1, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1, 1, 1, 1, 0, 0]
+  A=[0, 0, 0, 0, 1, 1, 1, 1, 0, 0]  B=[1, 1, 1, 1, 0, 0, 0, 0, 0, 0]
+  A=[1, 0, 1, 0, 1, 1, 0, 0, 0, 0]  B=[0, 1, 0, 1, 0, 0, 1, 1, 0, 0]
+  A=[0, 1, 0, 1, 0, 0, 1, 1, 0, 0]  B=[1, 0, 1, 0, 1, 1, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 1, 1, 1, 1, 1]
+  A=[0, 0, 0, 0, 0, 1, 1, 1, 1, 1]  B=[1, 1, 1, 1, 1, 0, 0, 0, 0, 0]
+  A=[1, 0, 1, 0, 1, 0, 1, 1, 0, 0]  B=[0, 1, 0, 1, 0, 1, 0, 0, 1, 1]
+  A=[0, 1, 0, 1, 0, 1, 0, 0, 1, 1]  B=[1, 0, 1, 0, 1, 0, 1, 1, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    low_follow = []
+    high_follow = []
+
+    for _, row in data.iterrows():
+        a = np.asarray(row["option_a_ratings"], dtype=float)
+        b = np.asarray(row["option_b_ratings"], dtype=float)
+        diff = a - b
+        discriminating = diff[diff != 0]
+
+        # The strongest predicted chunking contrast occurs for the 8- and
+        # 10-reason displays.
+        if discriminating.size < 8:
+            continue
+
+        directions = np.sign(discriminating)
+        n_switches = int(np.sum(directions[1:] != directions[:-1]))
+
+        # Response coding is 0=A and 1=B. Determine whether the response
+        # follows the terminal discriminating cue, independent of side.
+        terminal_response = 0 if directions[-1] > 0 else 1
+        follows_terminal = float(int(row["response"]) == terminal_response)
+
+        if n_switches <= 1:
+            low_follow.append(follows_terminal)
+        elif n_switches >= 4:
+            high_follow.append(follows_terminal)
+
+    if len(low_follow) == 0 or len(high_follow) == 0:
+        return float("nan")
+
+    contrast = float(np.mean(low_follow) - np.mean(high_follow))
+
+    # A preregisterable practical-significance diagnostic: whether coherent
+    # low-switch sequences have more than an 8-percentage-point terminal-cue
+    # advantage over switch-dense sequences.
+    return float(contrast > 0.08)
+
+```
+
+**Observed (real) value:** 0.0000 (var=0.2016)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.0000 (var=0.2484) (Δ vs real +0.0000)
+  - iter 2 (current): 0.0000 (var=0.2244) (Δ vs real +0.0000)
+**Other theories' values on this metric (for reference):**
+- pi_3: 0.0000 (var=0.1824)
+- pi_5: 1.0000 (var=0.1924)
+- pi_1: 0.0000 (var=0.1476)
+- pi_2: 0.0000 (var=0.2016)
+- pi_4: 0.0000 (var=0.0384)
+- pi_6: 0.0000 (var=0.2100)
+- pi_7: 0.0000 (var=0.2356)
+- pi_8: 0.0000 (var=0.1924)
+- pi_9: 1.0000 (var=0.2436)
+- pi_10: 0.0000 (var=0.2356)
+
+### Experiment 8
+**Design**
+  A=[1, 1, 1, 1, 1, 0]  B=[0, 0, 0, 0, 0, 1]
+  A=[1, 1, 1, 1, 0, 0]  B=[0, 0, 0, 0, 1, 1]
+  A=[1, 1, 1, 0, 0, 0]  B=[0, 0, 0, 1, 1, 1]
+  A=[1, 1, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 1]
+  A=[0, 0, 0, 0, 0, 1]  B=[1, 1, 1, 1, 1, 0]
+  A=[0, 0, 0, 0, 1, 1]  B=[1, 1, 1, 1, 0, 0]
+  A=[0, 0, 0, 1, 1, 1]  B=[1, 1, 1, 0, 0, 0]
+  A=[0, 0, 1, 1, 1, 1]  B=[1, 1, 0, 0, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    if len(data) == 0:
+        return float('nan')
+
+    agreements = []
+    for _, row in data.iterrows():
+        a = np.asarray(row['option_a_ratings'], dtype=float)
+        b = np.asarray(row['option_b_ratings'], dtype=float)
+        diff = a - b
+        discriminating = np.flatnonzero(diff != 0)
+        if discriminating.size == 0:
+            continue
+
+        # Direction of the terminal discriminating cue in displayed order.
+        terminal_direction = diff[discriminating[-1]]
+        terminal_response = 0 if terminal_direction > 0 else 1
+        agreements.append(float(int(row['response']) == terminal_response))
+
+    if len(agreements) == 0:
+        return float('nan')
+    return float(np.mean(agreements))
+```
+
+**Observed (real) value:** 0.1721 (var=0.0112)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.1615 (var=0.0045) (Δ vs real -0.0106)
+  - iter 2 (current): 0.0765 (var=0.0011) (Δ vs real -0.0956)
+**Other theories' values on this metric (for reference):**
+- pi_5: 0.7169 (var=0.0030)
+- pi_3: 0.2754 (var=0.0030)
+- pi_1: 0.3269 (var=0.0033)
+- pi_2: 0.4110 (var=0.0016)
+- pi_4: 0.4802 (var=0.0042)
+- pi_6: 0.2250 (var=0.0059)
+- pi_7: 0.3131 (var=0.0029)
+- pi_8: 0.3069 (var=0.0027)
+- pi_9: 0.3046 (var=0.0042)
+- pi_10: 0.1440 (var=0.0033)
+
+### Experiment 9
+**Design**
+  A=[1, 1, 0, 1, 0]  B=[1, 0, 1, 0, 0]
+  A=[1, 0, 0, 1, 0]  B=[1, 1, 1, 0, 0]
+  A=[1, 0, 1, 0, 0]  B=[1, 1, 0, 1, 0]
+  A=[1, 1, 1, 0, 0]  B=[1, 0, 0, 1, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    scores = []
+    for _, row in data.iterrows():
+        a = np.asarray(row["option_a_ratings"], dtype=float)
+        b = np.asarray(row["option_b_ratings"], dtype=float)
+        diff = a - b
+        discriminating = np.flatnonzero(diff != 0)
+        if discriminating.size == 0:
+            continue
+
+        # Features are already arranged in descending instructed validity.
+        first_direction = float(np.sign(diff[int(discriminating[0])]))
+        choice_direction = 1.0 if int(row["response"]) == 0 else -1.0
+        scores.append(first_direction * choice_direction)
+
+    if len(scores) == 0:
+        return float("nan")
+    return float(np.mean(np.asarray(scores, dtype=float)))
+```
+
+**Observed (real) value:** -0.0325 (var=0.0099)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.1250 (var=0.0120) (Δ vs real +0.1575)
+  - iter 2 (current): 0.1771 (var=0.0082) (Δ vs real +0.2096)
+**Other theories' values on this metric (for reference):**
+- pi_3: -0.0083 (var=0.0103)
+- pi_6: 0.2096 (var=0.0101)
+- pi_1: 0.7021 (var=0.0307)
+- pi_2: 0.7054 (var=0.0384)
+- pi_4: 0.0375 (var=0.0075)
+- pi_5: 0.0108 (var=0.0053)
+- pi_7: 0.0638 (var=0.0071)
+- pi_8: 0.0083 (var=0.0044)
+- pi_9: 0.0933 (var=0.0102)
+- pi_10: 0.0575 (var=0.0053)
+
+### Experiment 10
+**Design**
+  A=[1, 1, 1, 1]  B=[0, 0, 0, 0]
+  A=[0, 1, 1, 1]  B=[1, 0, 0, 0]
+  A=[1, 0, 1, 1]  B=[0, 1, 0, 0]
+  A=[0, 0, 1, 1]  B=[1, 1, 0, 0]
+  A=[0, 0, 0, 0]  B=[1, 1, 1, 1]
+  A=[1, 0, 0, 0]  B=[0, 1, 1, 1]
+  A=[0, 1, 0, 0]  B=[1, 0, 1, 1]
+  A=[1, 1, 0, 0]  B=[0, 0, 1, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    """Coherence-weighted agreement with the least-valid terminal cue."""
+    if len(data) == 0:
+        return float("nan")
+
+    pattern_weights = {
+        (1, 1, 1, 1): 1.00,   # fully coherent
+        (-1, 1, 1, 1): 0.80,  # earliest cue conflicts
+        (1, -1, 1, 1): 0.65,  # second cue conflicts
+        (-1, -1, 1, 1): 0.35  # both prefix cues conflict
+    }
+
+    weighted_agreement = 0.0
+    total_weight = 0.0
+
+    for a_cell, b_cell, response in zip(
+        data["option_a_ratings"],
+        data["option_b_ratings"],
+        data["response"]
+    ):
+        a = np.asarray(a_cell, dtype=float)
+        b = np.asarray(b_cell, dtype=float)
+        diff = a - b
+        if diff.size != 4 or diff[3] == 0:
+            continue
+
+        # Orient every trial so that the terminal (least-valid) cue is +1.
+        terminal_sign = float(np.sign(diff[3]))
+        relative_pattern = tuple(
+            int(np.sign(x) * terminal_sign) for x in diff
+        )
+        weight = pattern_weights.get(relative_pattern, 0.0)
+        if weight <= 0.0:
+            continue
+
+        terminal_favoring_response = 0 if terminal_sign > 0 else 1
+        agreement = float(int(response) == terminal_favoring_response)
+        weighted_agreement += weight * agreement
+        total_weight += weight
+
+    if total_weight <= 0.0:
+        return float("nan")
+    return float(weighted_agreement / total_weight)
+```
+
+**Observed (real) value:** 0.8748 (var=0.0069)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.8881 (var=0.0026) (Δ vs real +0.0133)
+  - iter 2 (current): 0.9419 (var=0.0007) (Δ vs real +0.0671)
+**Other theories' values on this metric (for reference):**
+- pi_6: 0.9281 (var=0.0013)
+- pi_3: 0.7843 (var=0.0034)
+- pi_1: 0.5635 (var=0.0023)
+- pi_2: 0.8101 (var=0.0072)
+- pi_4: 0.8645 (var=0.0034)
+- pi_5: 0.9256 (var=0.0034)
+- pi_7: 0.8717 (var=0.0018)
+- pi_8: 0.8753 (var=0.0015)
+- pi_9: 0.8852 (var=0.0027)
+- pi_10: 0.8569 (var=0.0036)
+
+### Experiment 11
+**Design**
+  A=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+  A=[1, 1, 1, 1, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+  A=[1, 1, 1, 1, 1, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+  A=[1, 1, 1, 1, 1, 1, 1, 1, 1, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 1]  B=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 1]  B=[1, 1, 1, 1, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 1]  B=[1, 1, 1, 1, 1, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 1]  B=[1, 1, 1, 1, 1, 1, 1, 1, 1, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    scores = []
+    for _, row in data.iterrows():
+        a = np.asarray(row["option_a_ratings"], dtype=float)
+        b = np.asarray(row["option_b_ratings"], dtype=float)
+        diff = a - b
+        m = int(np.count_nonzero(diff))
+
+        # The diagnostic manageable-load conflicts contain 5 or 6
+        # discriminating cues. The final (lowest-validity) cue is index 9.
+        if m not in (5, 6) or diff[-1] == 0:
+            continue
+
+        terminal_response = 0 if diff[-1] > 0 else 1
+        scores.append(float(int(row["response"]) == terminal_response))
+
+    if len(scores) == 0:
+        return float("nan")
+    return float(np.mean(scores))
+```
+
+**Observed (real) value:** 0.8425 (var=0.0123)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.3846 (var=0.0213) (Δ vs real -0.4579)
+  - iter 2 (current): 0.5108 (var=0.0160) (Δ vs real -0.3317)
+**Other theories' values on this metric (for reference):**
+- pi_3: 0.6863 (var=0.0047)
+- pi_7: 0.0642 (var=0.0023)
+- pi_1: 0.1583 (var=0.0130)
+- pi_2: 0.1342 (var=0.0084)
+- pi_4: 0.3117 (var=0.0174)
+- pi_5: 0.6737 (var=0.0053)
+- pi_6: 0.6196 (var=0.0088)
+- pi_8: 0.8558 (var=0.0026)
+- pi_9: 0.6025 (var=0.0106)
+- pi_10: 0.8008 (var=0.0073)
+
+### Experiment 12
+**Design**
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1]
+  A=[0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0]
+  A=[0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0]  B=[0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0]  B=[0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    """Side-balanced rate of choosing the 3-to-2 majority in strong-coalition trials."""
+    majority_a = []
+    majority_b = []
+    strong_set = {0, 1, 2, 11, 12}
+
+    for _, row in data.iterrows():
+        a = np.asarray(row["option_a_ratings"], dtype=float)
+        b = np.asarray(row["option_b_ratings"], dtype=float)
+        diff = a - b
+        discriminating = set(np.flatnonzero(diff != 0).tolist())
+        if discriminating != strong_set:
+            continue
+
+        response = int(row["response"])
+        majority_direction = float(np.sum(np.sign(diff)))
+        if majority_direction > 0:
+            majority_a.append(float(response == 0))
+        elif majority_direction < 0:
+            majority_b.append(float(response == 1))
+
+    if majority_a and majority_b:
+        return float(0.5 * (np.mean(majority_a) + np.mean(majority_b)))
+
+    pooled = majority_a + majority_b
+    if pooled:
+        return float(np.mean(pooled))
+    return 0.5
+
+```
+
+**Observed (real) value:** 0.1713 (var=0.0095)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.3144 (var=0.0136) (Δ vs real +0.1431)
+  - iter 2 (current): 0.1025 (var=0.0037) (Δ vs real -0.0688)
+**Other theories' values on this metric (for reference):**
+- pi_7: 0.7800 (var=0.0127)
+- pi_3: 0.2650 (var=0.0077)
+- pi_1: 0.8450 (var=0.0106)
+- pi_2: 0.8638 (var=0.0097)
+- pi_4: 0.3144 (var=0.0590)
+- pi_5: 0.2125 (var=0.0050)
+- pi_6: 0.1788 (var=0.0107)
+- pi_8: 0.1313 (var=0.0048)
+- pi_9: 0.2231 (var=0.0108)
+- pi_10: 0.1781 (var=0.0070)
+
+### Experiment 13
+**Design**
+  A=[1, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1, 1]
+  A=[1, 1, 1, 0, 0, 0]  B=[0, 0, 0, 1, 1, 1]
+  A=[1, 1, 1, 1, 1, 0]  B=[0, 0, 0, 0, 0, 1]
+  A=[0, 1, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 1, 1, 1]  B=[1, 1, 1, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 1]  B=[1, 1, 1, 1, 1, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    d = data.copy()
+    if len(d) == 0:
+        return float('nan')
+
+    # The competing theory's contextual calibration has reached full weight
+    # well before this point; the advocated theory has no history dependence.
+    d['_trial_index'] = d.groupby('subject_id', sort=False).cumcount()
+    d = d.loc[d['_trial_index'] >= 24].copy()
+    if len(d) == 0:
+        return float('nan')
+
+    def terminal_match(row):
+        a = np.asarray(row['option_a_ratings'], dtype=float)
+        b = np.asarray(row['option_b_ratings'], dtype=float)
+        terminal_diff = a[-1] - b[-1]
+        if terminal_diff > 0:
+            terminal_response = 0
+        elif terminal_diff < 0:
+            terminal_response = 1
+        else:
+            return np.nan
+        return float(int(row['response']) == terminal_response)
+
+    d['_terminal_match'] = d.apply(terminal_match, axis=1)
+    d['_stimulus_key'] = d.apply(
+        lambda r: (tuple(r['option_a_ratings']), tuple(r['option_b_ratings'])),
+        axis=1
+    )
+
+    # Equal-weight subject-by-stimulus cells, eliminating variance caused by
+    # random trial order and unequal late-block counts of the six pairs.
+    cells = d.groupby(
+        ['subject_id', '_stimulus_key'], sort=False
+    )['_terminal_match'].mean()
+    return float(cells.mean())
+```
+
+**Observed (real) value:** 0.8810 (var=0.0070)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.7553 (var=0.0035) (Δ vs real -0.1257)
+  - iter 2 (current): 0.8047 (var=0.0023) (Δ vs real -0.0763)
+**Other theories' values on this metric (for reference):**
+- pi_3: 0.7201 (var=0.0040)
+- pi_8: 0.3399 (var=0.0051)
+- pi_1: 0.1647 (var=0.0106)
+- pi_2: 0.4955 (var=0.0024)
+- pi_4: 0.4758 (var=0.0129)
+- pi_5: 0.6957 (var=0.0044)
+- pi_6: 0.7470 (var=0.0062)
+- pi_7: 0.5510 (var=0.0027)
+- pi_9: 0.7048 (var=0.0044)
+- pi_10: 0.8495 (var=0.0032)
+
+### Experiment 14
+**Design**
+  A=[1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+  A=[0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]  B=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    # Classify each trial structurally and code whether the response followed
+    # the physically terminal discriminating reason. In this design that
+    # reason is also the final reason in instructed-validity scan order.
+    records = []
+    for _, row in data.iterrows():
+        a = np.asarray(row["option_a_ratings"], dtype=float)
+        b = np.asarray(row["option_b_ratings"], dtype=float)
+        diff = a - b
+        idx = np.flatnonzero(diff != 0)
+        if idx.size == 0:
+            continue
+
+        terminal_idx = int(idx[-1])
+        terminal_is_b = bool(diff[terminal_idx] < 0)
+        chose_terminal = float(int(row["response"]) == int(terminal_is_b))
+
+        if idx.size > 1:
+            largest_gap = int(np.max(np.diff(idx) - 1))
+        else:
+            largest_gap = 0
+        foregrounded = bool(terminal_idx == (len(diff) - 1) and largest_gap > 0)
+        records.append((foregrounded, terminal_is_b, chose_terminal))
+
+    if not records:
+        return float("nan")
+
+    frame = pd.DataFrame(
+        records, columns=["foregrounded", "terminal_is_b", "chose_terminal"]
+    )
+
+    # Compute the foregrounding contrast separately for terminal-A and
+    # terminal-B trials, then average. This exactly removes any stable A/B
+    # response-side preference rather than allowing it to inflate variance.
+    side_contrasts = []
+    for terminal_is_b in (False, True):
+        side = frame[frame["terminal_is_b"] == terminal_is_b]
+        fg = side.loc[side["foregrounded"], "chose_terminal"]
+        clustered = side.loc[~side["foregrounded"], "chose_terminal"]
+        if len(fg) > 0 and len(clustered) > 0:
+            side_contrasts.append(float(fg.mean() - clustered.mean()))
+
+    if not side_contrasts:
+        return float("nan")
+    return float(np.mean(side_contrasts))
+```
+
+**Observed (real) value:** 0.0192 (var=0.0062)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.0125 (var=0.0080) (Δ vs real -0.0067)
+  - iter 2 (current): 0.0058 (var=0.0115) (Δ vs real -0.0133)
+**Other theories' values on this metric (for reference):**
+- pi_8: 0.0863 (var=0.0106)
+- pi_3: -0.0217 (var=0.0090)
+- pi_1: -0.0004 (var=0.0063)
+- pi_2: -0.0008 (var=0.0037)
+- pi_4: -0.0146 (var=0.0066)
+- pi_5: 0.0054 (var=0.0094)
+- pi_6: -0.0137 (var=0.0073)
+- pi_7: -0.0042 (var=0.0041)
+- pi_9: 0.0017 (var=0.0085)
+- pi_10: -0.0117 (var=0.0094)
+
+### Experiment 15
+**Design**
+  A=[0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0]
+  A=[0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    # Winner-choice rate at each unanimous evidence load.
+    correct_by_load = {2: [], 4: [], 7: [], 10: []}
+
+    for _, row in data.iterrows():
+        a = np.asarray(row["option_a_ratings"], dtype=float)
+        b = np.asarray(row["option_b_ratings"], dtype=float)
+        diff = a - b
+        load = int(np.count_nonzero(diff))
+        net_direction = float(np.sum(diff))
+
+        if load not in correct_by_load or net_direction == 0.0:
+            continue
+
+        response = int(row["response"])
+        favored_response = 0 if net_direction > 0.0 else 1
+        correct_by_load[load].append(float(response == favored_response))
+
+    rates = {}
+    for load in (2, 4, 7, 10):
+        values = correct_by_load[load]
+        if len(values) == 0:
+            return float("nan")
+        rates[load] = float(np.mean(values))
+
+    # Endpoint-emphasized, zero-sum decline contrast. Positive values indicate
+    # that unanimous evidence becomes less effective as more reasons are added.
+    return float(
+        0.75 * rates[2]
+        + 0.25 * rates[4]
+        - 0.25 * rates[7]
+        - 0.75 * rates[10]
+    )
+```
+
+**Observed (real) value:** 0.0471 (var=0.0135)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.0027 (var=0.0024) (Δ vs real -0.0444)
+  - iter 2 (current): 0.0042 (var=0.0023) (Δ vs real -0.0429)
+**Other theories' values on this metric (for reference):**
+- pi_3: 0.1525 (var=0.0093)
+- pi_9: 0.0019 (var=0.0017)
+- pi_1: -0.0021 (var=0.0054)
+- pi_2: -0.0167 (var=0.0071)
+- pi_4: -0.0006 (var=0.0027)
+- pi_5: 0.1579 (var=0.0074)
+- pi_6: 0.3079 (var=0.0057)
+- pi_7: 0.2092 (var=0.0108)
+- pi_8: 0.0406 (var=0.0094)
+- pi_10: 0.0652 (var=0.0056)
+
+### Experiment 16
+**Design**
+  A=[0, 1, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 1, 1, 0]
+  A=[0, 0, 1, 1, 1, 1, 1, 0]  B=[0, 1, 0, 0, 0, 0, 0, 0]
+  A=[0, 1, 1, 1, 1, 1, 1, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1, 1, 1, 0]
+  A=[0, 1, 1, 1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1, 0, 0, 0]
+  A=[0, 0, 0, 0, 1, 0, 0, 0]  B=[0, 1, 1, 1, 0, 0, 0, 0]
+  A=[0, 1, 1, 1, 1, 1, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 0]
+  A=[0, 0, 0, 0, 0, 0, 1, 0]  B=[0, 1, 1, 1, 1, 1, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    validities = np.asarray([0.99, 0.75, 0.73, 0.71, 0.69, 0.67, 0.65, 0.51], dtype=float)
+    reliability = np.log(np.clip(validities, 0.5001, 0.999) / (1.0 - np.clip(validities, 0.5001, 0.999)))
+    scale = float(np.mean(reliability[reliability > 0.0]))
+    strengths = np.power(np.clip(reliability / scale, 0.15, 6.0), 0.30)
+
+    def summarize(a, b):
+        d = np.asarray(a, dtype=float) - np.asarray(b, dtype=float)
+        idx = np.flatnonzero(d != 0.0)
+        if idx.size == 0:
+            return None
+        dirs = np.sign(d[idx])
+        m = int(dirs.size)
+        switches = np.flatnonzero(dirs[1:] != dirs[:-1]) + 1
+
+        run_lengths = []
+        run = 1
+        for k in range(1, m):
+            if dirs[k] == dirs[k - 1]:
+                run += 1
+            else:
+                run_lengths.append(run)
+                run = 1
+        run_lengths.append(run)
+
+        accumulator = 0.0
+        susceptibility = []
+        k = 0
+        while k < m:
+            direction = float(dirs[k])
+            end = k + 1
+            while end < m and dirs[end] == direction:
+                end += 1
+            incoming = strengths[idx[k:end]]
+            run_length = end - k
+            if accumulator != 0.0 and np.sign(accumulator) != direction:
+                incumbent = abs(accumulator) * (0.55 ** run_length)
+                attack = 0.0
+                for s in incoming:
+                    attack = 0.55 * attack + float(s)
+                advantage = (attack - incumbent) / max(attack + incumbent, 1e-12)
+                susceptibility.append(1.0 / (1.0 + np.exp(-4.0 * np.clip(advantage, -15.0, 15.0))))
+            for s in incoming:
+                accumulator = 0.55 * accumulator + direction * float(s)
+            k = end
+
+        reversal_susceptibility = float(np.mean(susceptibility)) if susceptibility else 0.35
+        fractions = switches.astype(float) / float(m) if switches.size else np.asarray([], dtype=float)
+        canonical = tuple(int(x) for x in (dirs * dirs[0]))
+        return {
+            'terminal_singleton': float(len(run_lengths) > 1 and run_lengths[-1] == 1),
+            'two_run': float(len(run_lengths) == 2),
+            'switch_density': float(switches.size) / float(max(1, m - 1)),
+            'susceptibility': reversal_susceptibility,
+            'fractions': fractions,
+            'canonical': canonical,
+            'terminal_direction': float(dirs[-1])
+        }
+
+    def context_value(summaries, learning_rate):
+        ages = np.arange(len(summaries) - 1, -1, -1, dtype=float)
+        w = np.power(1.0 - learning_rate, ages)
+        if len(summaries) > 1:
+            w[-1] *= 0.35
+        w = w / max(float(np.sum(w)), 1e-12)
+
+        terminal = float(np.sum([wi * s['terminal_singleton'] for wi, s in zip(w, summaries)]))
+        two_run = float(np.sum([wi * s['two_run'] for wi, s in zip(w, summaries)]))
+        switch_density = float(np.sum([wi * s['switch_density'] for wi, s in zip(w, summaries)]))
+        susceptibility = float(np.sum([wi * s['susceptibility'] for wi, s in zip(w, summaries)]))
+
+        hist = np.zeros(5, dtype=float)
+        mass = 0.0
+        for wi, s in zip(w, summaries):
+            fr = s['fractions']
+            if fr.size == 0:
+                continue
+            contribution = float(wi) / float(fr.size)
+            for f in fr:
+                j = min(4, max(0, int(np.floor(5.0 * float(f)))))
+                hist[j] += contribution
+                mass += contribution
+        if mass > 0.0:
+            p = hist / mass
+            concentration = float(np.sum(p ** 2))
+            positive = p[p > 0.0]
+            entropy = float(-np.sum(positive * np.log(positive)) / np.log(5.0))
+        else:
+            concentration = 0.2
+            entropy = 1.0
+
+        validity_gradient = float(np.clip(np.std(reliability) / max(np.mean(reliability), 1e-8), 0.0, 2.0))
+        score = (1.30
+                 + 1.20 * (terminal - 0.30)
+                 + 1.20 * (concentration - 0.30)
+                 + 0.80 * (two_run - 0.50)
+                 - 1.50 * (entropy - 0.70)
+                 - 0.70 * (switch_density - 0.25)
+                 - 0.20 * validity_gradient
+                 + 0.85 * (susceptibility - 0.35))
+        return 1.0 / (1.0 + np.exp(-1.90 * np.clip(score - 1.30, -30.0, 30.0)))
+
+    def one_subject(frame):
+        summaries = []
+        records = []
+        for _, row in frame.iterrows():
+            s = summarize(row['option_a_ratings'], row['option_b_ratings'])
+            if s is None:
+                continue
+            summaries.append(s)
+
+            # Average across the advocated learning-rate range to reduce
+            # sensitivity to unknown individual parameter values.
+            x = float(np.mean([context_value(summaries, lr) for lr in (0.05, 0.085, 0.12)]))
+
+            # Retain conflict sequences only. The three canonical geometries
+            # are +-----, +++-, and +++++- (including their A/B reversals).
+            if len(s['canonical']) > 1 and len(set(s['canonical'])) > 1:
+                chosen_direction = 1.0 if int(row['response']) == 0 else -1.0
+                y = 1.0 if chosen_direction == s['terminal_direction'] else -1.0
+                records.append((s['canonical'], x, y))
+
+        if len(records) < 4:
+            return 0.0
+
+        residual_x = np.zeros(len(records), dtype=float)
+        keys = [r[0] for r in records]
+        xvals = np.asarray([r[1] for r in records], dtype=float)
+        yvals = np.asarray([r[2] for r in records], dtype=float)
+
+        for key in set(keys):
+            loc = np.asarray([k == key for k in keys], dtype=bool)
+            residual_x[loc] = xvals[loc] - float(np.mean(xvals[loc]))
+
+        rms = float(np.sqrt(np.mean(residual_x ** 2)))
+        if not np.isfinite(rms) or rms < 1e-10:
+            return 0.0
+        z = residual_x / rms
+        return float(np.mean(z * yvals))
+
+    if 'subject_id' in data.columns:
+        values = [one_subject(g) for _, g in data.groupby('subject_id', sort=False)]
+        return float(np.mean(values)) if values else 0.0
+    return one_subject(data)
+
+```
+
+**Observed (real) value:** 0.0311 (var=0.0170)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.0165 (var=0.0056) (Δ vs real -0.0146)
+  - iter 2 (current): -0.0011 (var=0.0107) (Δ vs real -0.0322)
+**Other theories' values on this metric (for reference):**
+- pi_9: 0.1406 (var=0.0138)
+- pi_3: -0.0111 (var=0.0098)
+- pi_1: -0.0000 (var=0.0077)
+- pi_2: -0.0071 (var=0.0059)
+- pi_4: 0.0090 (var=0.0080)
+- pi_5: 0.0102 (var=0.0090)
+- pi_6: 0.0001 (var=0.0112)
+- pi_7: -0.0004 (var=0.0066)
+- pi_8: -0.0155 (var=0.0095)
+- pi_10: 0.0122 (var=0.0056)
+
+### Experiment 17
+**Design**
+  A=[0, 1, 1, 1, 1, 0]  B=[0, 0, 0, 0, 0, 1]
+  A=[0, 0, 0, 0, 0, 1]  B=[0, 1, 1, 1, 1, 0]
+  A=[0, 1, 0, 1, 1, 0]  B=[0, 0, 1, 0, 0, 1]
+  A=[0, 0, 1, 0, 0, 1]  B=[0, 1, 0, 1, 1, 0]
+  A=[1, 1, 1, 1, 1, 0]  B=[0, 0, 0, 0, 0, 1]
+  A=[0, 0, 0, 0, 0, 1]  B=[1, 1, 1, 1, 1, 0]
+  A=[1, 0, 1, 1, 1, 0]  B=[0, 1, 0, 0, 0, 1]
+  A=[0, 1, 0, 0, 0, 1]  B=[1, 0, 1, 1, 1, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    coherent_terminal = []
+    fragmented_terminal = []
+
+    for _, row in data.iterrows():
+        a = np.asarray(row["option_a_ratings"], dtype=float)
+        b = np.asarray(row["option_b_ratings"], dtype=float)
+        diff = a - b
+        directions = np.sign(diff[diff != 0])
+        m = int(directions.size)
+
+        if m not in (5, 6):
+            continue
+
+        # The diagnostic displays have a singleton terminal reversal.
+        terminal_singleton = bool(
+            m >= 2 and directions[-1] != directions[-2]
+        )
+        if not terminal_singleton:
+            continue
+
+        terminal_direction = float(directions[-1])
+        response = int(row["response"])
+        chose_terminal_option = float(
+            (terminal_direction > 0 and response == 0)
+            or (terminal_direction < 0 and response == 1)
+        )
+
+        prefix = directions[:-1]
+        coherent = bool(
+            prefix.size > 0
+            and np.all(prefix == prefix[0])
+            and prefix[0] != terminal_direction
+        )
+
+        if coherent:
+            coherent_terminal.append(chose_terminal_option)
+        else:
+            fragmented_terminal.append(chose_terminal_option)
+
+    if len(coherent_terminal) == 0 or len(fragmented_terminal) == 0:
+        return float("nan")
+
+    raw_contrast = (
+        float(np.mean(coherent_terminal))
+        - float(np.mean(fragmented_terminal))
+    )
+
+    # A 10-percentage-point dead band treats smaller differences as negligible;
+    # effects of 30 percentage points or more receive the ceiling score.
+    return float(np.clip((raw_contrast - 0.10) / 0.20, 0.0, 1.0))
+```
+
+**Observed (real) value:** 0.0000 (var=0.0000)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.0000 (var=0.0022) (Δ vs real +0.0000)
+  - iter 2 (current): 0.0000 (var=0.0000) (Δ vs real +0.0000)
+**Other theories' values on this metric (for reference):**
+- pi_3: 0.0000 (var=0.0227)
+- pi_10: 1.0000 (var=0.0480)
+- pi_1: 0.0000 (var=0.0049)
+- pi_2: 0.0000 (var=0.0011)
+- pi_4: 0.0000 (var=0.0000)
+- pi_5: 0.0000 (var=0.0773)
+- pi_6: 0.0000 (var=0.0043)
+- pi_7: 0.0000 (var=0.0000)
+- pi_8: 0.0000 (var=0.0013)
+- pi_9: 0.0000 (var=0.0000)
+
+### Experiment 18
+**Design**
+  A=[1, 1, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 1]
+  A=[1, 1, 1, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 1]
+  A=[1, 1, 1, 1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 1]
+  A=[1, 1, 1, 1, 1, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 1]
+  A=[1, 1, 1, 1, 1, 1, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 1]
+  A=[1, 1, 1, 1, 1, 1, 1, 0]  B=[0, 0, 0, 0, 0, 0, 0, 1]
+  A=[0, 0, 0, 0, 0, 0, 0, 1]  B=[1, 1, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 1]  B=[1, 1, 1, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 1]  B=[1, 1, 1, 1, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 1]  B=[1, 1, 1, 1, 1, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 1]  B=[1, 1, 1, 1, 1, 1, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 1]  B=[1, 1, 1, 1, 1, 1, 1, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    # Code whether the response selected the option favored by the final
+    # discriminating expert in descending-validity order. In this experiment,
+    # feature columns are already ordered from highest to lowest validity.
+    by_load = {4: [], 5: [], 6: [], 7: []}
+
+    for _, row in data.iterrows():
+        a = np.asarray(row["option_a_ratings"], dtype=float)
+        b = np.asarray(row["option_b_ratings"], dtype=float)
+        diff = a - b
+        discriminating = np.flatnonzero(diff != 0)
+        if discriminating.size == 0:
+            continue
+
+        load = int(discriminating.size)
+        if load not in by_load:
+            continue
+
+        final_index = int(discriminating[-1])
+        terminal_option = 0 if diff[final_index] > 0 else 1
+        terminal_chosen = float(int(row["response"]) == terminal_option)
+        by_load[load].append(terminal_chosen)
+
+    if any(len(by_load[m]) == 0 for m in (4, 5, 6, 7)):
+        return float("nan")
+
+    p = {m: float(np.mean(by_load[m])) for m in (4, 5, 6, 7)}
+    # Average of the upward boundary jump (4->5) and downward boundary
+    # jump in terminal choice (6->7).
+    return float(0.5 * ((p[5] - p[4]) + (p[6] - p[7])))
+```
+
+**Observed (real) value:** 0.0262 (var=0.0075)
+**Candidate trajectory (this loop):**
+  - iter 1: -0.0062 (var=0.0069) (Δ vs real -0.0325)
+  - iter 2 (current): -0.0031 (var=0.0179) (Δ vs real -0.0294)
+**Other theories' values on this metric (for reference):**
+- pi_10: 0.2694 (var=0.0251)
+- pi_3: -0.0175 (var=0.0140)
+- pi_1: -0.0075 (var=0.0060)
+- pi_2: 0.0087 (var=0.0069)
+- pi_4: -0.0919 (var=0.0133)
+- pi_5: -0.0750 (var=0.0168)
+- pi_6: 0.0356 (var=0.0134)
+- pi_7: -0.1919 (var=0.0090)
+- pi_8: 0.0144 (var=0.0064)
+- pi_9: 0.0100 (var=0.0112)
+
+## YOUR PRIOR CRITIQUES (for this propose-loop)
+Each block is one of YOUR previous critique iterations: the verdict you returned, the interpretation and rationale you wrote, and an **Outcome of your advice** line that says whether the candidate the proposer produced AFTER following your advice was ACCEPTED (your advice helped — its loss strictly beat the running-best) or REJECTED (your advice didn't help — the gate discarded the candidate). Use this self-history to (a) reinforce advice that was ACCEPTED, (b) avoid repeating advice that was REJECTED, and (c) detect your own oscillation across iterations.
+
+### Iteration 1 (most recent)
+Verdict: regenerate
+Interpretation: The candidate is faithful to the prescribed distributed, continuously weighted serial-integration family and successfully removes the prohibited structural effects. It fits the null coherence/foregrounding/history diagnostics in Experiments 7, 14, 16, 17, and 18, and it is also close in Experiments 8 and 10. However, its central reliability-by-recency calibration is not experiment-invariant. It overstates terminal/late control in Experiments 3 (0.715 versus 0.575) and 6 (early choice 0.126 versus 0.307), while simultaneously understating terminal control in Experiments 4 (0.489 versus 0.665), 11 (0.385 versus 0.843), 12 (majority choice 0.314 versus 0.171), and 13 (0.755 versus 0.881). It also produces excessive tally-conditioned separation in Experiment 1 (0.825 versus 0.494) and too much highest-validity-cue following in Experiments 2 (0.406 versus 0.194) and 9 (0.125 versus -0.033). This pattern indicates that the accessibility gradient is too steep while the compressed reliability profile still gives exceptionally high-validity early cues too much leverage relative to very low-validity terminal cues. The result is generic late-cue dominance when reliabilities are relatively similar, but inadequate terminal control when the terminal cue has extremely low instructed validity and faces an early coalition. Experiment 5's nonzero sequence contrast (-0.098 versus 0.003) is another consequence of overly position-sensitive weighting. The unanimous-load decline is also slightly too weak in Experiment 15 (0.003 versus 0.047), although avoiding a large fatigue effect is directionally correct.
+Rationale: Keep the current mechanism family, but recalibrate its two main continuous gradients rather than adding sequence classes or capacity boundaries. Flatten validity weighting further by lowering or narrowing `validity_compression`, especially at its upper end, so extremely high-validity early cues do not dominate Experiments 2, 9, and 11 and low-validity terminal evidence remains behaviorally potent. At the same time, raise `memory_retention` moderately so earlier distributed traces survive enough to reduce excessive generic recency in Experiments 1, 3, 5, and 6. The combination—not either change alone—is important: flatter reliability should improve terminal control in Experiments 4, 11, 12, and 13, whereas greater retention should prevent that change from worsening the already excessive terminal effects in Experiments 3 and 6. A plausible next search should extend compression below 0.22 and shift retention above the current 0.22–0.44 range, with joint fitting rather than independent broad sampling. After fixing this tradeoff, modestly increase the unanimous component of vigilance/readout degradation to recover Experiment 15's small decline, but keep it weak enough to preserve the successful avoidance of pi_3-style fatigue. Preserve the history-free implementation and the absence of coherence, gap, singleton, and hard-window rules.
+
+**Outcome of your advice:** iter 1 candidate loss=0.1710 -> CURRENT candidate loss=0.1577 -> the gate marked it ACCEPTED.
+
+## RESPONSE FORMAT
+
+Return a JSON object with the following fields:
+- interpretation: Freeform analysis of the model simulation results on existing experiments and how they do or do not support the proposed model/theory.
+- verdict: Either 'regenerate' (regenerate a new model/theory) or 'continue' (keep the current model/theory).
+- rationale: If verdict='regenerate', why the current predict / policy / parameter-ranges should be revised. If verdict='continue', a sketch of why the current theory should be kept.
+
+
+## Response
+
+```json
+{
+  "interpretation": "The accepted recalibration improved aggregate loss and substantially repaired Experiments 2, 4, 11, 12, and 13, so the previous joint push toward flatter reliability weighting and greater retention was useful. The candidate also remains faithful to the prescribed distributed, history-free integration family and correctly yields null structural effects in Experiments 7, 14, 16, 17, and 18. Nevertheless, the fit is not yet experiment-invariant. It is now too choice-deterministic under many conflicts: Experiment 1's tally contrast is 0.895 versus 0.494, Experiment 3's terminal agreement is 0.690 versus 0.575, Experiment 6's early choice is only 0.065 versus 0.307, Experiment 9's early-cue association is 0.177 versus -0.033, and Experiment 10's terminal agreement is 0.942 versus 0.875. Experiment 12 likewise overshoots terminal control, driving majority choice below the target (0.103 versus 0.171). At the same time, terminal evidence remains too weak in Experiments 8, 11, and 13. Thus a single nearly flat power transform has traded one problem for another: exponents near zero erase useful moderate reliability differences, producing almost pure recency in Experiments 1, 3, 6, and 9, yet the coalition structure still prevents sufficiently strong singleton-terminal control in Experiments 8 and 11. The very low simulated between-subject variances in several of these experiments reinforce the diagnosis of overly categorical population predictions. The unanimous-load decline also remains too small in Experiment 15 (0.004 versus 0.047).",
+  "verdict": "regenerate",
+  "rationale": "Continue tuning within the prescribed recurrent evidence-integration family, but do not simply flatten validity further or reverse wholesale to the old compression range. The accepted change shows that extreme high-versus-low reliability differences need compression, while the new failures show that near-zero power exponents flatten the entire reliability profile too aggressively. Replace the current pure-power normalization with a bounded saturating transform of log odds that caps exceptionally reliable cues and floors very weak cues while retaining distinctions among moderate validities. This should preserve the gains for low-validity terminal cues in Experiments 4, 11, and 13 without turning Experiments 1, 3, 6, and 9 into near-pure recency tasks. In addition, modestly lower or cap `decision_gain` (or equivalently increase smooth conflict readout noise) to reduce the excessive polarization in Experiments 1, 3, 6, 9, 10, and 12; avoid a large reduction that would erase the strong terminal effects in Experiments 4 and 13. Broader continuous heterogeneity in retention or gain may also recover the observed variances without introducing stimulus classes. Finally, the previous vigilance increase barely changed Experiment 15, so do not repeat that adjustment alone: slightly raise the unanimous/coherent floor of the load-dependent readout-noise multiplier instead, keeping it far below the conflict multiplier. Preserve the successful history independence and the absence of coherence, gap, singleton, and hard-window rules."
+}
+```
+
+## Usage
+
+```json
+{
+  "input_tokens": 24784,
+  "output_tokens": 2336
+}
+```

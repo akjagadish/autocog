@@ -1,0 +1,486 @@
+# Round 2 — Theories
+
+**Verdict:** `new_theory` (slot 1 replaced)
+
+## Starting theories
+
+### slot 1 — `pi_3` — KILLED ✗
+
+**Description:** Accessibility-Balanced Evidence Integration proposes that people encode each communicated cue validity as a subjective diagnosticity signal and combine it with a separate positional-accessibility signal. Diagnosticity favors objectively valid cues, with nonlinear compression or sharpening of validity differences, whereas accessibility can favor cues appearing later or lower in the display. A subject-specific balance determines how strongly each code influences cue weight. On each choice, all discriminating cues contribute their signed evidence to a common accumulator; therefore, several opposing cues can gradually overcome an initially favored cue. Because the accumulator retains evidence magnitude and configuration, the theory predicts graded coalition effects rather than selecting either the first or last discriminating cue. Evidence supporting each option exhibits mild, imbalance-dependent within-coalition diminishing returns before the two directional totals are compared, followed by ordinary response noise and occasional lapses.
+
+**Rationale:** This is the smallest normalization correction to the accepted model. All cue representations, validity-position weights, parameter ranges, response noise, and lapse mechanisms remain unchanged. The only computational edit replaces absolute directional-count normalization with normalization relative to the smaller opposing coalition. In Experiment 1, where one top-cue vote faces a coalition of k lower cues, the minority denominator remains 1 and the majority denominator remains k raised to coalition_saturation, making the computation identical to the accepted candidate and preserving its close fit. In Experiment 2, equal-sized opposing coalitions now both have denominator 1 rather than being jointly attenuated by their absolute size. This allows the existing position-sensitive cue configuration to produce stronger opposition to the first discriminating cue without globally increasing recency or beta. The mechanism remains compensatory and graded: changing coalition imbalance, cue positions, or cue validities continuously changes accumulated evidence, unlike reverse-order Take The Best.
+
+**Parameters:**
+  - `validities`: `validities`
+  - `validity_position_balance`: `[0.25, 0.35]`
+  - `recency_gradient`: `[1.8, 2.4]`
+  - `validity_curvature`: `[0.65, 1.0]`
+  - `coalition_saturation`: `[0.65, 0.8]`
+  - `beta`: `[0.65, 1.15]`
+  - `epsilon`: `[0.02, 0.08]`
+
+**`predict(parameters, stimulus, history)`:**
+```python
+def predict(parameters, state, history):
+    stim = np.asarray(state, dtype=np.float64)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(
+            f"Accessibility-Balanced Integration expects shape (2, n_features); got {stim.shape}."
+        )
+
+    a, b = stim[0], stim[1]
+    n_features = stim.shape[1]
+
+    validities = np.asarray(parameters["validities"], dtype=np.float64)
+    if validities.ndim != 1 or validities.size != n_features:
+        raise ValueError(
+            f"validities length {validities.size} != n_features {n_features}."
+        )
+
+    balance = float(parameters["validity_position_balance"])
+    recency = float(parameters["recency_gradient"])
+    curvature = float(parameters["validity_curvature"])
+    coalition_saturation = float(parameters["coalition_saturation"])
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+
+    # Communicated validities are represented as log-odds diagnosticities.
+    # Curvature captures sharpening or compression of perceived differences.
+    v = np.clip(validities, 0.500001, 0.999999)
+    diagnosticity = np.log(v / (1.0 - v))
+    max_diagnosticity = float(np.max(diagnosticity))
+    if max_diagnosticity > 0.0:
+        diagnosticity = diagnosticity / max_diagnosticity
+    else:
+        diagnosticity = np.ones(n_features, dtype=np.float64)
+    diagnosticity = np.power(np.maximum(diagnosticity, 0.0), curvature)
+    diagnosticity /= max(float(np.mean(diagnosticity)), 1e-12)
+
+    # Later/lower display positions have greater accessibility when recency > 0.
+    if n_features == 1:
+        position = np.zeros(1, dtype=np.float64)
+    else:
+        position = np.arange(n_features, dtype=np.float64) / float(n_features - 1)
+    accessibility = np.exp(recency * position)
+    accessibility /= max(float(np.mean(accessibility)), 1e-12)
+
+    # A convex mixture makes the validity-versus-position tradeoff explicit.
+    weights = balance * diagnosticity + (1.0 - balance) * accessibility
+    weights /= max(float(np.mean(weights)), 1e-12)
+
+    differences = a - b
+    discriminating = differences != 0.0
+    n_discriminating = int(np.sum(discriminating))
+    if n_discriminating == 0:
+        return np.array([0.5, 0.5], dtype=np.float64)
+
+    # Evidence is accumulated separately for the two options. Diminishing
+    # returns depend on directional coalition imbalance rather than absolute
+    # coalition size, preserving full configuration evidence for equal-sized
+    # coalitions while tempering a numerical majority against a minority.
+    positive = differences > 0.0
+    negative = differences < 0.0
+    n_positive = max(int(np.sum(positive)), 1)
+    n_negative = max(int(np.sum(negative)), 1)
+    min_coalition = min(n_positive, n_negative)
+    positive_evidence = float(np.dot(weights, np.maximum(differences, 0.0)))
+    negative_evidence = float(np.dot(weights, np.maximum(-differences, 0.0)))
+    evidence_a = (
+        positive_evidence
+        / (max(1.0, float(n_positive) / float(min_coalition)) ** coalition_saturation)
+        - negative_evidence
+        / (max(1.0, float(n_negative) / float(min_coalition)) ** coalition_saturation)
+    )
+
+    logits = np.array(
+        [0.5 * beta * evidence_a, -0.5 * beta * evidence_a],
+        dtype=np.float64,
+    )
+    logits -= np.max(logits)
+    probs = np.exp(logits)
+    probs /= probs.sum()
+
+    probs = (1.0 - epsilon) * probs + epsilon * 0.5
+    probs = np.maximum(probs, 0.0)
+    probs /= probs.sum()
+    return probs
+```
+
+**`policy(probs)`:**
+```python
+def policy(probs):
+    probs = np.asarray(probs, dtype=np.float64)
+    probs = np.maximum(probs, 0.0)
+    total = float(probs.sum())
+    if not np.isfinite(total) or total <= 0.0:
+        probs = np.ones(len(probs), dtype=np.float64) / float(len(probs))
+    else:
+        probs /= total
+    return int(np.random.choice(len(probs), p=probs))
+```
+
+
+### slot 2 — `pi_4` — SURVIVED ✓
+
+**Description:** Switch-Closure Coalition Integration proposes that people encode communicated cue validities in a strongly compressed form and then organize simultaneously supporting cues into directional coalitions. Evidence contributed by a coalition grows sublinearly with its size, so each additional cue matters but has diminishing impact. Attention is configuration-dependent rather than governed by a universal positional gradient. A conflict between two singleton cues receives no positional weighting. When equally sized multi-cue coalitions compete, completing the later coalition produces a small switch-closure advantage because it is the most recently completed coherent interpretation. When coalition sizes differ, attention favors coalitions that begin early and remain locally coherent, but this structural gate is strongest for nearly balanced multi-cue conflicts such as three-versus-two and attenuated when a singleton competes with a growing coalition. Thus positional effects can reverse across configurations: terminal closure can favor the later side in balanced coalitions, early coherent organization can dominate nearly balanced multi-cue conflicts, and singleton-versus-coalition decisions remain governed primarily by gradual accumulation. Subject-specific compression, accumulation, attention, response sensitivity, and lapse parameters produce heterogeneity without trial-by-trial learning, which is appropriate because the task provides no outcome feedback.
+
+**Rationale:** This is a one-line parameter-range edit to the accepted iter-2 model. Only `near_balance_gain` is shifted modestly upward, from `[3.5, 5.5]` to `[4.75, 6.25]`. This isolates the mechanism that successfully moved Experiment 3 toward its observed negative covariance while using a smaller, intermediate increase rather than repeating the rejected joint shift. In particular, `balanced_terminal_attention` remains at its accepted range because increasing it produced the large Experiment 2 overshoot. All mechanisms governing singleton-versus-coalition trials, validity compression, accumulation, response noise, and the singleton-versus-singleton positional bypass remain unchanged, preserving the accepted fits in Experiments 1 and 4.
+
+**Parameters:**
+  - `validities`: `validities`
+  - `validity_compression`: `[0.20, 0.45]`
+  - `validity_reliance`: `[0.03, 0.08]`
+  - `accumulation_saturation`: `[0.72, 0.84]`
+  - `balanced_terminal_attention`: `[0.42, 0.56]`
+  - `coalition_primacy`: `[0.12, 0.25]`
+  - `coherence_gain`: `[0.03, 0.10]`
+  - `near_balance_gain`: `[4.75, 6.25]`
+  - `singleton_gate_scale`: `[0.20, 0.45]`
+  - `beta`: `[0.75, 1.05]`
+  - `epsilon`: `[0.03, 0.09]`
+
+**`predict(parameters, stimulus, history)`:**
+```python
+def predict(parameters, state, history):
+    stim = np.asarray(state, dtype=np.float64)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(
+            f"Switch-Closure Coalition Integration expects shape (2, n_features); got {stim.shape}."
+        )
+
+    a, b = stim[0], stim[1]
+    n_features = stim.shape[1]
+    validities = np.asarray(parameters["validities"], dtype=np.float64)
+    if validities.ndim != 1 or validities.size != n_features:
+        raise ValueError(
+            f"validities length {validities.size} != n_features {n_features}."
+        )
+
+    validity_compression = float(parameters["validity_compression"])
+    validity_reliance = float(parameters["validity_reliance"])
+    accumulation_saturation = float(parameters["accumulation_saturation"])
+    balanced_terminal_attention = float(parameters["balanced_terminal_attention"])
+    coalition_primacy = float(parameters["coalition_primacy"])
+    coherence_gain = float(parameters["coherence_gain"])
+    near_balance_gain = float(parameters["near_balance_gain"])
+    singleton_gate_scale = float(parameters["singleton_gate_scale"])
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+
+    # Compress communicated diagnosticities and mix them with a common
+    # baseline. This preserves validity information without allowing one
+    # instructed number to become lexicographically decisive.
+    v = np.clip(validities, 0.500001, 0.999999)
+    diagnosticity = np.log(v / (1.0 - v))
+    diagnosticity = np.power(np.maximum(diagnosticity, 1e-12), validity_compression)
+    diagnosticity /= max(float(np.mean(diagnosticity)), 1e-12)
+    cue_weights = (1.0 - validity_reliance) + validity_reliance * diagnosticity
+    cue_weights /= max(float(np.mean(cue_weights)), 1e-12)
+
+    differences = a - b
+    pos_idx = np.flatnonzero(differences > 0.0)
+    neg_idx = np.flatnonzero(differences < 0.0)
+    n_pos = int(pos_idx.size)
+    n_neg = int(neg_idx.size)
+
+    if n_pos == 0 and n_neg == 0:
+        return np.array([0.5, 0.5], dtype=np.float64)
+
+    def coalition_evidence(indices):
+        n = int(indices.size)
+        if n == 0:
+            return 0.0
+        # Division by n**saturation gives sublinear accumulation:
+        # total evidence grows as approximately n**(1-saturation).
+        return float(np.sum(cue_weights[indices])) / (float(n) ** accumulation_saturation)
+
+    def coalition_structure(indices):
+        n = int(indices.size)
+        if n < 2:
+            return 0.0, 0.0
+        scale = float(max(n_features - 1, 1))
+        onset_primacy = 1.0 - float(indices[0]) / scale
+        adjacent_links = float(np.sum(np.diff(indices) == 1))
+        coherence = adjacent_links / float(n - 1)
+        return onset_primacy, coherence
+
+    evidence_a = coalition_evidence(pos_idx)
+    evidence_b = coalition_evidence(neg_idx)
+    log_gate_a = 0.0
+    log_gate_b = 0.0
+
+    if n_pos == 1 and n_neg == 1:
+        # A pure singleton-versus-singleton conflict has no positional gate.
+        pass
+    elif n_pos == n_neg and n_pos >= 2:
+        # Balanced multi-cue interpretations receive a bounded closure effect.
+        # It depends on which coalition supplies the final piece of
+        # discriminating evidence, not on a fixed weight for every position.
+        last_pos = int(pos_idx[-1])
+        last_neg = int(neg_idx[-1])
+        half = 0.5 * balanced_terminal_attention
+        if last_pos > last_neg:
+            log_gate_a += half
+            log_gate_b -= half
+        elif last_neg > last_pos:
+            log_gate_b += half
+            log_gate_a -= half
+    else:
+        # In unequal conflicts, early and coherent coalitions are chunked and
+        # maintained more effectively. The gate is amplified when both sides
+        # form multi-cue, nearly balanced coalitions, but attenuated when one
+        # side is a singleton so that growing opposition accumulates gradually.
+        onset_a, coherence_a = coalition_structure(pos_idx)
+        onset_b, coherence_b = coalition_structure(neg_idx)
+        raw_a = coalition_primacy * onset_a + coherence_gain * coherence_a
+        raw_b = coalition_primacy * onset_b + coherence_gain * coherence_b
+        center = 0.5 * (raw_a + raw_b)
+        log_gate_a = raw_a - center
+        log_gate_b = raw_b - center
+
+        if min(n_pos, n_neg) >= 2 and abs(n_pos - n_neg) == 1:
+            log_gate_a *= near_balance_gain
+            log_gate_b *= near_balance_gain
+        elif min(n_pos, n_neg) == 1:
+            log_gate_a *= singleton_gate_scale
+            log_gate_b *= singleton_gate_scale
+
+    evidence_a *= np.exp(np.clip(log_gate_a, -20.0, 20.0))
+    evidence_b *= np.exp(np.clip(log_gate_b, -20.0, 20.0))
+    net_a = evidence_a - evidence_b
+
+    logits = np.array([0.5 * beta * net_a, -0.5 * beta * net_a], dtype=np.float64)
+    logits -= np.max(logits)
+    probs = np.exp(logits)
+    probs /= probs.sum()
+
+    probs = (1.0 - epsilon) * probs + epsilon * 0.5
+    probs = np.maximum(probs, 0.0)
+    probs /= probs.sum()
+    return probs
+```
+
+**`policy(probs)`:**
+```python
+def policy(probs):
+    probs = np.asarray(probs, dtype=np.float64)
+    probs = np.maximum(probs, 0.0)
+    total = float(probs.sum())
+    if not np.isfinite(total) or total <= 0.0:
+        probs = np.ones(len(probs), dtype=np.float64) / float(len(probs))
+    else:
+        probs /= total
+    return int(np.random.choice(len(probs), p=probs))
+```
+
+
+## Replacement
+
+### `pi_5` → slot 1 (via `new_theory`)
+
+**Description:** Reliability-Compressed Parsing Mixtures proposes that communicated cue validities are strongly compressed and all discriminating cues enter a diminishing-returns accumulator. Stable subject-level styles allocate attention among reliability, coalition size, and locally parsed cue groups. Display position has no universal primacy or recency gradient: configuration effects arise from chunk binding and weak interpretation completion. In nearly balanced three-versus-two conflicts, parsing is sensitive to the internal ordering of compact and fragmented portions of a coalition; this translation-invariant run-asymmetry can reverse associations with recency-weighted predictions without assigning greater weight to later cues themselves. Balanced two-versus-two conflicts retain sign-varying parsing effects that cancel at the population level. Completion in conflicts between two coalitions of at least three cues is population-common but weak, graded, and heterogeneous rather than deterministic. Signed size calibration creates stable divisions between subjects who treat an additional cue as corroboration and those who treat it as redundant.
+
+**Rationale:** This is a minimal two-range edit to the accepted model. The balanced-large-coalition completion range is reduced from [0.54, 0.70] to [0.38, 0.50], approximately the further 20–30% reduction recommended by the critic. Because this term is restricted to equal coalitions of at least three cues, the change should move Experiment 2's overly negative aggregate effect toward the observed value without altering singleton conflicts, balanced two-versus-two nulls, or the three-versus-two subject split. The 3-versus-2-specific imbalanced_group_gain is increased from [2.50, 3.75] to [4.50, 6.50], roughly a 1.75-fold increase at the midpoint. This retains the centered run-coherence descriptor whose ordering was empirically validated by the previous accepted iteration while strengthening its still-insufficient negative association in Experiment 3. No global parsing, reliability, temperature, positional, or size-allocation mechanism is changed, preserving the strong fits in Experiments 1, 5, and 6 and avoiding a universal recency or primacy gradient.
+
+**Parameters:**
+  - `validities`: `validities`
+  - `integration_style`: `{0, 1, 2, 3, 4, 5, 6, 7, 8}`
+  - `validity_compression`: `[0.20, 0.42]`
+  - `coalition_saturation`: `[0.74, 0.86]`
+  - `size_calibration`: `[1.25, 1.65]`
+  - `parsing_strength`: `[0.12, 0.30]`
+  - `imbalanced_group_gain`: `[4.50, 6.50]`
+  - `completion_strength`: `[0.38, 0.50]`
+  - `beta`: `[0.95, 1.30]`
+  - `epsilon`: `[0.03, 0.09]`
+
+**`predict(parameters, stimulus, history)`:**
+```python
+def predict(parameters, state, history):
+    stim = np.asarray(state, dtype=np.float64)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(
+            f"Reliability-Compressed Parsing Mixtures expects shape (2, n_features); got {stim.shape}."
+        )
+
+    a, b = stim[0], stim[1]
+    n_features = int(stim.shape[1])
+    validities = np.asarray(parameters["validities"], dtype=np.float64)
+    if validities.ndim != 1 or validities.size != n_features:
+        raise ValueError(
+            f"validities length {validities.size} != n_features {n_features}."
+        )
+
+    style = int(parameters["integration_style"])
+    validity_compression = float(parameters["validity_compression"])
+    coalition_saturation = float(parameters["coalition_saturation"])
+    size_calibration = float(parameters["size_calibration"])
+    parsing_strength = float(parameters["parsing_strength"])
+    imbalanced_group_gain = float(parameters["imbalanced_group_gain"])
+    completion_strength = float(parameters["completion_strength"])
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+
+    # Reliability differences are represented but strongly compressed.
+    v = np.clip(validities, 0.500001, 0.999999)
+    diagnosticity = np.log(v / (1.0 - v))
+    diagnosticity = np.power(np.maximum(diagnosticity, 1e-12), validity_compression)
+    diagnosticity /= max(float(np.mean(diagnosticity)), 1e-12)
+
+    # Stable styles differ in reliability attention, but even nominally
+    # reliability-led subjects strongly compress instructed differences.
+    if style <= 3:
+        reliability_attention = 0.02 + 0.01 * style
+    elif style <= 5:
+        reliability_attention = 0.08 + 0.02 * (style - 4)
+    else:
+        reliability_attention = 0.04 + 0.015 * (style - 6)
+
+    cue_weights = (
+        (1.0 - reliability_attention) * np.ones(n_features, dtype=np.float64)
+        + reliability_attention * diagnosticity
+    )
+    cue_weights /= max(float(np.mean(cue_weights)), 1e-12)
+
+    differences = a - b
+    pos_idx = np.flatnonzero(differences > 0.0)
+    neg_idx = np.flatnonzero(differences < 0.0)
+    n_pos = int(pos_idx.size)
+    n_neg = int(neg_idx.size)
+
+    if n_pos == 0 and n_neg == 0:
+        return np.array([0.5, 0.5], dtype=np.float64)
+
+    def accumulated_evidence(indices):
+        n = int(indices.size)
+        if n == 0:
+            return 0.0
+        # All cues contribute, while total evidence grows sublinearly.
+        return float(np.sum(cue_weights[indices])) / (float(n) ** coalition_saturation)
+
+    evidence_a = accumulated_evidence(pos_idx)
+    evidence_b = accumulated_evidence(neg_idx)
+
+    # There is deliberately no fixed position gradient. A subject instead
+    # parses the display into short local chunks whose width and phase are
+    # stable properties of that subject's style.
+    chunk_width = 2 + (style % 3)
+    chunk_phase = style % chunk_width
+
+    def parsing_quality(indices):
+        n = int(indices.size)
+        if n < 2:
+            return 0.0
+        idx = np.asarray(indices, dtype=int)
+        adjacent = float(np.sum(np.diff(idx) == 1)) / float(n - 1)
+        chunk_ids = np.floor_divide(idx + chunk_phase, chunk_width)
+        same_chunk_pairs = 0.0
+        total_pairs = float(n * (n - 1) // 2)
+        for i in range(n):
+            for j in range(i + 1, n):
+                if chunk_ids[i] == chunk_ids[j]:
+                    same_chunk_pairs += 1.0
+        local_binding = same_chunk_pairs / max(total_pairs, 1.0)
+        return 0.2 * adjacent + 0.8 * local_binding
+
+    def centered_run_coherence(indices):
+        # This descriptor depends only on within-coalition gap structure, not
+        # absolute position. Positive values mean compact binding occurs near
+        # the coalition's parsed entry; negative values mean it occurs near
+        # its parsed exit. It is zero for singleton and two-cue coalitions.
+        idx = np.asarray(indices, dtype=int)
+        n = int(idx.size)
+        if n < 3:
+            return 0.0
+        gaps = np.diff(idx).astype(np.float64)
+        binding = np.exp(-(gaps - 1.0))
+        centered_order = np.linspace(1.0, -1.0, binding.size)
+        norm = max(float(np.sum(np.abs(centered_order))), 1.0)
+        return float(np.dot(centered_order, binding) / norm)
+
+    # Multi-cue conflicts receive a weak, signed structural calibration.
+    # Styles 0--3 regard larger coalitions as corroborative; styles 4--8
+    # regard excess members as increasingly redundant. This creates a stable
+    # population split in 3-versus-2 conflicts without changing singleton
+    # comparisons or discarding any cue from the base accumulator.
+    if n_pos >= 2 and n_neg >= 2:
+        size_orientation = 1.0 if style <= 3 else -1.0
+        log_size_ratio = np.log(float(n_pos) / float(n_neg))
+        size_shift = size_orientation * size_calibration * log_size_ratio
+
+        parsing_valences = np.array(
+            [-1.0, 0.75, -0.50, 1.0, -0.75, 0.50, -1.0, 0.75, 0.25],
+            dtype=np.float64,
+        )
+        parse_difference = parsing_quality(pos_idx) - parsing_quality(neg_idx)
+
+        # Nearly balanced 3-versus-2 configurations use centered run
+        # coherence. This distinguishes where compact binding occurs within a
+        # coalition without imposing an absolute early/late accessibility
+        # gradient. Balanced conflicts retain the centered style valences.
+        if min(n_pos, n_neg) == 2 and abs(n_pos - n_neg) == 1:
+            group_multipliers = np.array(
+                [0.80, 1.10, 0.90, 1.20, 0.75, 1.05, 0.85, 1.15, 1.00],
+                dtype=np.float64,
+            )
+            run_difference = (
+                centered_run_coherence(pos_idx)
+                - centered_run_coherence(neg_idx)
+            )
+            parsing_shift = (
+                parsing_strength
+                * imbalanced_group_gain
+                * float(group_multipliers[style])
+                * run_difference
+            )
+        else:
+            parsing_shift = (
+                parsing_strength
+                * float(parsing_valences[style])
+                * parse_difference
+            )
+
+        log_gate_a = 0.5 * (size_shift + parsing_shift)
+        log_gate_b = -0.5 * (size_shift + parsing_shift)
+        evidence_a *= np.exp(np.clip(log_gate_a, -10.0, 10.0))
+        evidence_b *= np.exp(np.clip(log_gate_b, -10.0, 10.0))
+
+    net_a = evidence_a - evidence_b
+
+    # Completion is weak and graded, is absent from singleton and 2-versus-2
+    # conflicts, and never closes the accumulator. Stable differences in its
+    # strength are smaller than the former opposing-sign split.
+    if n_pos == n_neg and n_pos >= 3:
+        completion_multipliers = np.array(
+            [0.85, 0.925, 1.00, 1.075, 1.15, 0.95, 1.05, 0.90, 1.10],
+            dtype=np.float64,
+        )
+        completion = completion_strength * float(completion_multipliers[style])
+        if int(pos_idx[-1]) > int(neg_idx[-1]):
+            net_a += completion
+        elif int(neg_idx[-1]) > int(pos_idx[-1]):
+            net_a -= completion
+
+    logits = np.array([0.5 * beta * net_a, -0.5 * beta * net_a], dtype=np.float64)
+    logits -= np.max(logits)
+    probs = np.exp(logits)
+    probs /= probs.sum()
+
+    probs = (1.0 - epsilon) * probs + epsilon * 0.5
+    probs = np.maximum(probs, 0.0)
+    probs /= probs.sum()
+    return probs
+```
+
+**`policy(probs)`:**
+```python
+def policy(probs):
+    probs = np.asarray(probs, dtype=np.float64)
+    probs = np.maximum(probs, 0.0)
+    total = float(probs.sum())
+    if not np.isfinite(total) or total <= 0.0:
+        probs = np.ones(len(probs), dtype=np.float64) / float(len(probs))
+    else:
+        probs /= total
+    return int(np.random.choice(len(probs), p=probs))
+```

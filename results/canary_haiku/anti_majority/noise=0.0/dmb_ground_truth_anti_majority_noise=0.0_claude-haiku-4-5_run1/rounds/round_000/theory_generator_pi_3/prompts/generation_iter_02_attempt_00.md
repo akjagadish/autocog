@@ -1,0 +1,622 @@
+# generation_iter_02_attempt_00
+
+## System Prompt
+
+You are a renowned cognitive scientist and an expert Python programmer.
+
+Your job is to propose a new theory and its model instantiation in the Decision Making (Binary Features) domain based on the feedback provided by an arbiter. The feedback contains diagnoses of mechanistic failures of the previous theory along with suggestions for a new theory family that overcomes those failures. The newly proposed theory and model should display human-like behavior when simulated on experiment(s). 
+The goal of the theory generation process is to SURFACE theories that are EXPERIMENT-INVARIANT: that is,theories that explain data across the majority of experiments. 
+You will see a list of theories that have been proposed in the past but you should only use them as inspiration and not to choose from them. Propose a new theory that is different. 
+If they fail to do so, you will receive feedback on their performance on the same experiment(s) and you will have to propose another new theory and model that meet the requirements, iterating until you succeed.
+
+If you think the failure to capture human behavior is due to arbiter feedback that is inaccurate or unhelpful, you can propose a new theory and model that ignore the feedback, but you must provide rationale for why you are ignoring it and how your proposal overcomes the identified mechanistic failures.
+
+## ACCEPT GATE & LOSS TRAJECTORY — HOW THE LOOP HANDLES YOUR EDITS
+This propose-loop has a programmatic accept gate: after every iteration the candidate's `aggregate_loss` is compared against the running-best loss; strict improvement -> ACCEPTED (the candidate becomes the new running-best base); otherwise -> REJECTED (the candidate is discarded and the base is unchanged). You do NOT need to manually "revert" a regressed edit — the gate already does that for you.
+
+The block rendered below as `## PREVIOUS CANDIDATE (this loop)` is ALWAYS the running-best (last ACCEPTED) candidate, NEVER your most recent attempt if it was rejected. So:
+  * Treat `## PREVIOUS CANDIDATE` as a known-good base. Build on it.
+  * The `## LOSS TRAJECTORY` block tags every iteration ACCEPTED or REJECTED. Use this as ground truth on which past critic advice actually moved the loop forward and which didn't.
+  * The `## PRIOR FEEDBACK ITERATIONS` block annotates each prior critique with the same ACCEPTED/REJECTED tag of the candidate it elicited. Down-weight critic advice whose previous candidates were REJECTED, and reinforce / extend advice whose candidates were ACCEPTED.
+  * Treat the best ACCEPTED iteration's loss as a soft floor — the next edit should plausibly land at-or-below it, otherwise the gate will reject your attempt and the base stays put.
+
+Each metric value below is shown as `point_estimate (var=X)`, where `point_estimate` is `metric(data)` evaluated on the full pooled dataset and `var` is the population (between-subject) variance of the same metric re-applied per `subject_id`. The point estimate is the canonical scalar; `var` reports how consistent that estimate is across subjects (lower = more consistent). `var=n/a` means the metric could not be applied to a single-subject slice.
+
+## PARAMETER NOTATION
+`parameters` is a JSON object mapping each parameter name (snake_case string) to a *string* value that specifies its domain. Every value MUST be a string — never a bare list, number, tuple, or expression. Use exactly one of these notations per parameter:
+
+1. Continuous interval — square brackets, two numeric bounds:
+   "[min, max]"
+   Examples: "[0, 1]", "[1.0, 10.0]", "[10, 1000]"
+
+2. Discrete set — curly braces, comma-separated values:
+   "{v1, v2, ...}"
+   Example: "{1, 2}"
+
+3. Vector of intervals whose length is set by the experiment — a bracketed tuple repeated by a symbolic length variable:
+   "[(min, max)] * length_var"
+   Example: "[(0, 1)] * n_features"
+
+4. Symbolic reference — a bare variable name (no brackets, no angle brackets), used when the parameter takes its value from an experiment-defined constant rather than a range:
+   "variable_name"
+   Example: "n_features"
+
+Rules:
+- Do not use parentheses for intervals; square brackets only. Tuples `(a, b)` are reserved for the vector-of-intervals notation in (3).
+- Do not mix notations within a single value (e.g., no "[0, 1] or {2, 3}").
+- Do not quote numbers inside the notation (write "[0, 1]", not "['0', '1']").
+- Every parameter referenced by `predict` or `policy` must appear as a key in `parameters`, and vice versa.
+- Notations 3 and 4 may ONLY reference the experiment-defined symbolic identifiers listed under "ALLOWED SYMBOLIC IDENTIFIERS" below. Do not invent new identifier names. If a parameter's shape doesn't fit any of those variables, fall back to a literal interval (notation 1) or discrete set (notation 2). Use these names so the model adapts to any experiment in this domain instead of hardcoding shapes.
+
+## ALLOWED SYMBOLIC IDENTIFIERS (for notations 3 and 4 above)
+- n_features: Number of expert ratings per option (LLM-proposed via `validities` length).
+- validities: Per-expert validities (LLM-proposed; each in [0.5, 1.0]); fixed across all trials.
+
+## AVAILABLE IMPORTS inside `predict` and `policy`
+- numpy as np
+- pandas as pd
+- scipy and its submodules
+- torch and torch.nn.functional as F
+- sklearn and its submodules
+- math, random, and other standard Python libraries
+
+## RUNTIME CONTRACT (function signatures and argument shapes)
+`predict(parameters, state, history) -> np.ndarray`:
+- `parameters`: dict[str, value]. One sample drawn from your declared `parameters` ranges, applied for the entire subject run.
+- `state`: the per-trial input delivered by the experiment (shape is domain-specific — see the experiment description above and the `history` key list below, which mirrors the per-trial variables carried in `state`). Convert to an array with `np.asarray(state)` if you need array ops.
+- `history`: dict-of-lists for past trials in this subject's run, NOT a list-of-dicts. The per-trial keys are:
+  Each value below is a Python list in trial order; entry `i` is the value for trial `i`. On the first trial all lists are empty.
+  - `"option_a_ratings"`: List of n_features binary expert ratings (each 0 or 1) for option A on this trial.
+  - `"option_b_ratings"`: List of n_features binary expert ratings (each 0 or 1) for option B on this trial.
+  - `"response"`: 0 if subject chose A, 1 if subject chose B.
+Iterating `for x in history:` iterates the dict KEYS (strings); to walk trials index the lists in lock-step, e.g. `for i in range(len(next(iter(history.values())))): ...`.
+- Returns: 1-D `np.ndarray` of choice probabilities over the experiment's discrete action set, summing to 1.
+
+`policy(probs) -> int`:
+- Receives the probability vector produced by `predict`.
+- Returns: integer index in `[0, len(probs))` identifying the chosen action. If you sample with `np.random.choice(..., p=probs)`, normalise first (`probs = np.asarray(probs, dtype=np.float64); probs /= probs.sum()`) to avoid the "probabilities do not sum to 1" ValueError from float drift.
+
+
+## User Prompt
+
+## EXPERIMENTAL DOMAIN
+Subjects repeatedly choose between two fictitious products, A and B. Each option is described by a vector of binary expert ratings (each 0 or 1). Every experiment fixes its own feature count (via `validities` length) and per-expert validities; both are LLM-proposed. The validities are communicated to the subject in the instructions. Subjects pick whichever product they believe is of higher quality. There is no trial-by-trial correctness feedback.
+
+Each subject completes ~96 trials in a single block, with order randomized independently per subject. On every trial the subject sees two options A and B, each described by `n_features` binary expert ratings (each 0 or 1). The per-feature validities and n_features are fixed per experiment (design-time choices). Validities are communicated to the subject in the instructions. Both `n_features` and `validities` are exposed to your `predict` via the `parameters` dict. The subject chooses A or B; no correctness feedback is provided after the choice.
+
+## ARBITER GUIDE
+The arbiter labelled this round's two theories in its recommendation as follows:
+- THEORY 1 = `pi_1`
+- THEORY 2 = `pi_2`
+- The recommendation below acts on THEORY 1 (= `pi_1`).
+
+Propose a theory of adaptive or conditional decision-making that blends validity-ordered cascade with equal-weight tallying based on task structure. The key insight from the data: subjects default to Tallying (equal-weight feature counting) when the validity structure is ambiguous or when features are roughly balanced in discriminative power (Experiment 1). However, when the task explicitly creates a sharp validity cliff (Experiment 2: validities [0.95, 0.90, ...] with a large drop to 0.65), subjects partially engage in validity-aware cascade reasoning, though with substantial heterogeneity. The new theory should specify: (1) A primary mechanism: Tallying with equal-weight feature counting as the baseline heuristic. (2) A triggering condition for validity-ordered cascade: When the ratio or gap between top-validity cues and lower cues exceeds a threshold (e.g., >0.25 validity gap), subjects shift partially toward TTB-like cascade. (3) A mixing parameter α that interpolates between Tallying (α=0) and TTB (α=1), modulated by the validity structure. (4) Uncertainty or noise in the validity perception: subjects may not perfectly learn or apply stated validities, introducing heterogeneity. This theory would predict: Experiment 1 (validities [0.9, 0.7, 0.6, 0.55], gaps ≤0.3): α ≈ 0, behavior ≈ Tallying (observed 0.40 ✓). Experiment 2 (validities [0.95, 0.90, 0.65, ...], sharp 0.25 gap): α partially elevated, behavior intermediate between Tallying and TTB (observed 0.23, between -0.44 and 0.46 ✓, with higher variance due to heterogeneous α). The new theory should be called something like 'Adaptive Validity-Aware Tallying' or 'Conditional Cascade-Tallying Hybrid' and should include a principled mechanism for when and how much subjects weight validity ordering versus equal aggregation.
+
+## THEORY LEADERBOARD
+A small set of prior picked theories shown for reference. Overall score is in `[0, 1]`, higher = better, computed as `1 - L2_norm(normalized_per_experiment_distances) / max_L2_norm`. 1.0 means closest to the real value on every experiment+metric pair; 0.0 means farthest. Each entry below carries the same depth of detail as the PREVIOUS MODEL INSTANCE above so you can borrow concrete mechanisms when useful.
+
+### `pi_1` (overall score: 0.000)
+
+**Description**
+People compare two options by consulting cues one at a time in order of validity, stopping at the first cue that discriminates between the two options. That cue alone determines the choice: the option with the higher value on the discriminating cue wins, and no other cue is consulted. Cues with lower validity are never reached when a higher-validity cue already discriminates, so Take The Best is a "one-reason" decision rule — only a single feature is ever used on any given choice. Because only the sign of the comparison on the top discriminating cue matters, TTB ignores both the magnitude of that difference and all information on lower-validity cues, making it maximally frugal in the use of evidence. Cue validities are subjective and can be learned, inferred from instructions, or fixed by task structure. When no cue discriminates (all feature-wise comparisons tie) the learner has no basis for preference and must guess. Response noise enters through a softmax over the binary TTB score (winner = 1, loser = 0) with inverse temperature beta, plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.
+
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, stimulus, history):
+    # Paper-faithful Take The Best (Gigerenzer & Goldstein 1996).
+    # Stimulus is the pair of option feature vectors for the current
+    # trial: array-like of shape (2, n_features), row 0 = option A,
+    # row 1 = option B. Cue cascade: features are consulted in order
+    # of descending validity; the first discriminating cue (strict
+    # inequality) determines the winner; if no cue discriminates,
+    # the model guesses uniformly. History is ignored.
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(
+            f"TTB expects a (2, n_features) stimulus; got shape {stim.shape}."
+        )
+    n_features = stim.shape[1]
+
+    val = np.asarray(parameters["validities"], dtype=float)
+    if val.shape[0] != n_features:
+        raise ValueError(
+            f"validities length {val.shape[0]} != n_features {n_features}."
+        )
+    # Descending validity; argsort is stable so validity ties break
+    # toward the earlier feature index.
+    cue_order = np.argsort(-val, kind="stable").tolist()
+
+    a, b = stim[0], stim[1]
+    winner = None
+    for j in cue_order:
+        if a[j] > b[j]:
+            winner = 0
+            break
+        if b[j] > a[j]:
+            winner = 1
+            break
+
+    if winner is None:
+        # No discriminating cue — pure guess.
+        return np.ones(2) / 2.0
+
+    scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])
+
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+
+    # Softmax with max-subtraction for numerical stability. For the
+    # binary TTB score this collapses to sigmoid(beta) for the winner,
+    # giving a direct mapping from beta onto the paper's flip-noise
+    # levels (beta=0 ↔ 50/50; beta ≫ 1 ↔ deterministic).
+    z = beta * (scores - scores.max())
+    e = np.exp(z)
+    p_core = e / e.sum()
+
+    n_opts = p_core.shape[0]
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+
+
+`policy(probs) -> int`:
+def policy(probabilities):
+    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.
+    return np.random.choice(len(probabilities), p=probabilities)
+
+
+`parameters`:
+- beta: [0.1, 20.0]
+- epsilon: [0.0, 0.5]
+- validities: validities
+
+**Per-experiment fit (real vs this theory's metric value):**
+- Experiment 1: real=0.4012 (var=0.0172) vs this=0.8472 (var=0.0098)
+- Experiment 2: real=0.2300 (var=0.2070) vs this=0.4587 (var=0.0220)
+
+
+---
+
+### `pi_2` (overall score: 0.000)
+
+**Description**
+People compare two options by counting, across all features, how often one option has a higher value than the other. The option that wins on more features is chosen. Tallying discards cardinal magnitudes — only the sign of each feature-wise comparison matters — so the heuristic is robust to monotone rescaling of individual features and cannot be swayed by a single large feature difference in the way Equal-Weight can. Ties on an individual feature contribute nothing to either count: that cue is simply treated as uninformative for the pair. No feature is privileged, in contrast to Take The Best; every cue contributes equally to the tally. When the two counts are equal the heuristic has no basis for preference and the learner must guess. Response noise enters through a softmax over the two tallies with inverse temperature beta (interpolating between fully deterministic choice at large beta and uniform guessing at beta = 0), plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.
+
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, stimulus, history):
+    # Paper-faithful Tallying heuristic (Dawes 1979; Gigerenzer &
+    # Goldstein 1999). Stimulus is the pair of option feature vectors
+    # for the current trial: array-like of shape (2, n_features),
+    # with row 0 = option A, row 1 = option B. History is ignored.
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(
+            f"Tallying expects a (2, n_features) stimulus; got shape {stim.shape}."
+        )
+
+    a, b = stim[0], stim[1]
+    # Count strict feature-wise wins; ties contribute to neither option.
+    a_wins = float(np.sum(a > b))
+    b_wins = float(np.sum(b > a))
+    scores = np.array([a_wins, b_wins])
+
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+
+    # Softmax with max-subtraction for numerical stability. When
+    # a_wins == b_wins the softmax is exactly uniform regardless of
+    # beta, which is the correct behavior for an undiscriminating
+    # tally.
+    z = beta * (scores - scores.max())
+    e = np.exp(z)
+    p_core = e / e.sum()
+
+    n_opts = p_core.shape[0]
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+
+
+`policy(probs) -> int`:
+def policy(probabilities):
+    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.
+    return np.random.choice(len(probabilities), p=probabilities)
+
+
+`parameters`:
+- beta: [0.1, 20.0]
+- epsilon: [0.0, 0.5]
+
+**Per-experiment fit (real vs this theory's metric value):**
+- Experiment 1: real=0.4012 (var=0.0172) vs this=0.4122 (var=0.0053)
+- Experiment 2: real=0.2300 (var=0.2070) vs this=-0.4417 (var=0.0226)
+
+
+## LOSS TRAJECTORY (this propose-loop)
+Aggregate loss across iterations of THIS propose-loop (lower = better, 0 = perfect, `+inf` = unscorable). The ACCEPTED / REJECTED tag is the loop's programmatic accept-gate decision — only ACCEPTED candidates have ever been used as the base for a subsequent iteration. Use this together with PRIOR FEEDBACK ITERATIONS below to grade which past critic advice actually paid off.
+
+- iter 1: loss=0.4197 -> ACCEPTED
+- iter 2: loss=0.3206 -> ACCEPTED
+Running-best (last ACCEPTED) base: iter 2 at loss=0.3206 — this is the source shown verbatim below under `## PREVIOUS CANDIDATE (this loop)`. Push the next edit's loss strictly below that floor or the gate will reject it.
+
+## EXPERIMENTAL RESULTS
+### Experiment 1
+**Design**
+  A=[1, 0, 0, 0]  B=[0, 1, 1, 1]
+  A=[0, 1, 1, 1]  B=[1, 0, 0, 0]
+  A=[1, 1, 0, 0]  B=[0, 0, 1, 1]
+  A=[0, 0, 1, 1]  B=[1, 1, 0, 0]
+  A=[1, 0, 1, 0]  B=[0, 1, 0, 1]
+  A=[0, 1, 0, 1]  B=[1, 0, 1, 0]
+  A=[1, 1, 1, 0]  B=[0, 0, 0, 1]
+  A=[0, 0, 0, 1]  B=[1, 1, 1, 0]
+  A=[1, 1, 1, 1]  B=[0, 0, 0, 0]
+  A=[0, 0, 0, 0]  B=[1, 1, 1, 1]
+  A=[1, 0, 0, 1]  B=[0, 1, 1, 0]
+  A=[0, 1, 1, 0]  B=[1, 0, 0, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    # Metric: Preference for high-validity-cue-favoring choice on conflict trials.
+    # TTB should strongly prefer choices where the highest-validity cue (feature 0)
+    # discriminates, even when lower-validity cues favor the opposite. Tallying
+    # treats all cues equally, so it should show much weaker preference for the
+    # high-validity-cue winner on these conflict trials.
+    #
+    # Strategy: identify trials where feature 0 discriminates (A vs B differ on
+    # feature 0) AND the majority of features 1-3 favor the opposite option.
+    # On such trials, TTB picks the feature-0 winner; Tallying often picks the
+    # opposite (majority of 3 lower cues). We measure the fraction of conflict
+    # trials where the subject chose the feature-0 winner.
+    #
+    # This metric is tight per subject (binary choice on a fixed trial set)
+    # and has a large mean gap between theories.
+    
+    conflict_trials = []
+    
+    for idx, row in data.iterrows():
+        a_ratings = np.asarray(row['option_a_ratings'], dtype=int)
+        b_ratings = np.asarray(row['option_b_ratings'], dtype=int)
+        response = int(row['response'])
+        
+        # Check if feature 0 discriminates
+        if a_ratings[0] == b_ratings[0]:
+            continue
+        
+        # Determine which option wins on feature 0
+        feature_0_winner = 0 if a_ratings[0] > b_ratings[0] else 1
+        
+        # Count wins on features 1-3
+        a_wins_lower = np.sum(a_ratings[1:] > b_ratings[1:])
+        b_wins_lower = np.sum(b_ratings[1:] > a_ratings[1:])
+        
+        # Conflict trial: feature 0 favors one option, majority of features 1-3 favor the other
+        # We need strict majority (at least 2 out of 3) of lower cues to favor the opposite
+        if a_wins_lower > b_wins_lower and feature_0_winner == 1:
+            # Feature 0 favors B, but A wins on majority of lower cues
+            conflict_trials.append((1, response))  # TTB predicts B (1), Tallying often predicts A (0)
+        elif b_wins_lower > a_wins_lower and feature_0_winner == 0:
+            # Feature 0 favors A, but B wins on majority of lower cues
+            conflict_trials.append((0, response))  # TTB predicts A (0), Tallying often predicts B (1)
+    
+    if len(conflict_trials) == 0:
+        return 0.5  # No conflict trials; neutral
+    
+    # Compute fraction of conflict trials where subject chose the feature-0 winner
+    # (i.e., the TTB prediction)
+    ttb_correct = sum(1 for predicted, actual in conflict_trials if predicted == actual)
+    return float(ttb_correct) / len(conflict_trials)
+```
+
+**Observed (real) value:** 0.4012 (var=0.0172)
+**Previous candidate values (this loop):**
+  - iter 1: 0.4619 (var=0.0100) (Δ vs real +0.0606)
+  - iter 2 (most recent): 0.6641 (var=0.0226) (Δ vs real +0.2628)
+**Other theories' values on this metric (for reference):**
+- pi_1: 0.8472 (var=0.0098)
+- pi_2: 0.4122 (var=0.0053)
+
+### Experiment 2
+**Design**
+  A=[1, 1, 1, 0, 0]  B=[1, 1, 0, 1, 1]
+  A=[1, 1, 0, 1, 1]  B=[1, 1, 1, 0, 0]
+  A=[1, 1, 1, 0, 0]  B=[1, 1, 0, 1, 1]
+  A=[1, 1, 0, 1, 1]  B=[1, 1, 1, 0, 0]
+  A=[0, 0, 1, 0, 0]  B=[0, 0, 0, 1, 1]
+  A=[0, 0, 0, 1, 1]  B=[0, 0, 1, 0, 0]
+  A=[0, 0, 1, 0, 0]  B=[0, 0, 0, 1, 1]
+  A=[0, 0, 0, 1, 1]  B=[0, 0, 1, 0, 0]
+  A=[1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1]
+  A=[1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    """
+    Measure the degree to which subjects employ a validity-ordered cascade
+    (TTB) versus equal-weight tallying (Tallying).
+    
+    Key insight: On trials where the two highest-validity features (0, 1) tie
+    between options, TTB must consult feature 2 (validity 0.65) to break the tie,
+    while Tallying counts all features equally. This creates a sharp dissociation:
+    - TTB predicts choice based on feature 2 after tie-breaking at features 0-1.
+    - Tallying predicts choice based on the majority vote across all features.
+    
+    We compute a "cascade fidelity" score: the proportion of trials where the
+    subject's choice aligns with TTB's prediction (given the validity cascade)
+    minus the proportion where it aligns with Tallying's prediction.
+    
+    On the critical tie-breaking trials (1-4, 7-8), TTB and Tallying diverge.
+    On control trials (9-12), both theories largely agree. On low-validity trials
+    (5-6), both theories agree. The metric isolates the cascade effect.
+    
+    Validities: [0.95, 0.90, 0.65, 0.60, 0.55]
+    """
+    validities = np.array([0.95, 0.90, 0.65, 0.60, 0.55])
+    
+    # Define the 12 trial pairs (from the experimental design)
+    trial_pairs = [
+        ([1, 1, 1, 0, 0], [1, 1, 0, 1, 1]),  # trial 1
+        ([1, 1, 0, 1, 1], [1, 1, 1, 0, 0]),  # trial 2
+        ([1, 1, 1, 0, 0], [1, 1, 0, 1, 1]),  # trial 3
+        ([1, 1, 0, 1, 1], [1, 1, 1, 0, 0]),  # trial 4
+        ([0, 0, 1, 0, 0], [0, 0, 0, 1, 1]),  # trial 5
+        ([0, 0, 0, 1, 1], [0, 0, 1, 0, 0]),  # trial 6
+        ([0, 0, 1, 0, 0], [0, 0, 0, 1, 1]),  # trial 7
+        ([0, 0, 0, 1, 1], [0, 0, 1, 0, 0]),  # trial 8
+        ([1, 1, 1, 1, 1], [0, 0, 0, 0, 0]),  # trial 9
+        ([0, 0, 0, 0, 0], [1, 1, 1, 1, 1]),  # trial 10
+        ([1, 1, 1, 1, 1], [0, 0, 0, 0, 0]),  # trial 11
+        ([0, 0, 0, 0, 0], [1, 1, 1, 1, 1]),  # trial 12
+    ]
+    
+    # Helper: compute TTB prediction (0 = choose A, 1 = choose B, None = tie)
+    def ttb_predict(a, b, vals):
+        cue_order = np.argsort(-vals, kind='stable')
+        for j in cue_order:
+            if a[j] > b[j]:
+                return 0
+            if b[j] > a[j]:
+                return 1
+        return None  # All tied
+    
+    # Helper: compute Tallying prediction (0 = choose A, 1 = choose B, None = tie)
+    def tallying_predict(a, b):
+        a_wins = sum(1 for i in range(len(a)) if a[i] > b[i])
+        b_wins = sum(1 for i in range(len(b)) if b[i] > a[i])
+        if a_wins > b_wins:
+            return 0
+        elif b_wins > a_wins:
+            return 1
+        else:
+            return None  # Tied
+    
+    # Count agreement with each theory, excluding ties
+    ttb_matches = 0
+    tallying_matches = 0
+    valid_trials = 0
+    
+    for idx, row in data.iterrows():
+        a = np.array(row['option_a_ratings'], dtype=int)
+        b = np.array(row['option_b_ratings'], dtype=int)
+        response = int(row['response'])
+        
+        ttb_pred = ttb_predict(a, b, validities)
+        tallying_pred = tallying_predict(a, b)
+        
+        # Only count trials where both theories make a definite prediction
+        if ttb_pred is not None and tallying_pred is not None:
+            valid_trials += 1
+            if response == ttb_pred:
+                ttb_matches += 1
+            if response == tallying_pred:
+                tallying_matches += 1
+    
+    if valid_trials == 0:
+        return 0.0
+    
+    # Cascade fidelity: TTB agreement rate minus Tallying agreement rate
+    # Positive values favor TTB; negative values favor Tallying.
+    ttb_rate = ttb_matches / valid_trials
+    tallying_rate = tallying_matches / valid_trials
+    
+    return ttb_rate - tallying_rate
+```
+
+**Observed (real) value:** 0.2300 (var=0.2070)
+**Previous candidate values (this loop):**
+  - iter 1: -0.4033 (var=0.0344) (Δ vs real -0.6333)
+  - iter 2 (most recent): 0.2767 (var=0.0818) (Δ vs real +0.0467)
+**Other theories' values on this metric (for reference):**
+- pi_2: -0.4417 (var=0.0226)
+- pi_1: 0.4587 (var=0.0220)
+
+## PREVIOUS CANDIDATE (this loop)
+The RUNNING-BEST (last ACCEPTED) candidate in this critique loop — i.e. the source the loop's accept gate kept as the best base so far. If your most recent attempt was REJECTED by the gate, this is NOT that attempt; it is the previously-accepted base the gate rolled back to. Iterate on this source — the next critic feedback should be applied on top of it.
+
+**Description**
+Adaptive Validity-Aware Tallying with Conditional Cascade Engagement (Calibrated). Subjects default to equal-weight feature tallying as their primary heuristic. When the task structure creates a sharp validity cliff—defined by the maximum gap between adjacent validity-ordered features—subjects partially shift toward validity-ordered cascade reasoning. The degree of shift is controlled by a mixing parameter α that interpolates between pure Tallying (α=0) and pure TTB (α=1), modulated by the validity gap relative to a learned threshold. Subjects exhibit substantial heterogeneity in both the gap threshold and the maximum cascade engagement strength, producing the high inter-subject variance observed in Experiment 2. On Experiment 1 (balanced validities, max gap ≤0.2), the threshold is rarely exceeded, so α≈0 and behavior approximates pure Tallying. On Experiment 2 (sharp validity cliff, max gap=0.25), the threshold is reliably exceeded for most subjects, triggering intermediate cascade engagement (α averaging 0.4–0.6), producing behavior between Tallying and TTB with high variance.
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, state, history):
+    import numpy as np
+    
+    stim = np.asarray(state, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(
+            f"Adaptive Validity-Aware Tallying expects (2, n_features) stimulus; got {stim.shape}."
+        )
+    
+    n_features = stim.shape[1]
+    a, b = stim[0], stim[1]
+    
+    # Extract validities and parameters
+    validities = np.asarray(parameters["validities"], dtype=float)
+    if validities.shape[0] != n_features:
+        raise ValueError(
+            f"validities length {validities.shape[0]} != n_features {n_features}."
+        )
+    
+    gap_threshold = float(parameters["gap_threshold"])
+    alpha_max = float(parameters["alpha_max"])
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+    
+    # Compute the maximum gap between consecutive validity-ordered features
+    sorted_vals = np.sort(validities)[::-1]  # Descending order
+    max_gap = 0.0
+    for i in range(len(sorted_vals) - 1):
+        gap = sorted_vals[i] - sorted_vals[i + 1]
+        max_gap = max(max_gap, gap)
+    
+    # Modulate alpha based on max_gap relative to threshold
+    # Linear interpolation: alpha = 0 when max_gap <= threshold,
+    # alpha = alpha_max when max_gap >= threshold + margin
+    if max_gap <= gap_threshold:
+        alpha = 0.0
+    else:
+        # Steeper ramp with smaller margin to enable faster cascade engagement
+        margin = 0.08
+        alpha = min(alpha_max, (max_gap - gap_threshold) / margin)
+    
+    # --- Tallying component ---
+    a_wins = float(np.sum(a > b))
+    b_wins = float(np.sum(b > a))
+    tallying_scores = np.array([a_wins, b_wins])
+    
+    # --- TTB component ---
+    cue_order = np.argsort(-validities, kind="stable").tolist()
+    ttb_winner = None
+    for j in cue_order:
+        if a[j] > b[j]:
+            ttb_winner = 0
+            break
+        if b[j] > a[j]:
+            ttb_winner = 1
+            break
+    
+    if ttb_winner is None:
+        ttb_scores = np.ones(2) / 2.0  # Tie: uniform guess
+    else:
+        ttb_scores = np.array([1.0, 0.0]) if ttb_winner == 0 else np.array([0.0, 1.0])
+    
+    # --- Blend: alpha interpolates between Tallying and TTB ---
+    # alpha = 0 -> pure Tallying; alpha = 1 -> pure TTB
+    blended_scores = (1.0 - alpha) * tallying_scores + alpha * ttb_scores
+    
+    # --- Softmax with noise ---
+    z = beta * (blended_scores - blended_scores.max())
+    e = np.exp(z)
+    p_core = e / e.sum()
+    
+    n_opts = p_core.shape[0]
+    p_final = (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+    
+    return p_final
+
+`policy(probs) -> int`:
+def policy(probabilities):
+    import numpy as np
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.
+    return np.random.choice(len(probabilities), p=probabilities)
+
+`parameters`:
+- gap_threshold: [0.10, 0.22]
+- alpha_max: [0.45, 1.0]
+- beta: [0.1, 20.0]
+- epsilon: [0.0, 0.5]
+- validities: validities
+
+`rationale`: MINIMAL-DIFF EDIT addressing the critic's calibration diagnosis:
+
+**Changes Made:**
+1. **gap_threshold range: [0.15, 0.35] → [0.10, 0.22]** — The critic correctly identified that the previous range [0.15, 0.35] was too high, causing the 0.25 gap in Experiment 2 to fall near or above the upper bound, leaving many subject samples with high thresholds that the gap fails to exceed. Reducing to [0.10, 0.22] ensures that the Experiment 2 gap of 0.25 reliably exceeds the threshold for the majority of subjects, triggering cascade engagement. This is the single most impactful fix.
+
+2. **alpha_max range: [0.0, 1.0] → [0.45, 1.0]** — The critic noted that permissive alpha_max sampling allowed subjects to express very weak cascade engagement (α ≈ 0.1–0.2 even when gap > threshold). Shifting the lower bound to 0.45 ensures that when the gap threshold is exceeded and alpha is computed, it will reach at least 45% TTB engagement, producing visibly intermediate behavior. This amplifies the cascade response without removing heterogeneity.
+
+3. **margin in ramp: 0.15 → 0.08** — Reducing the smooth-ramp margin from 0.15 to 0.08 creates steeper alpha rise as max_gap increases beyond gap_threshold. In Experiment 2, where max_gap ≈ 0.25 and gap_threshold will be sampled from [0.10, 0.22], the gap-over-threshold will typically be 0.03–0.15, and the steeper ramp ensures alpha rises more aggressively (e.g., if gap_threshold=0.20 and max_gap=0.25, then α = min(alpha_max, 0.05/0.08) ≈ 0.625 * alpha_max, producing stronger engagement).
+
+**Why This Addresses the Critic's Diagnosis:**
+- The critic identified that the previous model predicted -0.4033 on Experiment 2 (far too negative, pure Tallying) when observed was +0.2300 (intermediate, favoring TTB). The root cause was insufficient cascade activation: either gap_threshold was too high or alpha_max too low, leaving behavior dominated by Tallying even when validity structure should trigger cascade.
+- Tightening gap_threshold to [0.10, 0.22] ensures the 0.25 gap in Exp 2 is reliably crossed, activating cascade for most subjects.
+- Raising alpha_max floor to 0.45 ensures that when cascade is activated, it produces visible intermediate behavior (not just 10–20% TTB mixing).
+- Steeper ramp margin (0.08) amplifies the cascade signal when triggered.
+- These changes preserve the adaptive mechanism and per-subject heterogeneity (ranges remain wide, allowing high inter-subject variance) while calibrating the model to actually engage cascade in Experiment 2.
+
+**Expected Outcome:**
+- Experiment 1: gap_threshold samples from [0.10, 0.22], max_gap ≈ 0.20 (between features 0 and 1). Many subjects will have threshold > 0.20, so α ≈ 0, behavior ≈ Tallying. Prediction should remain close to observed 0.40.
+- Experiment 2: gap_threshold samples from [0.10, 0.22], max_gap ≈ 0.25 (between features 1 and 2). Most subjects will have threshold < 0.25, so gap is exceeded, α rises to 0.45–1.0, behavior intermediate between Tallying and TTB. Prediction should shift from -0.40 toward +0.20–+0.30, closer to observed 0.23. Higher variance (var ≈ 0.15–0.25) will emerge from heterogeneous gap_threshold and alpha_max sampling.
+
+**Why Minimal-Diff Approach Suffices:**
+The mechanism family (blending Tallying and TTB via gap-triggered α interpolation) is sound and faithful to the arbiter's prescription. Only the parameter ranges and ramp margin needed recalibration. No changes to predict/policy logic, no new parameters, no mechanism rewrite—only three numeric edits to existing ranges and one constant.
+
+## PRIOR FEEDBACK ITERATIONS
+The critic's verdicts on each previous in-loop candidate, in order. Each block ends with an **Outcome of this advice** line saying whether the candidate the proposer produced AFTER this advice was ACCEPTED (loss strictly beat the running best) or REJECTED (the gate discarded it). Address the most recent iteration's feedback in your next edit, but down-weight past advice whose candidates were REJECTED.
+
+### Iteration 1
+Verdict: regenerate
+Interpretation: The Adaptive Validity-Aware Tallying candidate was accepted by the gate (loss=0.4197) and shows mixed performance across experiments. On Experiment 1, the candidate predicts 0.4619 versus observed 0.4012 (var=0.0100 vs observed var=0.0172)—a modest overprediction of TTB-like behavior, but closer to the true mean than pure TTB (0.8472) and reasonably aligned with pure Tallying (0.4122). The variance is tight and consistent. However, on Experiment 2, the critical test of the adaptive mechanism, the candidate predicts -0.4033 (var=0.0344) versus observed 0.2300 (var=0.2070). This is a severe failure: the model predicts strong Tallying dominance (cascade fidelity ≈ -0.40, meaning subjects align with Tallying 40 percentage points more than TTB), when the real data show subjects intermediate between the two strategies (cascade fidelity ≈ +0.23, favoring TTB by 23 percentage points). The candidate's prediction is not only in the wrong direction but lands closer to pure Tallying (-0.4417) than to the observed intermediate behavior. The variance mismatch is also stark: observed var=0.2070 (high heterogeneity across subjects, consistent with a mixing/blending story), but candidate var=0.0344 (very tight, suggesting the model is not capturing subject-level heterogeneity in cascade engagement). This indicates the adaptive mechanism is not activating strongly enough in Experiment 2. The gap_threshold and alpha_max parameters are likely not being set to allow sufficient cascade engagement when the validity structure (0.95, 0.90, 0.65, ..., with a 0.25 gap) should trigger it. The model's default behavior appears to remain too close to pure Tallying even when the gap threshold is exceeded.
+Rationale: The candidate fails the critical test (Experiment 2) by predicting strong Tallying dominance (-0.40) when the data show clear intermediate behavior favoring TTB (0.23). The mechanism is theoretically sound—blending Tallying and TTB based on validity gaps—but the parametrization is miscalibrated. Specific issues: (1) The gap_threshold parameter range [0.15, 0.35] is too high relative to the observed Experiment 2 gap of 0.25. If the threshold is sampled near the upper end, the 0.25 gap in Exp 2 may not consistently exceed it, leaving alpha near 0 and behavior near pure Tallying. The range should be tightened or shifted downward (e.g., [0.10, 0.25]) so that the 0.25 gap reliably triggers cascade engagement. (2) The alpha_max range [0.0, 1.0] is too permissive. If subjects are sampling low alpha_max values (e.g., 0.2–0.4), the blended score will remain dominated by Tallying even when gap > threshold. The range should be shifted upward (e.g., [0.4, 1.0]) or the interpolation function should be steeper, so that when the gap is detected, alpha rises more aggressively. (3) The margin for smooth ramp (0.15) may be too large, causing alpha to rise slowly as gap increases. A smaller margin (e.g., 0.05–0.10) would create sharper engagement. (4) The model's per-subject heterogeneity in gap_threshold and alpha_max is not producing the observed high variance (var=0.2070 in Exp 2). Either the parameter ranges are too narrow or the heterogeneity mechanism needs amplification. Recommend: (a) Reduce gap_threshold range to [0.10, 0.25] so that the 0.25 gap in Exp 2 reliably triggers cascade. (b) Increase alpha_max range to [0.4, 1.0] or [0.5, 1.0] to ensure stronger cascade engagement when triggered. (c) Reduce the margin in the smooth ramp to [0.05, 0.10] for steeper alpha rise. (d) Verify that per-subject parameter sampling is producing sufficient heterogeneity; if not, widen the ranges or add subject-level noise to gap_threshold or alpha_max. The theory and mechanism family remain sound and faithful to the arbiter's prescription; only the parameter calibration needs adjustment to allow the model to express the intermediate, heterogeneous behavior observed in Experiment 2.
+
+**Outcome of this advice:** iter 1 candidate loss=0.4197 -> iter 2 candidate loss=0.3206 -> the gate marked it ACCEPTED.
+
+### Iteration 2 (most recent — address this)
+Verdict: regenerate
+Interpretation: The current candidate (iter 2) shows substantial improvement over iter 1, with aggregate loss dropping from 0.4197 to 0.3206 and being accepted by the gate. On Experiment 1, the candidate now predicts 0.6641 (var=0.0226) versus observed 0.4012 (var=0.0172)—a notable overprediction of TTB-like behavior (+0.2628 delta). This is a reversal from iter 1's modest overprediction (+0.0606), suggesting the parameter adjustments (lower gap_threshold, higher alpha_max, steeper margin) have overcorrected, causing too much cascade engagement even in the balanced-validity regime of Experiment 1. On Experiment 2, the candidate predicts 0.2767 (var=0.0818) versus observed 0.2300 (var=0.2070)—a much closer match in mean (+0.0467 delta, nearly on-target), and the variance has increased substantially (0.0818 vs iter 1's 0.0344), reflecting greater heterogeneity. However, the observed variance (0.2070) is still roughly 2.5× higher than the candidate's (0.0818), indicating the model is not yet capturing the full range of subject-level heterogeneity in cascade engagement. The direction of the Experiment 2 prediction has flipped from strongly negative (pure Tallying) to slightly positive (intermediate/TTB-favoring), which is the correct qualitative shift. The mean error is now small, but the variance gap suggests subjects exhibit more extreme or more diverse cascade behaviors than the model currently produces. Critically, the overcorrection on Experiment 1 reveals a trade-off: the parameter adjustments (tightened gap_threshold, raised alpha_max floor, steeper margin) were calibrated to activate cascade in Experiment 2 (max_gap=0.25), but they are now also activating cascade in Experiment 1 (max_gap≈0.20), where the data clearly show subjects remain close to pure Tallying. This suggests the gap_threshold range [0.10, 0.22] is too low; many subjects now sample thresholds below 0.20, causing the Experiment 1 gap to exceed them and trigger unwanted cascade engagement. The mechanism family and theory remain sound and faithful to the arbiter's prescription (adaptive blending of Tallying and TTB based on validity gaps), but the parameter ranges need further recalibration to restore the Experiment 1 fit while maintaining the Experiment 2 improvement.
+Rationale: The candidate has made progress on Experiment 2 (mean now nearly correct, variance improved) but has overcorrected on Experiment 1 (overpredicting TTB by +0.26). The root cause is that gap_threshold range [0.10, 0.22] is too low: in Experiment 1, where max_gap≈0.20, too many subjects sample gap_threshold < 0.20, causing the gap to be exceeded and cascade to engage when it should remain dormant. Recommendation: (1) Raise gap_threshold range to [0.15, 0.28] or [0.18, 0.30]. This ensures that in Experiment 1 (max_gap≈0.20), many subjects will sample threshold > 0.20, keeping alpha≈0 and behavior near Tallying (observed 0.40). In Experiment 2 (max_gap=0.25), the threshold range will straddle 0.25, allowing a mix of subjects with threshold < 0.25 (triggering cascade) and threshold > 0.25 (remaining near Tallying), producing the observed intermediate behavior and high variance. (2) Keep alpha_max range at [0.45, 1.0] or consider narrowing to [0.50, 0.90] to reduce the upper tail of cascade engagement; this will moderate the Experiment 1 overprediction while preserving sufficient cascade strength for Experiment 2. (3) The margin (0.08) is appropriate for steep ramp; keep it as-is. (4) Monitor the per-subject variance on Experiment 2: target var ≈ 0.15–0.20 (still below observed 0.2070 but a reasonable intermediate). If variance remains too low after threshold adjustment, consider adding subject-level noise to gap_threshold (e.g., sampling per subject rather than per trial) or widening alpha_max range further. These adjustments stay within the prescribed mechanism family (adaptive blending via gap-triggered alpha) and are minimal edits to parameter ranges, not logic changes. The previous advice (lower threshold, higher alpha_max floor) was ACCEPTED by the gate, so this is a refinement in the same direction (threshold recalibration) rather than oscillation.
+
+**Outcome of this advice:** iter 2 candidate loss=0.3206 -> next candidate accept-status=PENDING (this is the advice you are addressing now).
+
+
+## IMPLEMENTATION GUARDRAILS
+- The parameters should be within the specified ranges.
+- The model's predictions should be valid probability distributions (non-negative and sum to 1).
+- When converting logits to probabilities via softmax, always use the numerically stable form: subtract the max before exponentiating (`x = x - np.max(x); p = np.exp(x); p /= p.sum()`). A naive `np.exp(x) / np.sum(np.exp(x))` overflows to Inf/NaN for large logits. Alternatively, use `scipy.special.softmax`.
+
+
+## PROPOSAL — MINIMAL-DIFF EDIT (do NOT rewrite from scratch)
+The RUNNING-BEST (last ACCEPTED) candidate is shown verbatim above under `## PREVIOUS CANDIDATE (this loop)`. This is the base the loop's accept gate is currently keeping; the most recent critic feedback (see `## PRIOR FEEDBACK ITERATIONS`) should be applied on top of it. Apply the SMALLEST edit that addresses the critic's diagnosis while staying inside the arbiter's prescribed mechanism family:
+  - Re-emit the previous source verbatim, then change ONLY the lines needed to address the critic (a parameter range, a normalization, a softmax temperature, an attention scheme, a gating term, a buggy indexing line, etc.).
+  - Keep all unaffected functions, equations, parameter names, and the overall mechanism intact.
+  - Do NOT rewrite `predict` / `policy` end-to-end if a few lines would do, and do NOT switch mechanism families — that is the arbiter's decision, not yours in this loop.
+  - Briefly explain the minimal edit in `rationale`.
+If you genuinely believe a larger rewrite is required, you may do one, but justify in `rationale` why the minimal-diff path was insufficient.
+
+## RESPONSE FORMAT
+Return a JSON object with the following fields:
+- theory: The theoretical claim this theory makes about cognition.
+- predict: Python source defining def predict(parameters, state, history) -> np.ndarray.
+- policy: Python source defining def policy(probs) -> int.
+- parameters: Parameter ranges (e.g. "[1.0, 10.0]") or choices (e.g. "{1, 2}"), sampled per subject.
+- rationale: Reasoning behind this theory design; used to explain why this theory is better then the previous ones.
+
+
+## Response
+
+```json
+```json
+{
+  "theory": "Adaptive Validity-Aware Tallying with Conditional Cascade Engagement (Recalibrated). Subjects default to equal-weight feature tallying as their primary heuristic. When the task structure creates a sharp validity cliff—defined by the maximum gap between adjacent validity-ordered features—subjects partially shift toward validity-ordered cascade reasoning. The degree of shift is controlled by a mixing parameter α that interpolates between pure Tallying (α=0) and pure TTB (α=1), modulated by the validity gap relative to a learned, subject-specific threshold. The threshold itself is heterogeneous across subjects, allowing some to remain in Tallying mode even when gaps are moderate, while others engage cascade more readily. On Experiment 1 (balanced validities, max gap ≤0.20), the threshold is typically above 0.20, so α≈0 and behavior approximates pure Tallying. On Experiment 2 (sharp validity cliff, max gap=0.25), the threshold range straddles 0.25, creating a mixture of subjects: those with threshold < 0.25 engage cascade (α > 0), while those with threshold > 0.25 remain near Tallying. This produces the observed intermediate mean behavior (cascade fidelity ≈ +0.23) with high inter-subject variance (var ≈ 0.20).",
+  "predict": "def predict(parameters, state, history):\n    import numpy as np\n    \n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"Adaptive Validity-Aware Tallying expects (2, n_features) stimulus; got {stim.shape}.\"\n        )\n    \n    n_features = stim.shape[1]\n    a, b = stim[0], stim[1]\n    \n    # Extract validities and parameters\n    validities = np.asarray(parameters[\"validities\"], dtype=float)\n    if validities.shape[0] != n_features:\n        raise ValueError(\n            f\"validities length {validities.shape[0]} != n_features {n_features}.\"\n        )\n    \n    gap_threshold = float(parameters[\"gap_threshold\"])\n    alpha_max = float(parameters[\"alpha_max\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    \n    # Compute the maximum gap between consecutive validity-ordered features\n    sorted_vals = np.sort(validities)[::-1]  # Descending order\n    max_gap = 0.0\n    for i in range(len(sorted_vals) - 1):\n        gap = sorted_vals[i] - sorted_vals[i + 1]\n        max_gap = max(max_gap, gap)\n    \n    # Modulate alpha based on max_gap relative to threshold\n    # Linear interpolation: alpha = 0 when max_gap <= threshold,\n    # alpha = alpha_max when max_gap >= threshold + margin\n    if max_gap <= gap_threshold:\n        alpha = 0.0\n    else:\n        # Steeper ramp with smaller margin to enable faster cascade engagement\n        margin = 0.08\n        alpha = min(alpha_max, (max_gap - gap_threshold) / margin)\n    \n    # --- Tallying component ---\n    a_wins = float(np.sum(a > b))\n    b_wins = float(np.sum(b > a))\n    tallying_scores = np.array([a_wins, b_wins])\n    \n    # --- TTB component ---\n    cue_order = np.argsort(-validities, kind=\"stable\").tolist()\n    ttb_winner = None\n    for j in cue_order:\n        if a[j] > b[j]:\n            ttb_winner = 0\n            break\n        if b[j] > a[j]:\n            ttb_winner = 1\n            break\n    \n    if ttb_winner is None:\n        ttb_scores = np.ones(2) / 2.0  # Tie: uniform guess\n    else:\n        ttb_scores = np.array([1.0, 0.0]) if ttb_winner == 0 else np.array([0.0, 1.0])\n    \n    # --- Blend: alpha interpolates between Tallying and TTB ---\n    # alpha = 0 -> pure Tallying; alpha = 1 -> pure TTB\n    blended_scores = (1.0 - alpha) * tallying_scores + alpha * ttb_scores\n    \n    # --- Softmax with noise ---\n    z = beta * (blended_scores - blended_scores.max())\n    e = np.exp(z)\n    p_core = e / e.sum()\n    \n    n_opts = p_core.shape[0]\n    p_final = (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)\n    \n    return p_final",
+  "policy": "def policy(probabilities):\n    import numpy as np\n    probabilities = np.asarray(probabilities, dtype=np.float64)\n    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.\n    return np.random.choice(len(probabilities), p=probabilities)",
+  "parameters": {
+    "gap_threshold": "[0.18, 0.28]",
+    "alpha_max": "[0.45, 0.90]",
+    "beta": "[0.1, 20.0]",
+    "epsilon": "[0.0, 0.5]",
+    "validities": "validities"
+  },
+  "rationale": "MINIMAL-DIFF RECALIBRATION addressing the critic's diagnosis of overcorrection on Experiment 1 while maintaining Experiment 2 improvement.\n\n**Changes Made:**\n1. **gap_threshold range: [0.10, 0.22] → [0.18, 0.28]** — The previous range was too low, causing too many subjects in Experiment 1 (max_gap ≈ 0.20) to sample threshold < 0.20, triggering unwanted cascade engagement and producing 0.6641 vs observed 0.4012. The new range [0.18, 0.28] ensures that in Experiment 1, a substantial fraction of subjects sample threshold > 0.20 (keeping α ≈ 0 and behavior near Tallying), while in Experiment 2 (max_gap = 0.25), the range straddles the gap, creating a mixture of subjects with threshold < 0.25 (engaging cascade) and threshold > 0.25 (remaining near Tallying). This heterogeneity directly produces the observed high variance (var ≈ 0.20) in Experiment 2.\n\n2. **alpha_max range: [0.45, 1.0] → [0.45, 0.90]** — Constraining the upper bound from 1.0 to 0.90 moderates the maximum cascade strength, preventing subjects from reaching pure TTB (α=1.0) and thus preventing overcorrection on Experiment 1. The lower bound remains 0.45 to ensure that when cascade is triggered (gap > threshold), the engagement is still visibly intermediate (not weak). This narrower range preserves heterogeneity while reducing the tail risk of extreme cascade engagement.\n\n3. **margin in ramp: 0.08 (unchanged)** — Keeps the steeper ramp from iter 2, which successfully enabled Experiment 2 cascade activation.\n\n**Why This Addresses the Critic's Diagnosis:**\n- Iter 2 overcorrected on Experiment 1 (predicted 0.6641 vs observed 0.4012, Δ = +0.2628) due to gap_threshold range [0.10, 0.22] being too low. The new range [0.18, 0.28] shifts the distribution upward, ensuring more subjects in Experiment 1 have threshold > max_gap(≈0.20), keeping α ≈ 0.\n- Iter 2 achieved good mean on Experiment 2 (predicted 0.2767 vs observed 0.2300, Δ = +0.0467) but variance was still low (0.0818 vs observed 0.2070). The new threshold range [0.18, 0.28] straddles the Experiment 2 gap of 0.25 more deliberately, creating a bimodal distribution of subjects: those with threshold < 0.25 (cascade engaged) vs threshold > 0.25 (Tallying-dominant). This heterogeneity will increase per-subject variance.\n- The alpha_max upper bound reduction (1.0 → 0.90) ensures that even when cascade is engaged, subjects do not reach pure TTB, moderating the Experiment 1 prediction back toward the observed 0.40 without losing the Experiment 2 gain.\n\n**Expected Outcome:**\n- Experiment 1: gap_threshold samples from [0.18, 0.28], max_gap ≈ 0.20. Roughly 60–70% of subjects sample threshold > 0.20 (α ≈ 0, behavior ≈ Tallying), while 30–40% sample threshold < 0.20 (α rises, behavior shifts toward TTB). Aggregate prediction should land closer to observed 0.40 (e.g., ≈ 0.42–0.48), with variance consistent with observed 0.0172.\n- Experiment 2: gap_threshold samples from [0.18, 0.28], max_gap = 0.25. Roughly 40–60% of subjects sample threshold < 0.25 (α rises to 0.45–0.90, behavior intermediate), while 40–60% sample threshold > 0.25 (α ≈ 0, behavior ≈ Tallying). Aggregate prediction should remain near observed 0.23 (e.g., ≈ 0.20–0.28), and per-subject variance should increase to ≈ 0.12–0.18 (closer to observed 0.2070), reflecting the bimodal subject distribution.\n\n**Why Minimal-Diff Suffices:**\nThe mechanism (blending Tallying and TTB via gap-triggered α interpolation) is sound and faithful to the arbiter's prescription. Only parameter ranges and the alpha_max upper bound need adjustment. No changes to predict/policy logic, no new parameters, no mechanism rewrite—only three numeric edits to existing ranges. This is a precise calibration to restore the Experiment 1 fit while maintaining the Experiment 2 improvement."
+}
+```
+```
+
+## Usage
+
+```json
+{
+  "input_tokens": 13687,
+  "output_tokens": 2679
+}
+```
