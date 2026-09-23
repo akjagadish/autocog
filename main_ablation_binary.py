@@ -47,6 +47,7 @@ from src.decision_making_binary_features.experiment import (
     DecisionMakingBinaryExperiment,
 )
 from src.improver import Improver, make_theory
+from src.llm import model_path_tag
 from src.logger import info
 from src.observation import Observations
 from src.online_config import OnlineConfig  # noqa: F401  (used in commented snippet)
@@ -207,7 +208,7 @@ def _make_slot_pi(*, label, theory, llm_client):
 _gteps_tag = f"noise={args.gt_epsilon}" if args.gt_epsilon >= 0.0 else ""
 RUN_DIR = Path(
     f'{args.out_path}/condition_{args.condition}/{args.ground_truth}/{_gteps_tag}/'
-    f'dmb_ground_truth_{args.ground_truth}_{_gteps_tag}_{LLM_MODEL}_run{args.run_id}'
+    f'dmb_ground_truth_{args.ground_truth}_{_gteps_tag}_{model_path_tag(LLM_MODEL)}_run{args.run_id}'
 )
 
 # Ground-truth theory used as the stand-in for human subjects when collecting

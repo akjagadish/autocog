@@ -76,6 +76,7 @@ def _make_rating_max_locked_class(
     _Locked.__name__ = f"HDMExperiment_RatingMaxEq{rating_max}"
     _Locked.__qualname__ = _Locked.__name__
     return _Locked
+from src.llm import model_path_tag
 from src.logger import info
 from src.observation import Observations
 from src.online_config import OnlineConfig  # noqa: F401  (used in commented snippet)
@@ -192,7 +193,7 @@ _rmax_tag = (
 # results stay discoverable; only tag when noise is actually injected
 _gteps_tag = f"noise={args.gt_epsilon}" if args.gt_epsilon >= 0.0 else ""
 RUN_DIR = Path(
-    f'{args.out_path}/{args.ground_truth}/{_gteps_tag}/hdm_ground_truth_{args.ground_truth}{_rmax_tag}_{_gteps_tag}_{LLM_MODEL}_run{args.run_id}'
+    f'{args.out_path}/{args.ground_truth}/{_gteps_tag}/hdm_ground_truth_{args.ground_truth}{_rmax_tag}_{_gteps_tag}_{model_path_tag(LLM_MODEL)}_run{args.run_id}'
 )
 
 # Ground-truth theory used as the stand-in for human subjects when collecting

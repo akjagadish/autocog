@@ -47,6 +47,7 @@ from src.decision_making_binary_features.experiment import (
     DecisionMakingBinaryExperiment,
 )
 from src.improver import Improver, make_theory
+from src.llm import model_path_tag
 from src.logger import info
 from src.observation import Observations
 from src.online_config import OnlineConfig  # noqa: F401  (used in commented snippet)
@@ -68,6 +69,10 @@ parser.add_argument(
 )
 parser.add_argument("--llm_provider", type=str, default="gemini")
 parser.add_argument("--llm_model", type=str, default="gemini-3.1-pro-preview")
+parser.add_argument(
+    "--reasoning_effort", type=str, default=None,
+    help="OpenRouter reasoning.effort (max/high/low); default: provider default",
+)
 parser.add_argument('--run_id', type=str, help="Unique tag for this run (e.g. timestamp or short hash)")
 parser.add_argument(
     "--gt_epsilon",
@@ -146,7 +151,7 @@ EXPERIMENT_CLASS: type[DecisionMakingBinaryExperiment] = DecisionMakingBinaryExp
 # results stay discoverable; only tag when noise is actually injected
 _gteps_tag = f"noise={args.gt_epsilon}" if args.gt_epsilon >= 0.0 else ""
 RUN_DIR = Path(
-    f'{args.out_path}/{args.ground_truth}/{_gteps_tag}/dmb_ground_truth_{args.ground_truth}_{_gteps_tag}_{LLM_MODEL}_run{args.run_id}'
+    f'{args.out_path}/{args.ground_truth}/{_gteps_tag}/dmb_ground_truth_{args.ground_truth}_{_gteps_tag}_{model_path_tag(LLM_MODEL)}_run{args.run_id}'
 )
 
 # Ground-truth theory used as the stand-in for human subjects when collecting
@@ -758,7 +763,12 @@ def main(n_rounds: int = N_ROUNDS, run_dir: Path = RUN_DIR) -> None:
     # agents silently fall back to the YAML provider.
     from src.config import LLMConfig, load_config
     _yaml_llm = load_config(Path("configs/default.yaml")).llm.model_dump()
-    llm_cfg = LLMConfig(**{**_yaml_llm, "provider": LLM_PROVIDER, "model": LLM_MODEL})
+    llm_cfg = LLMConfig(**{
+        **_yaml_llm,
+        "provider": LLM_PROVIDER,
+        "model": LLM_MODEL,
+        "reasoning_effort": args.reasoning_effort,
+    })
     ground_truth = AutoCog.from_yaml(
         theory_path=GROUND_TRUTH_YAML,
         label="pi_ground_truth",
@@ -781,7 +791,9 @@ def main(n_rounds: int = N_ROUNDS, run_dir: Path = RUN_DIR) -> None:
     info(
         f"[main] starting loop: n_rounds={n_rounds} "
         f"existing_rounds={len(pool)} run_dir={run_dir} "
-        f"gt_epsilon={args.gt_epsilon} gt_seed={args.gt_seed}"
+        f"gt_epsilon={args.gt_epsilon} gt_seed={args.gt_seed} "
+        f"llm={llm_cfg.provider}:{llm_cfg.model} "
+        f"reasoning_effort={llm_cfg.reasoning_effort}"
     )
     # Carries the end-of-round scores between iterations so each round's
     # leaderboard log can show per-label deltas vs. the previous round.
