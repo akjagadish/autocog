@@ -67,3 +67,26 @@ def test_truncated_text_still_raises():
         pass
     else:
         raise AssertionError("expected RuntimeError on unrecoverable truncated text")
+
+
+def test_valid_json_that_fails_schema_validation_propagates():
+    """Valid JSON violating the schema's own invariants must surface as a
+    pydantic ValidationError (AutoCog.propose_round retries on it), not be
+    wrapped as a generic parse failure."""
+    import pytest
+    from pydantic import ValidationError, field_validator
+
+    class _Strict(BaseModel):
+        validities: list[float]
+
+        @field_validator("validities")
+        @classmethod
+        def _nonempty(cls, v):
+            if not v:
+                raise ValueError("validities must contain at least one entry")
+            return v
+
+    resp = SimpleNamespace(parsed=None, text='{"validities": []}', usage_metadata=None, candidates=[])
+    client = GeminiClient(model="gemini-3.1-pro-preview", client=_fake_client(resp))
+    with pytest.raises(ValidationError, match="at least one entry"):
+        client.chat([{"role": "user", "content": "go"}], system="s", response_schema=_Strict)

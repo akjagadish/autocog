@@ -17,11 +17,14 @@ _PRINCETON_MODEL_PREFIXES: tuple[str, ...] = ("gpt-", "o1", "o3", "o4")
 
 
 class LLMConfig(BaseModel):
-    provider: Literal["gemini", "openai", "anthropic", "princeton", "mock"] = "gemini"
+    provider: Literal["gemini", "openai", "anthropic", "princeton", "openrouter", "mock"] = "gemini"
     model: str = "gemini-3.1-pro-preview"
     temperature: float = 0.7
     max_tokens: int = 32768
     thinking_budget: int = 8096
+    # OpenRouter unified `reasoning.effort` ("max", "high", "low", ...);
+    # None means the provider default in src/llm.py.
+    reasoning_effort: str | None = None
 
     @model_validator(mode="after")
     def _check_princeton_model(self) -> "LLMConfig":

@@ -15,6 +15,7 @@ import anthropic
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
+import openai
 from pydantic import BaseModel
 
 from pathlib import Path
@@ -82,6 +83,10 @@ def _transient_http_exc_types() -> tuple[type[BaseException], ...]:
         found.append(httpcore.RemoteProtocolError)
     except Exception:
         pass
+    # The OpenAI SDK wraps httpx connection/timeout errors in its own
+    # APIConnectionError (APITimeoutError is a subclass), so the httpx
+    # classes above never reach us on that path.
+    found.append(openai.APIConnectionError)
     _TRANSIENT_HTTP_EXC_TYPES = tuple(found)
     return _TRANSIENT_HTTP_EXC_TYPES
 
@@ -224,8 +229,11 @@ class GeminiClient:
             # SDK's own parser rejects. Recover by parsing the text ourselves
             # and validating against the schema. Genuinely broken/truncated
             # text (MAX_TOKENS cutoff) fails json.loads and still raises.
+            # Malformed JSON is a parse failure (named below); valid JSON
+            # that breaks the schema's own invariants raises pydantic's
+            # ValidationError unchanged so AutoCog.propose_round can retry.
             try:
-                parsed = response_schema.model_validate(_json.loads(resp.text))
+                payload = _json.loads(resp.text)
             except Exception:
                 finish = None
                 cands = getattr(resp, "candidates", None) or []
@@ -235,6 +243,7 @@ class GeminiClient:
                     f"structured output parse failed (finish_reason={finish}, usage={usage}).\n"
                     f"raw text:\n{resp.text!r}"
                 )
+            parsed = response_schema.model_validate(payload)
         return ChatResult(text=resp.text, parsed=parsed, usage=usage)
 
 
@@ -403,14 +412,18 @@ class AnthropicClient:
         parsed = None
         if schema_kwargs:
             json_text = _extract_json(text)
+            # Malformed JSON is a parse failure (named below); valid JSON
+            # that breaks the schema's own invariants raises pydantic's
+            # ValidationError unchanged so AutoCog.propose_round can retry.
             try:
-                parsed = response_schema.model_validate_json(json_text)
+                payload = _json.loads(json_text)
             except Exception as exc:
                 raise RuntimeError(
                     f"structured output parse failed (stop_reason="
                     f"{resp.stop_reason}, usage={usage}).\n"
                     f"raw text:\n{text!r}"
                 ) from exc
+            parsed = response_schema.model_validate(payload)
 
         return ChatResult(text=text, parsed=parsed, usage=usage)
 
@@ -456,6 +469,15 @@ def _extract_json(text: str) -> str:
 
 _REASONING_PREFIXES = ("gpt-5", "gpt-6", "o1", "o3", "o4")
 
+# Bad samples worth another draw, bounded: an empty body at finish_reason
+# "stop" (z-ai/glm-5.3 via OpenRouter, 2026-09-18), a backend that died
+# mid-generation ("error"), and a "length" stop. The last looked
+# deterministic but is not: all five schema-call cap hits in the 2026-09-19
+# battery (deepseek-v4-pro @max, glm-5.3 @high) succeeded on the fresh
+# sample the relaunch took. A length resample re-bills up to the cap, so
+# keep the bound small.
+_OPENAI_EMPTY_RESAMPLES = 2
+
 
 def _completion_token_kwarg(model: str, max_tokens: int) -> dict:
     """Return the right token-limit kwarg for an OpenAI chat-completion call.
@@ -481,7 +503,9 @@ def _temperature_kwarg(model: str, temperature: float) -> dict:
 
 
 class OpenAIClient:
-    """OpenAI-protocol backend. Works for plain OpenAI and Princeton/Portkey."""
+    """OpenAI-protocol backend. Works for plain OpenAI, Princeton/Portkey and
+    OpenRouter. `extra_body` is merged into every request body for gateway-
+    specific fields the SDK has no kwarg for (e.g. OpenRouter routing)."""
 
     def __init__(
         self,
@@ -489,11 +513,13 @@ class OpenAIClient:
         client,
         temperature: float = 0.7,
         max_tokens: int = 4096,
+        extra_body: dict | None = None,
     ):
         self.model = model
         self.client = client
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.extra_body = extra_body
 
     def chat(
         self,
@@ -511,40 +537,103 @@ class OpenAIClient:
             **_temperature_kwarg(self.model, self.temperature),
             **_completion_token_kwarg(self.model, self.max_tokens),
         }
+        if self.extra_body:
+            kwargs["extra_body"] = self.extra_body
 
-        if response_schema is not None and issubclass(response_schema, BaseModel):
-            resp = _call_with_retry(
-                self.client.chat.completions.parse,
-                response_format=response_schema,
-                label=f"OpenAIClient.chat({self.model})",
-                **kwargs,
+        structured = response_schema is not None and issubclass(
+            response_schema, BaseModel
+        )
+        if response_schema is not None and not structured:
+            raise RuntimeError(
+                f"response_schema must be a pydantic BaseModel, got {response_schema!r}"
             )
-            msg = resp.choices[0].message
+        label = f"OpenAIClient.chat({self.model})"
+        call = self.client.chat.completions.create
+        if structured:
+            call = self.client.chat.completions.parse
+            kwargs["response_format"] = response_schema
+
+        for attempt in range(1 + _OPENAI_EMPTY_RESAMPLES):
+            try:
+                resp = _call_with_retry(call, label=label, **kwargs)
+            except openai.LengthFinishReasonError as exc:
+                # `.parse` raises this itself on a cap hit, before we see
+                # the message. Same treatment as finish_reason="length".
+                completion = getattr(exc, "completion", None)
+                usage = _openai_usage(completion) if completion is not None else {}
+                problem = "hit max_tokens (finish_reason='length')"
+                if attempt < _OPENAI_EMPTY_RESAMPLES:
+                    _log_info(
+                        f"{label}: {problem} on attempt {attempt + 1} "
+                        f"(usage={usage}); resampling ({attempt + 1}/{_OPENAI_EMPTY_RESAMPLES})"
+                    )
+                continue
+            usage = _openai_usage(resp)
+            # OpenRouter answers HTTP 200 with choices=[] and a top-level
+            # `error` when the backend fails mid-request: a bad sample.
+            if not resp.choices:
+                problem = f"no choices (error={getattr(resp, 'error', None)!r})"
+            else:
+                choice = resp.choices[0]
+                msg = choice.message
+                text = msg.content or ""
+                if getattr(msg, "refusal", None):
+                    raise RuntimeError(f"{label}: model refused: {msg.refusal!r}")
+                if text.strip():
+                    break
+                # "stop": a bad sample; "error": OpenRouter's marker for a
+                # backend that died mid-generation; "length": a stochastic
+                # runaway (see _OPENAI_EMPTY_RESAMPLES). Anything else
+                # (e.g. content_filter) is not worth another draw.
+                if choice.finish_reason not in (None, "stop", "error", "length"):
+                    raise RuntimeError(
+                        f"{label}: empty response body with "
+                        f"finish_reason={choice.finish_reason!r} (usage={usage})"
+                    )
+                problem = f"empty response body (finish_reason={choice.finish_reason!r})"
+            if attempt < _OPENAI_EMPTY_RESAMPLES:
+                _log_info(
+                    f"{label}: {problem} on attempt {attempt + 1}; resampling "
+                    f"({attempt + 1}/{_OPENAI_EMPTY_RESAMPLES})"
+                )
+        else:
+            raise RuntimeError(
+                f"{label}: {problem} on {1 + _OPENAI_EMPTY_RESAMPLES} "
+                f"consecutive samples (usage={usage})"
+            )
+
+        parsed = None
+        if structured:
             parsed = msg.parsed
-            text = msg.content or ""
             if parsed is None:
                 raise RuntimeError(
                     f"structured output parse failed for schema "
                     f"{response_schema.__name__}.\nraw text:\n{text!r}"
                 )
-        else:
-            if response_schema is not None:
-                raise RuntimeError(
-                    f"response_schema must be a pydantic BaseModel, got {response_schema!r}"
-                )
-            resp = _call_with_retry(
-                self.client.chat.completions.create,
-                label=f"OpenAIClient.chat({self.model})",
-                **kwargs,
-            )
-            text = resp.choices[0].message.content or ""
-            parsed = None
-
-        usage = {
-            "input_tokens": resp.usage.prompt_tokens,
-            "output_tokens": resp.usage.completion_tokens,
-        }
         return ChatResult(text=text, parsed=parsed, usage=usage)
+
+
+def _openai_usage(resp) -> dict:
+    """Token counts plus, when the endpoint reports them, the reasoning-token
+    share and the backend that served the call (OpenRouter sets `provider`).
+    Both end up in each prompt log's `## Usage` block; summarize_compute.py
+    sums numeric keys containing 'token' per key and ignores the rest. Note
+    `reasoning_tokens` is a SUBSET of `output_tokens`, not additional to it.
+    `usage` itself is optional on the wire; an absent one yields {}."""
+    if resp.usage is None:
+        return {}
+    usage = {
+        "input_tokens": resp.usage.prompt_tokens,
+        "output_tokens": resp.usage.completion_tokens,
+    }
+    details = getattr(resp.usage, "completion_tokens_details", None)
+    reasoning_tokens = getattr(details, "reasoning_tokens", None)
+    if reasoning_tokens is not None:
+        usage["reasoning_tokens"] = reasoning_tokens
+    provider = getattr(resp, "provider", None)
+    if provider:
+        usage["provider"] = provider
+    return usage
 
 
 class MockClient:
@@ -570,6 +659,61 @@ class MockClient:
         return ChatResult(text=text, parsed=parsed, usage={})
 
 
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+# The OpenAI-protocol client does not stream, so one request must outlive
+# the whole generation: a max-effort answer near the 131k cap took ~20 min
+# (AtlasCloud, 2026-09-18) and deepseek-v4-pro-0813 tripped the SDK's
+# default 600 s read timeout mid-battery (2026-09-19).
+OPENROUTER_TIMEOUT_S = 3600
+
+# OpenRouter fans one model id out to ~20-30 third-party backends that differ
+# in weight precision (fp4/fp8/unlisted) and reasoning defaults: the same
+# round-0 prompt to z-ai/glm-5.3 got 0, 22.6k and 24.8k reasoning tokens on
+# three backends and an empty body on a fourth (2026-09-18). The run, not
+# the backend, must fix these, so every request carries:
+#   * require_parameters — only backends that implement every parameter we
+#     send (in particular the JSON-schema `response_format`; a backend
+#     without it would silently return prose);
+#   * quantizations=["fp8"] — never fp4 weights, and the same precision on
+#     every call of a run;
+#   * reasoning.effort="max" — the top of `supported_efforts` for both
+#     deepseek-v4-pro-0813 and glm-5.3 (per GET /api/v1/models).
+OPENROUTER_DEFAULT_REASONING_EFFORT = "max"
+
+
+def openrouter_extra_body(reasoning_effort: str | None) -> dict:
+    """Request body for OpenRouter at the given effort (None = default).
+    Some models cannot finish at `max` — z-ai/glm-5.3 spent 128k reasoning
+    tokens on the free-text theory-generation prompt without ever answering
+    (three backends, 2026-09-18) but answered at `high` — so the level is a
+    per-run setting (`LLMConfig.reasoning_effort`, CLI --reasoning_effort)."""
+    return {
+        "provider": {"require_parameters": True, "quantizations": ["fp8"]},
+        "reasoning": {
+            "effort": reasoning_effort or OPENROUTER_DEFAULT_REASONING_EFFORT
+        },
+    }
+
+
+# As on Anthropic, reasoning tokens count toward `max_tokens` on OpenRouter,
+# so the YAML budget (32768, sized for Gemini's answer-only output) starves
+# reasoning models: z-ai/glm-5.3 spent 24k reasoning + 8.5k answer tokens on
+# the first experiment-proposal call and died at the cap (2026-09-18).
+# Request the ceiling instead; it is only billed when used. 131072 is the
+# max_completion_tokens OpenRouter lists for glm-5.3 (deepseek-v4-pro: 393k).
+# Models with a lower ceiling still work: OpenRouter clamps an over-ceiling
+# max_tokens rather than rejecting it, even with require_parameters (checked
+# live on z-ai/glm-5 @128k and deepseek/deepseek-v3.2 @64k, 2026-09-18).
+OPENROUTER_MAX_OUTPUT_TOKENS = 131_072
+
+
+def model_path_tag(model: str) -> str:
+    """Model id made safe for a single path component: OpenRouter ids are
+    `vendor/model`, and the run directory embeds the model name."""
+    return model.replace("/", "-")
+
+
 def client_from_config(
     config_path: str | Path, llm: LLMConfig | None = None
 ) -> LLMClient:
@@ -579,6 +723,38 @@ def client_from_config(
     if llm is None:
         llm = load_config(Path(config_path)).llm
     return make_client(llm)
+
+
+def _openai_gateway_client(
+    cfg: LLMConfig,
+    *,
+    env_var: str,
+    base_url: str,
+    hint: str,
+    extra_body: dict | None = None,
+    max_tokens: int | None = None,
+    timeout: float | None = None,
+) -> "OpenAIClient":
+    """OpenAIClient for an OpenAI-protocol gateway (Portkey, OpenRouter) that
+    needs its own key and base URL. `max_tokens` overrides cfg.max_tokens;
+    `timeout` (seconds) overrides the SDK's 600 s read timeout."""
+    load_dotenv()
+    import os
+
+    api_key = os.environ.get(env_var)
+    if not api_key:
+        raise RuntimeError(
+            f"Set {env_var} to use provider={cfg.provider} ({hint})."
+        )
+    sdk_kwargs = {} if timeout is None else {"timeout": timeout}
+    client = openai.OpenAI(api_key=api_key, base_url=base_url, **sdk_kwargs)
+    return OpenAIClient(
+        model=cfg.model,
+        client=client,
+        temperature=cfg.temperature,
+        max_tokens=cfg.max_tokens if max_tokens is None else max_tokens,
+        extra_body=extra_body,
+    )
 
 
 def make_client(cfg: LLMConfig) -> LLMClient:
@@ -606,7 +782,6 @@ def make_client(cfg: LLMConfig) -> LLMClient:
         )
     if cfg.provider == "openai":
         load_dotenv()
-        import openai
 
         # Plain OpenAI endpoint; the SDK reads OPENAI_API_KEY from the env.
         return OpenAIClient(
@@ -616,26 +791,21 @@ def make_client(cfg: LLMConfig) -> LLMClient:
             max_tokens=cfg.max_tokens,
         )
     if cfg.provider == "princeton":
-        load_dotenv()
-        import os
-
-        import openai
-
-        api_key = os.environ.get("AI_SANDBOX_KEY")
-        if not api_key:
-            raise RuntimeError(
-                "Set AI_SANDBOX_KEY to use provider=princeton "
-                "(get one from Princeton's AI Sandbox portal)."
-            )
-        client = openai.OpenAI(
-            api_key=api_key,
+        return _openai_gateway_client(
+            cfg,
+            env_var="AI_SANDBOX_KEY",
             base_url="https://api.portkey.ai/v1",
+            hint="get one from Princeton's AI Sandbox portal",
         )
-        return OpenAIClient(
-            model=cfg.model,
-            client=client,
-            temperature=cfg.temperature,
-            max_tokens=cfg.max_tokens,
+    if cfg.provider == "openrouter":
+        return _openai_gateway_client(
+            cfg,
+            env_var="OPENROUTER_API_KEY",
+            base_url=OPENROUTER_BASE_URL,
+            hint="https://openrouter.ai/keys",
+            extra_body=openrouter_extra_body(cfg.reasoning_effort),
+            max_tokens=OPENROUTER_MAX_OUTPUT_TOKENS,
+            timeout=OPENROUTER_TIMEOUT_S,
         )
     if cfg.provider == "mock":
         return MockClient()

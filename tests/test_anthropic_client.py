@@ -123,6 +123,33 @@ class TestAnthropicClient:
         assert result.parsed.answer == "yes"
         assert result.parsed.score == 0.95
 
+    def test_chat_with_schema_lets_validation_errors_propagate(self):
+        """Valid JSON that breaks the schema's own invariants is a model
+        error the caller may retry (AutoCog.propose_round re-proposes on
+        pydantic ValidationError). claude-opus-5 returned an experiment with
+        empty validities (2026-09-20); wrapping it in RuntimeError hid it
+        from that retry and crashed the run."""
+        from pydantic import BaseModel, ValidationError, field_validator
+
+        class Strict(BaseModel):
+            score: float
+
+            @field_validator("score")
+            @classmethod
+            def _bounded(cls, v):
+                if not 0 <= v <= 1:
+                    raise ValueError("score must be in [0, 1]")
+                return v
+
+        mock_sdk = _mock_sdk_with_stream(json.dumps({"score": 5.0}))
+        client = AnthropicClient(model="claude-opus-5", client=mock_sdk)
+        with pytest.raises(ValidationError, match="score must be in"):
+            client.chat(
+                messages=[{"role": "user", "content": "evaluate"}],
+                system="judge",
+                response_schema=Strict,
+            )
+
     def test_chat_with_schema_raises_on_invalid_json(self):
         mock_sdk = _mock_sdk_with_stream("not json at all")
 

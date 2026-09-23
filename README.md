@@ -65,11 +65,12 @@ it yourself:
 GEMINI_API_KEY=...      # default provider (google-genai also accepts GOOGLE_API_KEY)
 ANTHROPIC_API_KEY=...   # provider=anthropic
 OPENAI_API_KEY=...      # provider=openai
+OPENROUTER_API_KEY=...  # provider=openrouter (open-weight models, e.g. deepseek/deepseek-v4-pro-0813, z-ai/glm-5.3)
 # AI_SANDBOX_KEY=...    # only for provider=princeton (Princeton AI Sandbox)
 ```
 
 Supported providers: `gemini` (default), `anthropic`, `openai`, `princeton`,
-`mock` (see [src/llm.py](src/llm.py)).
+`openrouter`, `mock` (see [src/llm.py](src/llm.py)).
 
 > **`--llm_provider mock` is NOT an offline dry run.** `MockClient` is a
 > unit-test fixture that replays a caller-supplied list of canned responses;
@@ -168,7 +169,7 @@ main*.py                 entry points (run from repo root)
 src/                     the framework (imported as src.*)
   autocog.py               AutoCog orchestrator (the debate loop)
   theory.py, theory_generator.py, improver.py, arbiter.py
-  llm.py                   provider clients (gemini/anthropic/openai/princeton/mock)
+  llm.py                   provider clients (gemini/anthropic/openai/princeton/openrouter/mock)
   controls.py, ablations.py, jsd.py   control / ablation variants & the JSD metric
   experiment.py, observation.py, metric.py, feedback.py
   decision_making_binary_features/  heuristic_decision_making/

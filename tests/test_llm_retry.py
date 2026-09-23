@@ -166,3 +166,22 @@ def test_default_backoff_tolerates_long_provider_outage():
         f"outage; need >= 45 min so a transient API failure can't kill a "
         f"12-hour H200 run"
     )
+
+
+def test_openai_sdk_timeout_is_transient():
+    """openai.APITimeoutError (an APIConnectionError) is how the OpenAI SDK
+    surfaces a read timeout; it wraps the httpx timeout so the httpx classes
+    above never reach us. A deepseek-v4-pro-0813 call via OpenRouter timed
+    out this way and killed a recovery run (2026-09-19)."""
+    import openai
+
+    attempts = {"n": 0}
+
+    def slow():
+        attempts["n"] += 1
+        if attempts["n"] < 2:
+            raise openai.APITimeoutError(request=httpx.Request("POST", "https://x"))
+        return "ok"
+
+    assert _call_with_retry(slow, base_delay=0.0, max_delay=0.0, label="t-timeout") == "ok"
+    assert attempts["n"] == 2
