@@ -18,7 +18,7 @@ OUT_DIR="${OUT_DIR:-results/controls/ablation_stage0}"
 
 for COND in baseline jsd_metric neutral_proposer; do
   LOG="logs/ablation_smoke/${COND}_${GT}.log"
-  DIR="${OUT_DIR}/condition_${COND}/${GT}/noise=0.0/dmb_ground_truth_${GT}_noise=0.0_${LLM_MODEL}_runsmoke0"
+  DIR="${OUT_DIR}/condition_${COND}/${GT}/noise=0.0/dmb_ground_truth_${GT}_noise=0.0_${LLM_MODEL//\//-}_runsmoke0"
   if [ -d "$DIR" ]; then
     echo "[${COND}] SKIP (exists: ${DIR})"
     continue

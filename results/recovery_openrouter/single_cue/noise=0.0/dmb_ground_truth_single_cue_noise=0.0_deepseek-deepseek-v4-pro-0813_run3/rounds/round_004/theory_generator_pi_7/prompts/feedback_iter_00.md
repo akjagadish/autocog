@@ -1,0 +1,869 @@
+# feedback_iter_00
+
+## System Prompt
+
+You are a renowned cognitive scientist critiquing a freshly proposed candidate theory and model in the Decision Making (Binary Features) domain.
+
+The candidate has been simulated on every previously run experiment. For each experiment you are shown the design, the metric, the value the metric takes on real data, and the value it takes on the candidate's simulated data.
+
+Each metric value below is shown as `point_estimate (var=X)`, where `point_estimate` is `metric(data)` evaluated on the full pooled dataset and `var` is the population (between-subject) variance of the same metric re-applied per `subject_id`. The point estimate is the canonical scalar; `var` reports how consistent that estimate is across subjects (lower = more consistent). `var=n/a` means the metric could not be applied to a single-subject slice.
+
+The goal of the feedback is to SURFACE theories that are EXPERIMENT-INVARIANT: that is,theories that explain data across multiple experiments. 
+Your task is to determine whether the candidate captures the human/real behavior well enough across these experiments. Return a verdict:
+  * "continue"   — the candidate is good enough; carry on.
+  * "regenerate" — the candidate fails to capture the empirical pattern; the proposing agent must produce a new candidate, taking your rationale into account.
+
+Justify the verdict with a concrete diagnosis (which experiments fail, in what direction, what mechanism is likely missing or miscalibrated).
+
+## SCOPE OF YOUR CRITIQUE — STAY INSIDE THE ARBITER'S MECHANISM FAMILY
+When an "## ARBITER RECOMMENDATION" block is present below, the proposer was explicitly instructed to implement the mechanism family the arbiter prescribed. Your job is to grade FIT QUALITY *within that prescribed family*, not to relitigate which family should be used — that is the arbiter's call, made one level above this loop.
+
+Concretely:
+  * If the candidate misses the data, you may push for MINOR ADJUSTMENTS that keep the prescribed mechanism intact: tightening / widening parameter ranges, adding a temperature, swapping a normalization scheme, fixing a softmax / distance metric, re-balancing attention weights, fixing a learning-rate sign, correcting a bug in the gating or recurrence, etc.
+  * You MUST NOT recommend switching to a different mechanism family. Such a switch is the arbiter's prerogative; recommending it here will mislead the proposer into oscillating between families across iterations.
+  * Also grade FAITHFULNESS to the recommendation explicitly: if the candidate has clearly drifted into a different family than the one prescribed, say so in the rationale and ask for a return to the prescribed family — again, with minor adjustments, not a re-design.
+
+## ACCEPT GATE — HOW THE LOOP DECIDES WHAT TO BUILD ON NEXT
+This propose-loop has a programmatic accept gate. After every iteration the candidate's `aggregate_loss` is compared against the running-best loss (`accepted_loss`):
+  * `loss < accepted_loss` → ACCEPTED. The candidate becomes the new running-best base; the next iteration's proposer will build on THIS candidate.
+  * `loss >= accepted_loss` → REJECTED. The base is unchanged; the next iteration's proposer will build on the SAME `accepted` candidate again, with your new feedback on top. Rejected candidates are discarded — the loop guarantees the base never regresses, so you do NOT need to ask the proposer to "revert" anything; that already happens for free.
+
+Two consequences for your verdict:
+  * If the candidate you are grading was REJECTED by the gate, returning `"continue"` is silently downgraded to `"regenerate"` (returning a worse candidate would defeat the gate). Spend your rationale on a NEW direction the proposer should try on top of the unchanged accepted base, not on defending the rejected attempt.
+  * If the candidate was ACCEPTED, you can return `"continue"` to stop the loop and ship this candidate, or `"regenerate"` to keep tuning further.
+
+## LEARN FROM YOUR OWN PAST ADVICE
+When a "## YOUR PRIOR CRITIQUES" block is present below, each prior iteration ends with an "Outcome of your advice" line that says whether the next candidate the proposer produced was ACCEPTED (your advice helped — its loss strictly beat the running best) or REJECTED (your advice didn't help — the proposer discarded the result and reset to the previous accepted base). This is the loop's ground-truth signal on whether *your own previous critique was good*. Use it explicitly:
+  * If a previous piece of advice was ACCEPTED, it is OK to repeat / extend it. Reinforce in the same direction.
+  * If a previous piece of advice was REJECTED, do NOT repeat the same recommendation; in your new rationale, briefly acknowledge that the previous push in that direction was rejected by the gate and try a different in-family knob (or a smaller step in the same direction) instead.
+  * If you find yourself oscillating (e.g. iter 1 said "increase α", iter 2 said "decrease α", iter 3 about to say "increase α" again), STOP and recommend a value between the two flanking iterations instead.
+  * The "## LOSS TRAJECTORY" block at the top of the user prompt summarises the same information at the loop level — consult it before issuing a new regenerate-with-direction recommendation.
+
+
+## User Prompt
+
+## EXPERIMENTAL DOMAIN
+Subjects repeatedly choose between two fictitious products, A and B. Each option is described by a vector of binary expert ratings (each 0 or 1). Every experiment fixes its own feature count (via `validities` length) and per-expert validities; both are LLM-proposed. The validities are communicated to the subject in the instructions. Subjects pick whichever product they believe is of higher quality. There is no trial-by-trial correctness feedback.
+
+## ARBITER RECOMMENDATION (mechanism family the proposer was told to implement)
+The arbiter labelled this round's two theories in its recommendation as follows:
+- THEORY 1 = `pi_3`
+- THEORY 2 = `pi_6`
+- The recommendation below acts on THEORY 1 (= `pi_3`).
+
+Replace pi_3 with a new theory: confidence-gated unweighted tally with a position/recency-weighted validity tie-break. The default signal should remain the signed tally; when n_features is large and abs(tally) is small or the tally is exactly zero, inject strong near-chance lapse or noise with epsilon in about 0.80-0.97, as pi_6 does, to reproduce Experiments 1, 7, 8, and 10. When a tie or near-tie occurs and the cue configuration advertises a small coherent block, engage a restricted sub-tally, but compute the block weights from a mixture of advertised validity and serial display position. Let the position component be non-negative recency weighting, for example an effective cue weight proportional to validity times exp(rho * position_index), with rho bounded between 0 and 1. This makes late relevant cues dominate over early cues. In Experiment 2 the three advertised-validity-1.0 cues are early and the opposite three cues are late, so the late block wins and the predicted contrast becomes negative, matching -0.745. In Experiment 6 the highest-validity cues are late, so the observed positive contrast is preserved. Keep the small-block and validity-gap gates with block size around 2-4 and clear separation or a large gap so that Experiments 7 and 8 show little validity use. Use bounded logits, probability clipping, and a capped or regularized per-subject variance estimate; this avoids the Experiment 10 blow-up seen in pi_3. Parameter ranges should include epsilon high for low confidence from 0.80 to 0.97, beta from 0.3 to 1.0, top block size 2-4, gap thresholds 0.05-0.30, recency strength rho 0.0-1.0, and all variance contributions regularized with a floor.
+
+
+## CANDIDATE THEORY
+People choose by a confidence-gated unweighted signed tally. On clear tallies, choice follows the tally through a moderate softmax plus a small lapse. When the tally is tied or nearly tied, people may switch to a restricted sub-tally only if the advertised cue validities themselves flag a small coherent elite (two to three cues separated from the rest, or a large validity gap with at most six top cues). Critically, that restricted block is not defined by validity alone: cues are re-ranked by a mixture of advertised validity and serial display position, where later cues receive exponentially greater recency weight. This allows late relevant cues to dominate early equally-valid cue blocks, producing reversals like Experiment 10 while preserving validity use in Experiments 3 and 4. Large-feature environments with small tallies are treated as low confidence and heavily regularized with near-chance lapse, preventing deterministic regression blow-ups.
+
+`predict(parameters, state, history) -> np.ndarray`:
+import numpy as np
+
+
+def predict(parameters, state, history):
+    stim = np.asarray(state, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError('Expected a (2, n_features) stimulus.')
+
+    validities = np.asarray(parameters['validities'], dtype=float)
+    n_features = stim.shape[1]
+    if validities.shape[0] != n_features:
+        raise ValueError('validities length mismatch.')
+
+    a = stim[0]
+    b = stim[1]
+    diff = a - b
+    tally = float(np.sum(diff))
+    positions = np.arange(n_features, dtype=float)
+
+    def stable_softmax(scores, inv_temp):
+        scores = np.asarray(scores, dtype=float)
+        z = inv_temp * (scores - np.max(scores))
+        z = np.clip(z, -30.0, 30.0)
+        e = np.exp(z)
+        return e / np.sum(e)
+
+    def lapse_mix(core, eps):
+        probs = (1.0 - eps) * core + eps * np.array([0.5, 0.5])
+        probs = np.clip(probs, 0.005, 0.995)
+        total = float(np.sum(probs))
+        if total <= 1e-12:
+            return np.array([0.5, 0.5])
+        return probs / total
+
+    vmax = float(np.max(validities))
+    top_tol = float(parameters['top_tol'])
+    top_mask = validities >= (vmax - top_tol)
+    top_size = int(np.sum(top_mask))
+
+    if top_size < n_features:
+        second_max = float(np.max(validities[~top_mask]))
+    else:
+        second_max = vmax
+    validity_gap = vmax - second_max
+
+    gap_hi = float(parameters['gap_hi'])
+    gap_lo = float(parameters['gap_lo'])
+    size_min = int(parameters['small_size_min'])
+    size_max = int(parameters['small_size_max'])
+    block_max = int(parameters['block_max'])
+
+    small_elite = (size_min <= top_size <= size_max) and (validity_gap >= gap_lo)
+    block_clear = (validity_gap >= gap_hi) and (top_size <= block_max)
+    salience = 1.0 if (small_elite or block_clear) else 0.0
+
+    tau_tie = float(parameters['tau_tie'])
+
+    if salience > 0.5 and abs(tally) <= tau_tie:
+        rho = float(parameters['rho'])
+
+        # Stable recency-weighted cue relevance. Subtracting the max position
+        # prevents overflow while preserving the ranking and normalized weights.
+        combined = np.asarray(validities, dtype=float) * np.exp(
+            rho * (positions - positions.max())
+        )
+
+        order = np.argsort(-combined)
+        selected = order[:top_size]
+        if selected.size == 0:
+            return np.array([0.5, 0.5])
+
+        sel_weights = combined[selected]
+        denom = float(np.sum(sel_weights))
+        if denom <= 1e-12:
+            weights = np.ones_like(sel_weights)
+        else:
+            weights = sel_weights / denom * float(selected.size)
+
+        sub_tally = float(np.dot(weights, diff[selected]))
+
+        beta_sub = float(parameters['beta_sub'])
+        eps_sub = float(parameters['epsilon_sub'])
+
+        if abs(sub_tally) > 1e-12:
+            core = stable_softmax(np.array([sub_tally, -sub_tally]), beta_sub)
+            return lapse_mix(core, eps_sub)
+
+        return np.array([0.5, 0.5])
+
+    near_bound = float(parameters['near_tally_bound'])
+    n_low_conf = int(parameters['n_low_conf'])
+
+    if abs(tally) <= near_bound and n_features >= n_low_conf:
+        beta = float(parameters['beta_near'])
+        eps = float(parameters['epsilon_near'])
+    else:
+        beta = float(parameters['beta_tally'])
+        eps = float(parameters['epsilon_tally'])
+
+    core = stable_softmax(np.array([tally, -tally]), beta)
+    return lapse_mix(core, eps)
+
+
+`policy(probs) -> int`:
+import numpy as np
+
+
+def policy(probs):
+    p = np.asarray(probs, dtype=np.float64)
+    p = np.clip(p, 0.0, None)
+    total = float(p.sum())
+    if total <= 0.0:
+        p = np.ones_like(p) / len(p)
+    else:
+        p = p / total
+    return int(np.random.choice(len(p), p=p))
+
+
+`parameters`:
+- beta_tally: [0.6, 1.0]
+- epsilon_tally: [0.02, 0.08]
+- beta_near: [0.3, 0.6]
+- epsilon_near: [0.80, 0.97]
+- near_tally_bound: {1.5}
+- n_low_conf: {15}
+- tau_tie: {0.5}
+- top_tol: {0.001}
+- small_size_min: {2}
+- small_size_max: {3}
+- gap_lo: [0.05, 0.10]
+- gap_hi: [0.30, 0.45]
+- block_max: {6}
+- rho: [0.60, 1.00]
+- beta_sub: [0.60, 1.00]
+- epsilon_sub: [0.05, 0.10]
+- validities: validities
+
+`rationale`:
+The default remains the signed tally, which already reproduces Experiments 1, 2, 5, and 7. The new contribution is a recency-weighted restricted sub-tally: when a tie occurs and the validity configuration advertises a small elite, the model selects a small block by re-ranking cues with validity * exp(rho * position). Setting rho high makes late blocks dominate early equally-valid blocks, which fixes the negative Experiment 10 contrast while leaving late high-validity blocks in Experiments 3 and 4 strongly preferred. The gate is deliberately narrow: small elite size is capped at 3 and requires at least a 0.05-0.10 gap, so Experiment 6's four-cue late block and Experiments 7 and 8 do not trigger validity use. Large-feature, small-tally trials receive epsilon_near of 0.80-0.97, keeping Experiments 8 and 9 near chance and avoiding the variance blow-ups of earlier theories. All logits are bounded, probabilities are clipped, and the use of moderate beta values regularizes per-subject regression estimates.
+
+## LOSS TRAJECTORY (this propose-loop)
+Aggregate loss across iterations of THIS propose-loop (lower = better, 0 = perfect, `+inf` = unscorable). The ACCEPTED / REJECTED tag is the loop's programmatic accept-gate decision: `loss < accepted_loss` -> ACCEPTED (becomes new base), else REJECTED (base unchanged). Use this together with the per-experiment values below to grade fit-quality AND your own past advice (see `## YOUR PRIOR CRITIQUES` below).
+
+- iter 1 (current candidate you are grading): loss=0.1073 -> ACCEPTED
+Running-best (last accepted) base: iter 1 at loss=0.1073.
+
+## EXPERIMENTAL RESULTS (candidate vs real, per experiment)
+### Experiment 1
+**Design**
+  A=[1, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1, 1]
+  A=[0, 1, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0]  B=[0, 0, 0, 1, 1, 1]
+  A=[0, 0, 0, 1, 1, 1]  B=[1, 1, 1, 0, 0, 0]
+  A=[0, 1, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 1]
+  A=[0, 0, 1, 1, 1, 1]  B=[0, 1, 0, 0, 0, 0]
+  A=[0, 1, 1, 0, 0, 0]  B=[0, 0, 0, 1, 1, 0]
+  A=[0, 0, 0, 1, 1, 0]  B=[0, 1, 1, 0, 0, 0]
+  A=[0, 0, 1, 0, 0, 0]  B=[0, 0, 0, 1, 1, 1]
+  A=[0, 0, 0, 1, 1, 1]  B=[0, 0, 1, 0, 0, 0]
+  A=[0, 0, 1, 1, 0, 0]  B=[0, 0, 0, 0, 1, 1]
+  A=[0, 0, 0, 0, 1, 1]  B=[0, 0, 1, 1, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    validities = np.array([0.92, 0.84, 0.76, 0.68, 0.6, 0.5])
+    cue_order = np.argsort(-validities, kind='stable')
+    A = np.array([np.asarray(row, dtype=float) for row in data['option_a_ratings']])
+    B = np.array([np.asarray(row, dtype=float) for row in data['option_b_ratings']])
+    resp_is_a = (data['response'].to_numpy(dtype=float) == 0.0).astype(float)
+
+    winner = np.full(A.shape[0], -1, dtype=int)
+    unresolved = np.ones(A.shape[0], dtype=bool)
+    for j in cue_order:
+        diff = A[:, j] - B[:, j]
+        first = unresolved & (diff != 0)
+        winner[first] = np.where(diff[first] > 0, 0, 1)
+        unresolved[first] = False
+
+    tally = (A > B).sum(axis=1) - (B > A).sum(axis=1)
+    side = np.where(winner == 0, 1.0, np.where(winner == 1, -1.0, 0.0))
+    signed_weight = side * (np.abs(tally) + 1.0)
+
+    numerator = float(np.sum(signed_weight * resp_is_a))
+    denom = float(np.sum(signed_weight[signed_weight > 0]))
+    if denom == 0.0:
+        return 0.0
+    return numerator / denom
+
+```
+
+**Observed (real) value:** -0.6137 (var=0.0420)
+**Candidate (simulated) value:** -0.7272 (var=0.0023)
+**Other theories' values on this metric (for reference):**
+- pi_1: 0.7347 (var=0.0373)
+- pi_2: -0.6093 (var=0.0194)
+- pi_3: -0.5590 (var=0.0211)
+- pi_4: -0.5890 (var=0.0178)
+- pi_5: -0.5367 (var=0.0191)
+- pi_6: -0.7690 (var=0.0029)
+
+### Experiment 2
+**Design**
+  A=[1, 1, 1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1, 1, 0]  B=[0, 0, 0, 0, 0, 0, 0, 1]
+  A=[1, 1, 1, 1, 1, 1, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1]
+  A=[1, 1, 1, 1, 1, 0, 0, 0]  B=[0, 0, 0, 0, 0, 1, 1, 1]
+  A=[1, 1, 1, 0, 1, 0, 0, 0]  B=[0, 0, 0, 1, 0, 1, 1, 1]
+  A=[1, 1, 0, 0, 1, 0, 0, 0]  B=[0, 0, 1, 1, 0, 1, 1, 1]
+  A=[1, 0, 0, 0, 1, 0, 0, 0]  B=[0, 1, 1, 1, 0, 1, 1, 1]
+  A=[0, 0, 0, 0, 1, 0, 0, 0]  B=[1, 1, 1, 1, 0, 1, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1, 1, 1]
+  A=[1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1, 1, 1, 1]
+  A=[1, 1, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 1, 1, 1]
+  A=[1, 1, 1, 0, 0, 0, 0, 0]  B=[0, 0, 0, 1, 1, 1, 1, 1]
+  A=[1, 1, 1, 1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1, 1, 1, 1]
+  A=[1, 1, 1, 1, 0, 1, 0, 0]  B=[0, 0, 0, 0, 1, 0, 1, 1]
+  A=[1, 1, 1, 1, 0, 1, 1, 0]  B=[0, 0, 0, 0, 1, 0, 0, 1]
+  A=[1, 1, 1, 1, 0, 1, 1, 1]  B=[0, 0, 0, 0, 1, 0, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+
+    a_col = data['option_a_ratings'].tolist()
+    b_col = data['option_b_ratings'].tolist()
+    resp = data['response'].astype(int).tolist()
+
+    # Highest validity is at display index 4: [0.57, 0.7, 0.5, 0.77, 0.92, 0.84, 0.63, 0.52]
+    top_idx = 4
+
+    xs = []
+    ys = []
+
+    for a, b, r in zip(a_col, b_col, resp):
+        if a[top_idx] == b[top_idx]:
+            continue
+
+        top_is_a = a[top_idx] > b[top_idx]
+
+        a_wins = 0
+        b_wins = 0
+        for fa, fb in zip(a, b):
+            if fa > fb:
+                a_wins += 1
+            elif fb > fa:
+                b_wins += 1
+
+        d = a_wins - b_wins
+        if d == 0:
+            continue
+
+        # Signed tally advantage for the option favored by the top cue.
+        signed_tally_for_top = d if top_is_a else -d
+
+        # 1 if the subject chose the option favored by the top cue, else 0.
+        top_chosen = 1.0 if ((top_is_a and r == 0) or ((not top_is_a) and r == 1)) else 0.0
+
+        xs.append(float(signed_tally_for_top))
+        ys.append(top_chosen)
+
+    if len(xs) < 2:
+        return 0.0
+
+    x = np.asarray(xs, dtype=float)
+    y = np.asarray(ys, dtype=float)
+
+    xm = x.mean()
+    sxx = float(np.sum((x - xm) ** 2))
+    if sxx <= 0:
+        return 0.0
+
+    slope = float(np.sum((x - xm) * (y - y.mean())) / sxx)
+    return slope
+```
+
+**Observed (real) value:** 0.0659 (var=0.0002)
+**Candidate (simulated) value:** 0.0863 (var=0.0000)
+**Other theories' values on this metric (for reference):**
+- pi_2: 0.0679 (var=0.0003)
+- pi_1: -0.0002 (var=0.0000)
+- pi_3: 0.0682 (var=0.0002)
+- pi_4: 0.0713 (var=0.0002)
+- pi_5: 0.0700 (var=0.0003)
+- pi_6: 0.0875 (var=0.0000)
+
+### Experiment 3
+**Design**
+  A=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1]  B=[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0]  B=[0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 1]
+  A=[1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0]  B=[0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0]  B=[1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 1, 1]
+  A=[1, 1, 1, 1, 1, 0, 1, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 1, 0, 1, 1, 1, 1, 1]
+  A=[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1]  B=[1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0]
+  A=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0]  B=[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1]
+  A=[1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0]
+
+**Metric**
+```python
+import numpy as np
+import pandas as pd
+
+def metric(data: pd.DataFrame) -> float:
+    validities = np.array([0.5, 0.5, 0.5, 0.5, 0.5, 0.5,
+                           1.0, 1.0, 1.0, 1.0, 1.0, 1.0], dtype=float)
+    centered = validities - validities.mean()
+
+    cap = 3.0
+    subj_vals = []
+
+    for _, sub in data.groupby('subject_id'):
+        a = np.asarray(sub['option_a_ratings'].tolist(), dtype=float)
+        b = np.asarray(sub['option_b_ratings'].tolist(), dtype=float)
+        diff = a - b
+        tally = diff.sum(axis=1)
+        s = diff @ centered
+
+        mask = np.abs(tally) < 1e-9
+        if int(mask.sum()) < 4:
+            continue
+
+        s0 = s[mask]
+        resp = sub['response'].to_numpy(dtype=float)
+        y = (resp[mask] == 0.0).astype(float)
+
+        score = float(np.sum(s0 * (y - 0.5)))
+        null_sd = float(np.sqrt(0.25 * np.sum(s0 * s0)))
+        if null_sd <= 1e-12:
+            continue
+
+        z = score / null_sd
+        subj_vals.append(float(min(abs(z), cap)))
+
+    if not subj_vals:
+        return 0.0
+    return float(np.mean(subj_vals))
+
+```
+
+**Observed (real) value:** 2.6289 (var=0.2854)
+**Candidate (simulated) value:** 3.0000 (var=0.0000)
+**Other theories' values on this metric (for reference):**
+- pi_3: 2.0844 (var=1.0595)
+- pi_2: 0.6756 (var=0.2991)
+- pi_1: 2.6856 (var=0.3983)
+- pi_4: 2.9744 (var=0.0172)
+- pi_5: 3.0000 (var=0.0000)
+- pi_6: 2.2500 (var=0.6567)
+
+### Experiment 4
+**Design**
+  A=[0, 0, 0, 0, 0, 1, 1, 1, 1, 1]  B=[1, 1, 1, 1, 1, 0, 0, 0, 0, 0]
+  A=[0, 0, 1, 0, 0, 0, 1, 1, 1, 1]  B=[1, 1, 0, 1, 1, 1, 0, 0, 0, 0]
+  A=[0, 0, 1, 1, 0, 0, 0, 1, 1, 1]  B=[1, 1, 0, 0, 1, 1, 1, 0, 0, 0]
+  A=[0, 0, 1, 1, 1, 0, 0, 0, 1, 1]  B=[1, 1, 0, 0, 0, 1, 1, 1, 0, 0]
+  A=[1, 1, 0, 0, 0, 1, 1, 1, 0, 0]  B=[0, 0, 1, 1, 1, 0, 0, 0, 1, 1]
+  A=[1, 1, 0, 0, 1, 1, 1, 0, 0, 0]  B=[0, 0, 1, 1, 0, 0, 0, 1, 1, 1]
+  A=[1, 1, 0, 1, 1, 1, 0, 0, 0, 0]  B=[0, 0, 1, 0, 0, 0, 1, 1, 1, 1]
+  A=[1, 1, 1, 1, 1, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 1, 1, 1, 1, 1]
+  A=[0, 0, 0, 0, 1, 1, 1, 1, 1, 1]  B=[1, 1, 1, 1, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1]  B=[1, 1, 1, 1, 1, 1, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1, 1, 1, 1, 1, 1]
+
+**Metric**
+```python
+import numpy as np
+import pandas as pd
+
+
+def metric(data: pd.DataFrame) -> float:
+    validities = np.array([0.5, 0.5, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.0, 1.0])
+    centered = validities - validities.mean()
+
+    def one_subject_stat(sub):
+        A = np.array(sub['option_a_ratings'].tolist(), dtype=float)
+        B = np.array(sub['option_b_ratings'].tolist(), dtype=float)
+        y = (sub['response'].to_numpy() == 0).astype(float)
+        diff = A - B
+        tie_trial_mask = np.isclose(np.sum(diff, axis=1), 0.0)
+        s = diff.dot(centered)
+        score = np.sum(s[tie_trial_mask] * y[tie_trial_mask])
+        null_var = 0.25 * np.sum(s[tie_trial_mask] ** 2)
+        if null_var <= 0.0:
+            return 0.0
+        z = score / np.sqrt(null_var)
+        return float(np.abs(z) - 0.7978845608028654)
+
+    if data['subject_id'].nunique() == 1:
+        return one_subject_stat(data)
+
+    values = [one_subject_stat(sub) for _, sub in data.groupby('subject_id', sort=False)]
+    if not values:
+        return 0.0
+    return float(np.mean(values))
+
+```
+
+**Observed (real) value:** 4.2015 (var=2.0036)
+**Candidate (simulated) value:** 5.1801 (var=0.2613)
+**Other theories' values on this metric (for reference):**
+- pi_2: 0.1148 (var=0.3890)
+- pi_3: 1.1715 (var=2.0496)
+- pi_1: 3.6874 (var=2.2057)
+- pi_4: 3.6712 (var=1.2295)
+- pi_5: 4.0553 (var=1.3339)
+- pi_6: 4.1985 (var=0.4476)
+
+### Experiment 5
+**Design**
+  A=[1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0]
+  A=[1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0]
+  A=[1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0]
+  A=[1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 0]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0]  B=[0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1]  B=[1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0]  B=[1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0]  B=[1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0]  B=[1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 0]  B=[1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0]
+  A=[0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 0]  B=[1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1]  B=[1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0]  B=[0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1]
+  A=[0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1]  B=[1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0]
+  A=[1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1]
+
+**Metric**
+```python
+import numpy as np
+import pandas as pd
+
+def metric(data: pd.DataFrame) -> float:
+    a = np.asarray(data['option_a_ratings'].tolist(), dtype=float)
+    b = np.asarray(data['option_b_ratings'].tolist(), dtype=float)
+    diff = a - b
+    total_tally = diff.sum(axis=1)
+    high_tally = diff[:, 8:].sum(axis=1)
+    chose_a = (data['response'].to_numpy() == 0).astype(float)
+    subject = data['subject_id'].to_numpy()
+
+    per_subject = []
+    for sid in np.unique(subject):
+        idx = subject == sid
+        tie = total_tally[idx] == 0.0
+        high_pos = high_tally[idx] > 0
+        high_neg = high_tally[idx] < 0
+        pos_trials = tie & high_pos
+        neg_trials = tie & high_neg
+        if pos_trials.sum() > 0 and neg_trials.sum() > 0:
+            diff_rate = float(chose_a[idx][pos_trials].mean() - chose_a[idx][neg_trials].mean())
+            per_subject.append(diff_rate)
+
+    if not per_subject:
+        return float('nan')
+
+    return float(np.mean(per_subject))
+```
+
+**Observed (real) value:** -0.0467 (var=0.0156)
+**Candidate (simulated) value:** 0.0233 (var=0.0347)
+**Other theories' values on this metric (for reference):**
+- pi_3: -0.0333 (var=0.1778)
+- pi_4: 0.7550 (var=0.0326)
+- pi_1: 0.6483 (var=0.0759)
+- pi_2: 0.0300 (var=0.0391)
+- pi_5: -0.0017 (var=0.0329)
+- pi_6: -0.0183 (var=0.0526)
+
+### Experiment 6
+**Design**
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 0]  B=[0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 1]
+  A=[1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 0, 0]  B=[0, 0, 1, 1, 0, 1, 1, 0, 0, 0, 1, 1]
+  A=[1, 1, 0, 0, 0, 1, 1, 0, 1, 1, 0, 0]  B=[0, 0, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1]
+  A=[1, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0]  B=[0, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1]  B=[1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1]  B=[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1]
+
+**Metric**
+```python
+import numpy as np
+import pandas as pd
+
+def metric(data: pd.DataFrame) -> float:
+    if data.empty:
+        return 0.0
+
+    validities = np.array([0.5, 0.5, 0.5, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.0, 1.0, 1.0], dtype=float)
+    weights = (validities - 0.5) ** 6.0
+
+    a = np.array(data['option_a_ratings'].tolist(), dtype=float)
+    b = np.array(data['option_b_ratings'].tolist(), dtype=float)
+    resp = data['response'].to_numpy(dtype=float)
+
+    diff = a - b
+    tally = (a > b).sum(axis=1) - (b > a).sum(axis=1)
+    tie_mask = tally == 0
+
+    if not np.any(tie_mask):
+        return 0.0
+
+    v = diff[tie_mask] @ weights
+    y = resp[tie_mask]
+    signed_accuracy = np.sign(v) * (1.0 - 2.0 * y)
+    abs_v = np.abs(v)
+    total_weight = float(abs_v.sum())
+
+    if total_weight <= 0.0:
+        return 0.0
+
+    return float(np.sum(abs_v * signed_accuracy) / total_weight)
+
+```
+
+**Observed (real) value:** 0.0204 (var=0.0176)
+**Candidate (simulated) value:** 0.0252 (var=0.0332)
+**Other theories' values on this metric (for reference):**
+- pi_4: 0.5795 (var=0.0652)
+- pi_3: 0.0637 (var=0.0343)
+- pi_1: 0.0104 (var=0.0124)
+- pi_2: -0.0359 (var=0.0223)
+- pi_5: 0.0082 (var=0.0308)
+- pi_6: -0.0098 (var=0.0375)
+
+### Experiment 7
+**Design**
+  A=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1]  B=[1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1]
+  A=[0, 0, 0, 0, 0, 1, 0, 1, 1, 1, 1]  B=[1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 1, 0, 1, 1, 1, 1]
+  A=[0, 0, 0, 0, 0, 1, 1, 1, 0, 1, 1]  B=[1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 1, 1, 1, 0, 1, 1]
+  A=[0, 0, 0, 0, 0, 1, 1, 0, 1, 1, 1]  B=[1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 1, 1, 0, 1, 1, 1]
+  A=[1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1]  B=[1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1]  B=[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0]
+
+**Metric**
+```python
+import numpy as np
+import pandas as pd
+
+def metric(data: pd.DataFrame) -> float:
+    df = data.copy()
+    df["_order"] = df.groupby("subject_id", sort=False).cumcount()
+    df = df[df["_order"] >= 12]
+    if df.empty:
+        return 0.0
+
+    a = np.asarray(df["option_a_ratings"].tolist(), dtype=float)
+    b = np.asarray(df["option_b_ratings"].tolist(), dtype=float)
+    d = (a - b).sum(axis=1)
+    resp = df["response"].to_numpy().astype(int)
+
+    v = np.array([0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 0.85, 0.75, 0.65, 0.95, 0.99])
+    w = v - 0.5
+
+    ties = np.abs(d) < 0.5
+    non_ties = ~ties
+
+    if ties.any():
+        tie_scores = np.dot(a[ties] - b[ties], w)
+        validity_side = np.where(tie_scores > 0, 0, 1)
+        tie_rate = float(np.mean(resp[ties] == validity_side))
+    else:
+        tie_rate = 0.5
+
+    if non_ties.any():
+        tally_side = np.where(d[non_ties] > 0, 0, 1)
+        non_tie_rate = float(np.mean(resp[non_ties] == tally_side))
+    else:
+        non_tie_rate = 0.5
+
+    return tie_rate - non_tie_rate
+
+```
+
+**Observed (real) value:** -0.5522 (var=0.0900)
+**Candidate (simulated) value:** -0.4023 (var=0.0063)
+**Other theories' values on this metric (for reference):**
+- pi_3: -0.3924 (var=0.0256)
+- pi_5: 0.2097 (var=0.0247)
+- pi_1: 0.0039 (var=0.0066)
+- pi_2: -0.3609 (var=0.0171)
+- pi_4: -0.0755 (var=0.0223)
+- pi_6: -0.3110 (var=0.0242)
+
+### Experiment 8
+**Design**
+  A=[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0]
+  A=[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]  B=[1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0]  B=[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+
+**Metric**
+```python
+import numpy as np
+import pandas as pd
+
+
+def metric(data: pd.DataFrame) -> float:
+    subjects = list(data['subject_id'].unique())
+    z_scores = []
+    for sid in subjects:
+        sub = data[data['subject_id'] == sid]
+        d_vals = []
+        s_vals = []
+        y_vals = []
+        for _, row in sub.iterrows():
+            a = np.asarray(row['option_a_ratings'], dtype=float)
+            b = np.asarray(row['option_b_ratings'], dtype=float)
+            n = a.size
+            if n < 2:
+                continue
+            half = n // 2
+            diff = a - b
+            high = float(np.sum(diff[:half]))
+            low = float(np.sum(diff[half:]))
+            d = high + low
+            s = 0.25 * (high - low)
+            y = 1.0 - float(row['response'])
+            d_vals.append(d)
+            s_vals.append(s)
+            y_vals.append(y)
+        if len(y_vals) < 10:
+            continue
+        X = np.column_stack([
+            np.ones(len(y_vals)),
+            np.asarray(d_vals, dtype=float),
+            np.asarray(s_vals, dtype=float)
+        ])
+        y = np.asarray(y_vals, dtype=float)
+        beta = np.linalg.lstsq(X, y, rcond=None)[0]
+        beta = np.asarray(beta, dtype=float).ravel()
+        p_hat = X @ beta
+        p_hat = np.clip(p_hat, 0.005, 0.995)
+        resid = y - p_hat
+        XtX = X.T @ X
+        try:
+            bread = np.linalg.inv(XtX)
+        except np.linalg.LinAlgError:
+            bread = np.linalg.pinv(XtX)
+        meat = (X * (resid ** 2)[:, None]).T @ X
+        cov = bread @ meat @ bread
+        se_d = float(np.sqrt(max(cov[1, 1], 1e-12)))
+        z_d = float(beta[1]) / se_d if se_d > 0 else 0.0
+        z_scores.append(z_d)
+    if len(z_scores) == 0:
+        return 0.0
+    if len(subjects) > 1:
+        return float(np.var(np.asarray(z_scores, dtype=float), ddof=0))
+    return float(z_scores[0])
+```
+
+**Observed (real) value:** 0.9276 (var=0.9276)
+**Candidate (simulated) value:** 1.4064 (var=1.4064)
+**Other theories' values on this metric (for reference):**
+- pi_5: 52751.7718 (var=52751.7718)
+- pi_3: 84359.6013 (var=84359.6013)
+- pi_1: 0.8774 (var=0.8774)
+- pi_2: 53046.1557 (var=53046.1557)
+- pi_4: 35873.4630 (var=35873.4630)
+- pi_6: 1.5589 (var=1.5589)
+
+### Experiment 9
+**Design**
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0]  B=[1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 0]  B=[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]  B=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0]
+  A=[1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0]
+  A=[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 0]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0]
+  A=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0]  B=[1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]
+
+**Metric**
+```python
+import numpy as np
+import pandas as pd
+
+def metric(data: pd.DataFrame) -> float:
+    if len(data) == 0:
+        return 0.0
+    a = np.asarray(list(data['option_a_ratings']), dtype=float)
+    b = np.asarray(list(data['option_b_ratings']), dtype=float)
+    tally = np.sum(a - b, axis=1)
+    resp = data['response'].to_numpy(dtype=float)
+    pos_mask = tally > 0.0
+    neg_mask = tally < 0.0
+    pos_mean = float(np.mean(resp[pos_mask])) if np.any(pos_mask) else 0.5
+    neg_mean = float(np.mean(resp[neg_mask])) if np.any(neg_mask) else 0.5
+    return neg_mean - pos_mean
+
+```
+
+**Observed (real) value:** 0.0300 (var=0.0026)
+**Candidate (simulated) value:** 0.0450 (var=0.0093)
+**Other theories' values on this metric (for reference):**
+- pi_3: 0.7033 (var=0.0457)
+- pi_6: 0.0750 (var=0.0143)
+- pi_1: -0.0054 (var=0.0041)
+- pi_2: 0.6904 (var=0.0353)
+- pi_4: 0.6500 (var=0.0402)
+- pi_5: 0.7450 (var=0.0312)
+
+### Experiment 10
+**Design**
+  A=[1, 0, 0, 0, 0, 1]  B=[0, 0, 0, 1, 1, 0]
+  A=[1, 0, 0, 0, 0, 0]  B=[0, 0, 0, 1, 0, 0]
+  A=[1, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 1]
+  A=[1, 1, 0, 0, 0, 0]  B=[0, 0, 0, 1, 1, 0]
+  A=[1, 1, 0, 0, 0, 0]  B=[0, 0, 0, 1, 0, 1]
+  A=[1, 1, 1, 0, 0, 0]  B=[0, 0, 0, 1, 1, 1]
+  A=[0, 0, 0, 1, 1, 0]  B=[1, 0, 0, 0, 0, 1]
+  A=[0, 0, 0, 1, 0, 0]  B=[1, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 1]  B=[1, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 1, 1, 0]  B=[1, 1, 0, 0, 0, 0]
+  A=[0, 0, 0, 1, 0, 1]  B=[1, 1, 0, 0, 0, 0]
+  A=[0, 0, 0, 1, 1, 1]  B=[1, 1, 1, 0, 0, 0]
+
+**Metric**
+```python
+import numpy as np
+import pandas as pd
+
+
+def metric(data):
+    # Top three features are the three perfectly valid experts in this design.
+    a_top = np.array([float(r[0] + r[1] + r[2]) for r in data['option_a_ratings']])
+    b_top = np.array([float(r[0] + r[1] + r[2]) for r in data['option_b_ratings']])
+    top_tally = a_top - b_top
+
+    chose_a = 1.0 - np.asarray(data['response'], dtype=float)
+
+    mask_pos3 = top_tally == 3
+    mask_neg3 = top_tally == -3
+
+    if mask_pos3.sum() == 0 or mask_neg3.sum() == 0:
+        return 0.0
+
+    p_a_given_top_plus3 = chose_a[mask_pos3].mean()
+    p_a_given_top_minus3 = chose_a[mask_neg3].mean()
+    return float(p_a_given_top_plus3 - p_a_given_top_minus3)
+
+```
+
+**Observed (real) value:** -0.7450 (var=0.0406)
+**Candidate (simulated) value:** -0.9150 (var=0.0097)
+**Other theories' values on this metric (for reference):**
+- pi_6: 0.7500 (var=0.0269)
+- pi_3: -0.0675 (var=0.0939)
+- pi_1: 0.6675 (var=0.0648)
+- pi_2: -0.0275 (var=0.0558)
+- pi_4: 0.6550 (var=0.0810)
+- pi_5: 0.7725 (var=0.0367)
+
+## RESPONSE FORMAT
+
+Return a JSON object with the following fields:
+- interpretation: Freeform analysis of the model simulation results on existing experiments and how they do or do not support the proposed model/theory.
+- verdict: Either 'regenerate' (regenerate a new model/theory) or 'continue' (keep the current model/theory).
+- rationale: If verdict='regenerate', why the current predict / policy / parameter-ranges should be revised. If verdict='continue', a sketch of why the current theory should be kept.
+
+
+## Response
+
+```json
+{
+  "interpretation": "The candidate stays inside the prescribed confidence-gated tally family and reproduces the main cross-experiment structure. Default signed tally gives correct or near-correct patterns in Experiments 1, 2, 6, 7, and 9; the salience gates prevent valence use where the data show none; the large-feature low-confidence noise branch keeps Experiments 8 and 9 near chance without the variance blow-ups of earlier theories; and the recency-weighted restricted sub-tally uniquely produces the required negative Experiment 10 contrast while preserving strong validity use in Experiments 3 and 4. Residual mismatches are mostly magnitude rather than direction: Experiments 3, 4, and 10 are somewhat too extreme (3.00 vs 2.63, 5.18 vs 4.20, -0.915 vs -0.745), Experiment 7 is slightly weaker than real (-0.402 vs -0.552), and Experiment 5 differs only in sign but both values are close to zero. These are minor over-strength/under-strength calibration issues within the same mechanism, not missing mechanisms or reversed qualitative effects.",
+  "verdict": "continue",
+  "rationale": "The candidate is good enough to carry forward. It faithfully implements the arbiter-recommended mechanism, is the only theory considered that gets the Experiment 10 reversal in the correct direction, and improves the large-feature variance pathologies. The remaining deviations are small same-direction calibration differences that could be addressed by minor tuning of epsilon_sub, beta_sub, or rho if future experiments demand it, but they do not currently warrant regenerating the theory."
+}
+```
+
+## Usage
+
+```json
+{
+  "input_tokens": 19602,
+  "output_tokens": 8087,
+  "reasoning_tokens": 7743,
+  "provider": "NextBit"
+}
+```

@@ -1,0 +1,3268 @@
+# generation_iter_09_attempt_00
+
+## System Prompt
+
+You are a renowned cognitive scientist and an expert Python programmer.
+
+Your job is to propose a new theory and its model instantiation in the Decision Making (Binary Features) domain based on the feedback provided by an arbiter. The feedback contains diagnoses of mechanistic failures of the previous theory along with suggestions for a new theory family that overcomes those failures. The newly proposed theory and model should display human-like behavior when simulated on experiment(s). 
+The goal of the theory generation process is to SURFACE theories that are EXPERIMENT-INVARIANT: that is,theories that explain data across the majority of experiments. 
+You will see a list of theories that have been proposed in the past but you should only use them as inspiration and not to choose from them. Propose a new theory that is different. 
+If they fail to do so, you will receive feedback on their performance on the same experiment(s) and you will have to propose another new theory and model that meet the requirements, iterating until you succeed.
+
+If you think the failure to capture human behavior is due to arbiter feedback that is inaccurate or unhelpful, you can propose a new theory and model that ignore the feedback, but you must provide rationale for why you are ignoring it and how your proposal overcomes the identified mechanistic failures.
+
+## ACCEPT GATE & LOSS TRAJECTORY — HOW THE LOOP HANDLES YOUR EDITS
+This propose-loop has a programmatic accept gate: after every iteration the candidate's `aggregate_loss` is compared against the running-best loss; strict improvement -> ACCEPTED (the candidate becomes the new running-best base); otherwise -> REJECTED (the candidate is discarded and the base is unchanged). You do NOT need to manually "revert" a regressed edit — the gate already does that for you.
+
+The block rendered below as `## PREVIOUS CANDIDATE (this loop)` is ALWAYS the running-best (last ACCEPTED) candidate, NEVER your most recent attempt if it was rejected. So:
+  * Treat `## PREVIOUS CANDIDATE` as a known-good base. Build on it.
+  * The `## LOSS TRAJECTORY` block tags every iteration ACCEPTED or REJECTED. Use this as ground truth on which past critic advice actually moved the loop forward and which didn't.
+  * The `## PRIOR FEEDBACK ITERATIONS` block annotates each prior critique with the same ACCEPTED/REJECTED tag of the candidate it elicited. Down-weight critic advice whose previous candidates were REJECTED, and reinforce / extend advice whose candidates were ACCEPTED.
+  * Treat the best ACCEPTED iteration's loss as a soft floor — the next edit should plausibly land at-or-below it, otherwise the gate will reject your attempt and the base stays put.
+
+Each metric value below is shown as `point_estimate (var=X)`, where `point_estimate` is `metric(data)` evaluated on the full pooled dataset and `var` is the population (between-subject) variance of the same metric re-applied per `subject_id`. The point estimate is the canonical scalar; `var` reports how consistent that estimate is across subjects (lower = more consistent). `var=n/a` means the metric could not be applied to a single-subject slice.
+
+## PARAMETER NOTATION
+`parameters` is a JSON object mapping each parameter name (snake_case string) to a *string* value that specifies its domain. Every value MUST be a string — never a bare list, number, tuple, or expression. Use exactly one of these notations per parameter:
+
+1. Continuous interval — square brackets, two numeric bounds:
+   "[min, max]"
+   Examples: "[0, 1]", "[1.0, 10.0]", "[10, 1000]"
+
+2. Discrete set — curly braces, comma-separated values:
+   "{v1, v2, ...}"
+   Example: "{1, 2}"
+
+3. Vector of intervals whose length is set by the experiment — a bracketed tuple repeated by a symbolic length variable:
+   "[(min, max)] * length_var"
+   Example: "[(0, 1)] * n_features"
+
+4. Symbolic reference — a bare variable name (no brackets, no angle brackets), used when the parameter takes its value from an experiment-defined constant rather than a range:
+   "variable_name"
+   Example: "n_features"
+
+Rules:
+- Do not use parentheses for intervals; square brackets only. Tuples `(a, b)` are reserved for the vector-of-intervals notation in (3).
+- Do not mix notations within a single value (e.g., no "[0, 1] or {2, 3}").
+- Do not quote numbers inside the notation (write "[0, 1]", not "['0', '1']").
+- Every parameter referenced by `predict` or `policy` must appear as a key in `parameters`, and vice versa.
+- Notations 3 and 4 may ONLY reference the experiment-defined symbolic identifiers listed under "ALLOWED SYMBOLIC IDENTIFIERS" below. Do not invent new identifier names. If a parameter's shape doesn't fit any of those variables, fall back to a literal interval (notation 1) or discrete set (notation 2). Use these names so the model adapts to any experiment in this domain instead of hardcoding shapes.
+
+## ALLOWED SYMBOLIC IDENTIFIERS (for notations 3 and 4 above)
+- n_features: Number of expert ratings per option (LLM-proposed via `validities` length).
+- validities: Per-expert validities (LLM-proposed; each in [0.5, 1.0]); fixed across all trials.
+
+## AVAILABLE IMPORTS inside `predict` and `policy`
+- numpy as np
+- pandas as pd
+- scipy and its submodules
+- torch and torch.nn.functional as F
+- sklearn and its submodules
+- math, random, and other standard Python libraries
+
+## RUNTIME CONTRACT (function signatures and argument shapes)
+`predict(parameters, state, history) -> np.ndarray`:
+- `parameters`: dict[str, value]. One sample drawn from your declared `parameters` ranges, applied for the entire subject run.
+- `state`: the per-trial input delivered by the experiment (shape is domain-specific — see the experiment description above and the `history` key list below, which mirrors the per-trial variables carried in `state`). Convert to an array with `np.asarray(state)` if you need array ops.
+- `history`: dict-of-lists for past trials in this subject's run, NOT a list-of-dicts. The per-trial keys are:
+  Each value below is a Python list in trial order; entry `i` is the value for trial `i`. On the first trial all lists are empty.
+  - `"option_a_ratings"`: List of n_features binary expert ratings (each 0 or 1) for option A on this trial.
+  - `"option_b_ratings"`: List of n_features binary expert ratings (each 0 or 1) for option B on this trial.
+  - `"response"`: 0 if subject chose A, 1 if subject chose B.
+Iterating `for x in history:` iterates the dict KEYS (strings); to walk trials index the lists in lock-step, e.g. `for i in range(len(next(iter(history.values())))): ...`.
+- Returns: 1-D `np.ndarray` of choice probabilities over the experiment's discrete action set, summing to 1.
+
+`policy(probs) -> int`:
+- Receives the probability vector produced by `predict`.
+- Returns: integer index in `[0, len(probs))` identifying the chosen action. If you sample with `np.random.choice(..., p=probs)`, normalise first (`probs = np.asarray(probs, dtype=np.float64); probs /= probs.sum()`) to avoid the "probabilities do not sum to 1" ValueError from float drift.
+
+
+## User Prompt
+
+## EXPERIMENTAL DOMAIN
+Subjects repeatedly choose between two fictitious products, A and B. Each option is described by a vector of binary expert ratings (each 0 or 1). Every experiment fixes its own feature count (via `validities` length) and per-expert validities; both are LLM-proposed. The validities are communicated to the subject in the instructions. Subjects pick whichever product they believe is of higher quality. There is no trial-by-trial correctness feedback.
+
+Each subject completes ~96 trials in a single block, with order randomized independently per subject. On every trial the subject sees two options A and B, each described by `n_features` binary expert ratings (each 0 or 1). The per-feature validities and n_features are fixed per experiment (design-time choices). Validities are communicated to the subject in the instructions. Both `n_features` and `validities` are exposed to your `predict` via the `parameters` dict. The subject chooses A or B; no correctness feedback is provided after the choice.
+
+## ARBITER GUIDE
+The arbiter labelled this round's two theories in its recommendation as follows:
+- THEORY 1 = `pi_7`
+- THEORY 2 = `pi_10`
+- The recommendation below acts on THEORY 2 (= `pi_10`).
+
+Replace pi_10 with a new theory, 'Jittered Uniform-Support Anti-Endorsement Integration (JU-AEI)'. Per-trial core is unchanged from the validated shared kernel: endorsements are evidence AGAINST the carrying option, E = sum_j v_j^gamma (b_j - a_j) with RAW (unnormalized) validity-power weights, p(A) = (1-eps)*[m*sigmoid(beta*E) + (1-m)*(1-sigmoid(beta*E))] + eps/2, A_eff = (1-eps)(2m-1) concentrated near 0.69, ties exactly 50%. The population departs from both predecessors in three calibrated ways. (1) GAMMA SUPPORT: a single continuous uniform distribution on [0, 2.2] — no empty gaps and no narrow tail segment (both directly refuted by Exps 2 and 16: the gap must be filled at constant density, and any cliff at 2.10 or 2.0 is falsified), with the slight extension past 2.0 providing the modest true tail mass that Exp 18's flip rate (0.4335 < RSD's 0.5335) and Exp 17's intermediate Bayes factor require, while keeping Exp 2's crossing statistic near its observed -0.21. (2) BETA: log-uniform on [1.8, 6.0], independent of gamma — no segment-coupled beta boxes (the direct cause of pi_10's Exp 15 catastrophe). (3) THE NEW MECHANISM: per-trial stochastic validity-attention jitter — with probability delta ~ 0.10-0.13 per trial, the effective gamma for that trial is redrawn uniformly from [gamma_habit - 0.35, gamma_habit + 0.35] clipped to [0, 2.4]. This is the key competitor to pi_7: it explains why fixed-gamma measurement models (Exp 16's tail estimator, Exp 18's flip rungs, Exp 17's BF) see apparent mass above 2.0 and softened per-subject likelihoods in real data, while population-level density probes (Exp 2) still recover an essentially uniform [0, 2] shape, and why Exps 13/14's Bayes factors are smaller in real data than pi_7's noise-free simulation predicts. Falsifiable signatures: near-uniform recovered gamma density with no plateau on rung ladders; apparent tail-mass estimates that INFLATE on shallow-slope designs (Exp 16 ~ 0.25-0.35) while crossing-point statistics stay near -0.2 (Exp 2); flip-trial rates pulled 0.05-0.10 below RSD's predictions on gamma* ~ 0.7-1.0 ladders (Exp 18 ~ 0.43-0.47); per-subject log BFs against fixed-gamma competitors attenuated ~30-50% relative to RSD's predictions (Exps 13, 17); steep-slope posterior mass still high (Exp 12 ~ 0.85-0.92) since jitter is modest. Keep delta small enough to preserve the excellent Exps 3-12 fits that both theories currently achieve through the shared core.
+
+## THEORY LEADERBOARD
+A small set of prior picked theories shown for reference. Overall score is in `[0, 1]`, higher = better, computed as `1 - L2_norm(normalized_per_experiment_distances) / max_L2_norm`. 1.0 means closest to the real value on every experiment+metric pair; 0.0 means farthest. Each entry below carries the same depth of detail as the PREVIOUS MODEL INSTANCE above so you can borrow concrete mechanisms when useful.
+
+### `pi_7` (overall score: 0.861)
+
+**Description**
+Raw-Evidence Sparse Dominance with Validity-Gated Precision (RSD-vgp). When choosing between two products described by binary expert ratings, subjects read an endorsement (rating = 1) as evidence AGAINST the option carrying it, so the count-sparser option is perceived as higher quality. Within a trial, ALL cues are integrated additively with RAW (unnormalized) validity weights: the evidence for A over B is E = sum_j v_j^gamma (b_j - a_j), so the absolute endorsement-count margin sets the evidence scale independent of feature count, and identical vectors give exactly 50%. The population is a continuum of graded polarity (no bimodal trait clusters): each subject carries a per-trial inverted-polarity probability m, a lapse epsilon, and — the new discriminative dimension — validity-gated precision: a per-subject validity exponent gamma dispersed over [0, 2] with a substantial steep-gamma subpopulation, and a steep log-uniformly dispersed raw inverse temperature beta over [1.8, 6.0], calibrated so that essentially every subject's effective normalized psychometric slope beta * sum(v^gamma) exceeds 9.5. The resulting subject family is 'steep slope x moderate asymptote': p(A) = (1-eps)*[m*sigmoid(beta*E) + (1-m)*(1-sigmoid(beta*E))] + eps/2, with effective attenuation A_eff = (1-eps)(2m-1) concentrated near 0.69. This decomposition is what the data jointly demand: the slope-sensitive diagnostics (psychometric slope posterior, evidence-usage slopes, mixture log-likelihood ratios) require steep normalized slopes, while the extremity/consistency diagnostics (saturated sparse-choice rates) require moderate asymptotic preference — a combination no single shallow-slope, high-extremity or steep-slope, high-extremity parameterization can produce.
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, state, history):
+    # Raw-Evidence Sparse Dominance with Validity-Gated Precision (RSD-vgp).
+    # Stimulus: array-like of shape (2, n_features); row 0 = option A,
+    # row 1 = option B; entries are 0/1 cue values. History is ignored
+    # (no feedback in this task).
+    stim = np.asarray(state, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(
+            f"RSD-vgp expects a (2, n_features) stimulus; got shape {stim.shape}."
+        )
+    n_features = stim.shape[1]
+
+    val = np.asarray(parameters["validities"], dtype=float)
+    if val.shape[0] != n_features:
+        raise ValueError(
+            f"validities length {val.shape[0]} != n_features {n_features}."
+        )
+
+    # ---- Validity gating: per-subject gamma via a two-component mixture ----
+    # gamma_u ~ U[0, 1]. With probability 0.65 the subject draws gamma
+    # uniformly from [0, 1.3] (near-flat validity weighting); with
+    # probability 0.35 from [1.3, 2.0] (the steep-gating subpopulation
+    # that validity-conflict cells discriminate).
+    u = float(parameters["gamma_u"])
+    if u < 0.65:
+        gamma = 1.3 * (u / 0.65)
+    else:
+        gamma = 1.3 + 0.7 * ((u - 0.65) / 0.35)
+
+    # ---- Precision: log-uniform raw inverse temperature ----
+    # beta = exp(log_beta), log_beta ~ U[ln 1.8, ln 6.0]  =>  beta
+    # log-uniform over [1.8, 6.0]. Calibrated against the RAW evidence
+    # scale below so that every subject's effective normalized slope
+    # beta * sum(v^gamma) comfortably exceeds 9.5 on any plausible
+    # validity vector (min ~ 1.8 * 7.4 ~ 13).
+    beta = float(np.exp(float(parameters["log_beta"])))
+    epsilon = float(parameters["epsilon"])
+    m = float(parameters["m"])
+
+    # RAW validity weighting: w_j = v_j^gamma, NO normalization.
+    # This preserves the absolute endorsement-margin scale: a margin-2
+    # conflict carries twice the evidence of a margin-1 conflict,
+    # independent of n_features (the cross-experiment scale separation
+    # that per-experiment normalization provably erases).
+    w = np.power(val, gamma)
+
+    a, b = stim[0], stim[1]
+    # Anti-endorsement (sparse-preferring) evidence for A over B:
+    # each endorsement carried by B counts FOR A, each endorsement
+    # carried by A counts AGAINST A. E = 0 on identical rating vectors.
+    E = float(np.sum(w * (b - a)))
+
+    # Numerically stable logistic (both branches exponentiate a
+    # non-positive argument, so no overflow is possible).
+    x = beta * E
+    if x >= 0.0:
+        sig = 1.0 / (1.0 + np.exp(-x))
+    else:
+        ex = np.exp(x)
+        sig = ex / (1.0 + ex)
+
+    # Graded polarity: with per-trial probability m the subject responds
+    # with the INVERTED (sparse-preferring) polarity, with probability
+    # (1 - m) with the conventional polarity. Continuous, no empty
+    # middle, no mirror cluster.
+    p_core = m * sig + (1.0 - m) * (1.0 - sig)
+
+    # Independent lapse to uniform choice. Ties (E = 0) give exactly 50%.
+    p_a = (1.0 - epsilon) * p_core + 0.5 * epsilon
+
+    return np.array([p_a, 1.0 - p_a])
+
+`policy(probs) -> int`:
+def policy(probs):
+    probs = np.asarray(probs, dtype=np.float64)
+    probs = probs / probs.sum()  # Guard against float drift.
+    return np.random.choice(len(probs), p=probs)
+
+`parameters`:
+- gamma_u: [0, 1]
+- log_beta: [0.588, 1.792]
+- epsilon: [0.03, 0.11]
+- m: [0.74, 1.0]
+- validities: validities
+
+**Per-experiment fit (real vs this theory's metric value):**
+- Experiment 1: real=0.1580 (var=0.0120) vs this=0.1660 (var=0.0056)
+- Experiment 2: real=0.1814 (var=0.0118) vs this=0.1764 (var=0.0097)
+- Experiment 3: real=-0.7167 (var=0.0939) vs this=-0.7067 (var=0.0731)
+- Experiment 4: real=-0.5230 (var=0.0540) vs this=-0.5575 (var=0.0274)
+- Experiment 5: real=0.5944 (var=0.0376) vs this=0.5915 (var=0.0172)
+- Experiment 6: real=-0.6758 (var=0.0393) vs this=-0.6850 (var=0.0317)
+- Experiment 7: real=0.7044 (var=0.0382) vs this=0.7111 (var=0.0259)
+- Experiment 8: real=0.3467 (var=0.0108) vs this=0.3521 (var=0.0065)
+- Experiment 9: real=-1.7633 (var=3.8102) vs this=-1.3031 (var=2.4039)
+- Experiment 10: real=0.9113 (var=0.0227) vs this=0.9161 (var=0.0235)
+- Experiment 11: real=52.5984 (var=6.4849) vs this=96.6930 (var=15.9176)
+- Experiment 12: real=-0.4144 (var=0.4154) vs this=-0.2520 (var=0.3854)
+- Experiment 13: real=6.0286 (var=0.5984) vs this=5.3165 (var=0.3027)
+- Experiment 14: real=0.2983 (var=0.0006) vs this=0.0990 (var=0.0001)
+- Experiment 15: real=12.9184 (var=1.0896) vs this=23.7874 (var=2.2777)
+- Experiment 16: real=0.4335 (var=0.0024) vs this=0.5335 (var=0.0013)
+- Experiment 17: real=0.8355 (var=2.6525) vs this=0.3381 (var=0.3081)
+- Experiment 18: real=-0.2077 (var=0.1170) vs this=-0.2078 (var=0.1272)
+
+
+---
+
+### `pi_8` (overall score: 0.824)
+
+**Description**
+Extended-Precision Anti-Endorsement Integration (EPAI-xp). Subjects reading a product described by binary expert ratings treat an endorsement (rating = 1) as evidence AGAINST the option carrying it — a 'fewer red flags' / rarity-implies-quality reading — so the count-sparser option is perceived as higher quality. Within a trial, ALL cues are integrated additively with RAW (unnormalized) validity weights: the evidence for A over B is E = sum_j v_j^gamma (b_j - a_j), so the absolute endorsement-count margin sets the evidence scale independent of feature count, and identical rating vectors give exactly 50%. Each subject carries a per-trial inverted-polarity probability m, a lapse epsilon, a raw inverse temperature beta, and a validity exponent gamma, combined as p(A) = (1-eps)*[m*sigmoid(beta*E) + (1-m)*(1-sigmoid(beta*E))] + eps/2. The population (the 'xp' extension) is characterized by three refinements: (i) gamma follows a concave-then-heavy two-component mixture on [0, 2.4] — 55% uniform on [0, 1.2] and 45% uniform on [1.2, 2.4] — placing roughly 30-35% of subjects above gamma = 1.5 (more than RSD's 25%) while extending support past 2.0 to absorb the observation that steep-gamma subjects behave somewhat shallower than a hard uniform-[0,2] edge would predict; (ii) beta is log-uniform on [2.0, 7.0], raising the floor above RSD's 1.8 (no evidence of any subject below ~1.8) and extending the ceiling to 7 to steepen probe confidence; (iii) m in [0.78, 0.96] and epsilon in [0.03, 0.10] keep the mean effective attenuation A_eff = (1-eps)(2m-1) near 0.68-0.72, matching observed extremity anchors. The resulting subject family is 'steep normalized slope x moderate asymptote': essentially every subject's effective normalized psychometric slope beta * sum(v^gamma) is far above the 9.5 threshold that separates raw-weight from normalized-weight integration, while asymptotic preference stays moderate. This yields falsifiable predictions distinct from RSD-vgp: a non-uniform gamma histogram with mass above 2.0, a beta floor at 2.0 rather than 1.8, per-subject flip-ladder inversion rates on F3/F4 of ~20-27%/6-8%, and deeper Exp 11-style deviations.
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, state, history):
+    # Extended-Precision Anti-Endorsement Integration (EPAI-xp).
+    # Stimulus: array-like of shape (2, n_features); row 0 = option A,
+    # row 1 = option B; entries are 0/1 cue values. History is ignored
+    # (no feedback in this task).
+    stim = np.asarray(state, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(
+            f"EPAI-xp expects a (2, n_features) stimulus; got shape {stim.shape}."
+        )
+    n_features = stim.shape[1]
+
+    val = np.asarray(parameters["validities"], dtype=float)
+    if val.shape[0] != n_features:
+        raise ValueError(
+            f"validities length {val.shape[0]} != n_features {n_features}."
+        )
+
+    # ---- Validity gating: per-subject gamma via a two-component
+    # concave-then-heavy mixture on [0, 2.4] ----
+    # gamma_u ~ U[0, 1]. With probability 0.55 the subject draws gamma
+    # uniformly from [0, 1.2] (near-flat validity weighting); with
+    # probability 0.45 from [1.2, 2.4] (the steep-gating subpopulation).
+    # This places ~30-35% of subjects above gamma = 1.5 while extending
+    # support past 2.0 (the 'extended precision' regime).
+    u = float(parameters["gamma_u"])
+    if u < 0.55:
+        gamma = 1.2 * (u / 0.55)
+    else:
+        gamma = 1.2 + 1.2 * ((u - 0.55) / 0.45)
+
+    # ---- Precision: log-uniform raw inverse temperature ----
+    # beta = exp(log_beta), log_beta ~ U[ln 2.0, ln 7.0]  =>  beta
+    # log-uniform over [2.0, 7.0]. Floor raised above RSD-vgp's 1.8
+    # (no subject shows evidence of beta below ~1.8); ceiling extended
+    # to 7.0 to steepen probe confidence. Calibrated against the RAW
+    # evidence scale below so that every subject's effective normalized
+    # slope beta * sum(v^gamma) stays far above the 9.5 threshold
+    # (min ~ 2.0 * 7.4 ~ 15 on any plausible validity vector).
+    beta = float(np.exp(float(parameters["log_beta"])))
+    epsilon = float(parameters["epsilon"])
+    m = float(parameters["m"])
+
+    # RAW validity weighting: w_j = v_j^gamma, NO normalization.
+    # This preserves the absolute endorsement-margin scale: a margin-2
+    # conflict carries twice the evidence of a margin-1 conflict,
+    # independent of n_features (the cross-experiment scale separation
+    # that per-experiment normalization provably erases).
+    w = np.power(val, gamma)
+
+    a, b = stim[0], stim[1]
+    # Anti-endorsement (sparse-preferring) evidence for A over B:
+    # each endorsement carried by B counts FOR A, each endorsement
+    # carried by A counts AGAINST A. E = 0 on identical rating vectors.
+    E = float(np.sum(w * (b - a)))
+
+    # Numerically stable logistic (both branches exponentiate a
+    # non-positive argument, so no overflow is possible).
+    x = beta * E
+    if x >= 0.0:
+        sig = 1.0 / (1.0 + np.exp(-x))
+    else:
+        ex = np.exp(x)
+        sig = ex / (1.0 + ex)
+
+    # Graded polarity: with per-trial probability m the subject responds
+    # with the INVERTED (sparse-preferring) polarity, with probability
+    # (1 - m) with the conventional polarity. Continuous, no empty
+    # middle, no mirror cluster.
+    p_core = m * sig + (1.0 - m) * (1.0 - sig)
+
+    # Independent lapse to uniform choice. Ties (E = 0) give exactly 50%.
+    p_a = (1.0 - epsilon) * p_core + 0.5 * epsilon
+
+    return np.array([p_a, 1.0 - p_a])
+
+`policy(probs) -> int`:
+def policy(probs):
+    probs = np.asarray(probs, dtype=np.float64)
+    probs = probs / probs.sum()  # Guard against float drift.
+    return np.random.choice(len(probs), p=probs)
+
+`parameters`:
+- gamma_u: [0, 1]
+- log_beta: [0.693, 1.946]
+- epsilon: [0.03, 0.10]
+- m: [0.78, 0.96]
+- validities: validities
+
+**Per-experiment fit (real vs this theory's metric value):**
+- Experiment 1: real=0.1580 (var=0.0120) vs this=0.1537 (var=0.0082)
+- Experiment 2: real=0.1814 (var=0.0118) vs this=0.1571 (var=0.0041)
+- Experiment 3: real=-0.7167 (var=0.0939) vs this=-0.7200 (var=0.0585)
+- Experiment 4: real=-0.5230 (var=0.0540) vs this=-0.5635 (var=0.0198)
+- Experiment 5: real=0.5944 (var=0.0376) vs this=0.5704 (var=0.0179)
+- Experiment 6: real=-0.6758 (var=0.0393) vs this=-0.6883 (var=0.0128)
+- Experiment 7: real=0.7044 (var=0.0382) vs this=0.7178 (var=0.0239)
+- Experiment 8: real=0.3467 (var=0.0108) vs this=0.3438 (var=0.0047)
+- Experiment 9: real=-1.7633 (var=3.8102) vs this=-0.6950 (var=1.2398)
+- Experiment 10: real=0.9113 (var=0.0227) vs this=0.8983 (var=0.0297)
+- Experiment 11: real=52.5984 (var=6.4849) vs this=67.3084 (var=8.4566)
+- Experiment 12: real=-0.4144 (var=0.4154) vs this=-0.3417 (var=0.3534)
+- Experiment 13: real=6.0286 (var=0.5984) vs this=-30.9335 (var=3.3944)
+- Experiment 14: real=0.2983 (var=0.0006) vs this=0.1396 (var=0.0003)
+- Experiment 15: real=12.9184 (var=1.0896) vs this=17.1418 (var=1.6894)
+- Experiment 16: real=0.4335 (var=0.0024) vs this=0.4018 (var=0.0010)
+- Experiment 17: real=0.8355 (var=2.6525) vs this=-0.0356 (var=1.2437)
+- Experiment 18: real=-0.2077 (var=0.1170) vs this=-0.0112 (var=0.3413)
+
+
+---
+
+### `pi_10` (overall score: 0.821)
+
+**Description**
+Heavy-Tail Anti-Endorsement Integration, revision 6 (HT-AEI-r6). Subjects reading a product described by binary expert ratings treat an endorsement (rating = 1) as evidence AGAINST the option carrying it (a 'fewer red flags' reading), so the count-sparser option is perceived as higher quality. Within a trial, all cues are integrated additively with RAW (unnormalized) validity weights: the evidence for A over B is E = sum_j v_j^gamma (b_j - a_j), so the absolute endorsement-count margin sets the evidence scale independent of feature count, and identical rating vectors give exactly 50%. Choice follows p(A) = (1-eps)*[m*sigmoid(beta*E) + (1-m)*(1-sigmoid(beta*E))] + eps/2, with effective attenuation A_eff = (1-eps)(2m-1) concentrated near 0.69 — the 'steep normalized slope x moderate asymptote' family. The population is a three-segment mixture with SEGMENT-SPECIFIC PRECISION, all segments now at moderate-to-high precision (no soft-beta segment remains, since weakly identified slopes were shown to leak Exp 10/14 posteriors below threshold and to donate RFI-ward on Exp 9): (1) a 40% low bulk on gamma in [0, 1.0] with beta log-uniform on [2.2, 4.0] — the validated shared-core bulk, concentrated below the ~0.73/1.0 flip points of Exp 16's ladder, with the beta floor raised so every low-bulk subject's normalized slope is sharply identified; (2) a 25% mid segment on gamma in [1.05, 1.35] with beta log-uniform on [2.2, 3.2] — a band where RSD's uniform density (0.5) beats SGAI's (0.4) and EPAI's (0.375), sitting fully inside GSP's gamma box with GSP-compatible beta, so these subjects donate RSD-ward on Exp 15 while pulling Exp 11 and Exp 9 toward their observed values; (3) a 35% heavy tail on gamma in [2.0, 2.10] with beta log-uniform on [2.2, 2.8] — an extreme edge-hug of the RSD gamma boundary (average distance <= 0.05) at sharpened precision, so tail subjects' gamma posteriors concentrate just above 2.0 (feeding Exp 14), their slopes stay above the s>9.5 threshold (feeding Exp 10), and their near-deterministic past-flip-point behavior pulls Exp 16 down toward 0.4335. No per-trial gamma jitter. Falsifiable signatures: ~35% of subjects carry gamma within 0.10 of 2.0 with per-subject posteriors extending smoothly past 2.0; Exps 13/15 small and positive; Exp 11 in the 50-100 range; Exp 14 at or above 0.21; Exp 16 in [0.42, 0.45]; Exp 10 at or above 0.85.
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, state, history):
+    # Heavy-Tail Anti-Endorsement Integration, revision 6 (HT-AEI-r6).
+    # Stimulus: array-like of shape (2, n_features); row 0 = option A,
+    # row 1 = option B; entries are 0/1 cue values. History is ignored
+    # (no feedback in this task).
+    stim = np.asarray(state, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(
+            f"HT-AEI-r6 expects a (2, n_features) stimulus; got shape {stim.shape}."
+        )
+    n_features = stim.shape[1]
+
+    val = np.asarray(parameters["validities"], dtype=float)
+    if val.shape[0] != n_features:
+        raise ValueError(
+            f"validities length {val.shape[0]} != n_features {n_features}."
+        )
+
+    # ---- Validity gating: three-segment mixture with SEGMENT-SPECIFIC
+    # beta. All segments now carry moderate-to-high precision (no
+    # soft-beta segment: weakly identified slopes were shown to leak
+    # Exp 10/14 posteriors below threshold and donate RFI-ward on Exp 9).
+    # gamma_u ~ U[0, 1] is mapped through:
+    #   u in [0.00, 0.40): gamma ~ U[0.0, 1.0], beta log-U[2.2, 4.0]
+    #            (40%; the validated low bulk, UNTOUCHED in gamma support.
+    #            Beta floor raised 1.8 -> 2.2 per the pre-specified Exp 10
+    #            contingency: sharpens per-subject slope identification
+    #            without touching any other mechanism.)
+    #   u in [0.40, 0.65): gamma ~ U[1.05, 1.35], beta log-U[2.2, 3.2]
+    #            (25%; ENLARGED from 18%. On [1.05, 1.3] RSD's uniform
+    #            density 0.5 beats SGAI's 0.4 and EPAI's 0.375, so these
+    #            subjects donate RSD-ward on Exp 15; the band sits fully
+    #            inside GSP's gamma box with GSP-compatible beta, pulling
+    #            Exp 11 down toward the observed 52.6 and Exp 9 GSP-ward
+    #            toward -1.76; it is above the 1.0 flip point
+    #            (Exp-16-neutral); gamma near 1.2 matches the
+    #            validity-proportional metrics of Exps 2 and 5.)
+    #   u in [0.65, 1.00]: gamma ~ U[2.0, 2.10], beta log-U[2.2, 2.8]
+    #            (35%; TRIMMED from 42% and RE-SHARPENED. Extreme edge-hug
+    #            of the RSD gamma boundary (average distance <= 0.05), with
+    #            beta raised from [1.9, 2.4] to [2.2, 2.8]: sharper gamma
+    #            identification concentrates tail posteriors just above
+    #            2.0 (Exp 14 recovers), keeps slopes above the s>9.5
+    #            threshold (Exp 10), makes tail subjects near-deterministic
+    #            past the flip points (Exp 16 pulled down toward 0.4335),
+    #            and removes RFI-fittable soft slopes (Exp 9 back toward
+    #            -1.76). The fraction trim cuts the residual Exp 13 edge
+    #            cost ~17% while the mid segment's positive donations
+    #            hold the total near the observed +6.)
+    u = float(parameters["gamma_u"])
+    if u < 0.40:
+        gamma = 1.0 * (u / 0.40)
+        log_b = float(parameters["log_beta_low"])
+    elif u < 0.65:
+        gamma = 1.05 + 0.30 * ((u - 0.40) / 0.25)
+        log_b = float(parameters["log_beta_mid"])
+    else:
+        gamma = 2.0 + 0.10 * ((u - 0.65) / 0.35)
+        log_b = float(parameters["log_beta_tail"])
+
+    beta = float(np.exp(log_b))
+    epsilon = float(parameters["epsilon"])
+    m = float(parameters["m"])
+
+    # RAW validity weighting: w_j = v_j^gamma, NO normalization.
+    # This preserves the absolute endorsement-margin scale: a margin-2
+    # conflict carries twice the evidence of a margin-1 conflict,
+    # independent of n_features (the cross-experiment scale separation
+    # that per-experiment normalization provably erases).
+    w = np.power(val, gamma)
+
+    a, b = stim[0], stim[1]
+    # Anti-endorsement (sparse-preferring) evidence for A over B:
+    # each endorsement carried by B counts FOR A, each endorsement
+    # carried by A counts AGAINST A. E = 0 on identical rating vectors.
+    E = float(np.sum(w * (b - a)))
+
+    # Numerically stable logistic (both branches exponentiate a
+    # non-positive argument, so no overflow is possible).
+    x = beta * E
+    if x >= 0.0:
+        sig = 1.0 / (1.0 + np.exp(-x))
+    else:
+        ex = np.exp(x)
+        sig = ex / (1.0 + ex)
+
+    # Graded polarity: with per-trial probability m the subject responds
+    # with the INVERTED (sparse-preferring) polarity, with probability
+    # (1-m) with the conventional polarity. Continuous, no empty middle,
+    # no mirror cluster. NO per-trial gamma jitter (delta = 0): the
+    # stochastic attention gate is a confirmed dead lever.
+    p_core = m * sig + (1.0 - m) * (1.0 - sig)
+
+    # Independent lapse to uniform choice. Ties (E = 0) give exactly 50%.
+    p_a = (1.0 - epsilon) * p_core + 0.5 * epsilon
+
+    return np.array([p_a, 1.0 - p_a])
+
+`policy(probs) -> int`:
+def policy(probs):
+    probs = np.asarray(probs, dtype=np.float64)
+    probs = probs / probs.sum()  # Guard against float drift.
+    return np.random.choice(len(probs), p=probs)
+
+`parameters`:
+- gamma_u: [0, 1]
+- log_beta_low: [0.788, 1.386]
+- log_beta_mid: [0.788, 1.163]
+- log_beta_tail: [0.788, 1.030]
+- epsilon: [0.03, 0.10]
+- m: [0.75, 1.0]
+- validities: validities
+
+**Per-experiment fit (real vs this theory's metric value):**
+- Experiment 1: real=0.1580 (var=0.0120) vs this=0.1513 (var=0.0077)
+- Experiment 2: real=0.1814 (var=0.0118) vs this=0.1714 (var=0.0079)
+- Experiment 3: real=-0.7167 (var=0.0939) vs this=-0.7750 (var=0.0581)
+- Experiment 4: real=-0.5230 (var=0.0540) vs this=-0.5479 (var=0.0211)
+- Experiment 5: real=0.5944 (var=0.0376) vs this=0.5701 (var=0.0179)
+- Experiment 6: real=-0.6758 (var=0.0393) vs this=-0.6917 (var=0.0411)
+- Experiment 7: real=0.7044 (var=0.0382) vs this=0.7067 (var=0.0235)
+- Experiment 8: real=0.3467 (var=0.0108) vs this=0.3629 (var=0.0063)
+- Experiment 9: real=-1.7633 (var=3.8102) vs this=-1.1568 (var=1.5167)
+- Experiment 10: real=0.9113 (var=0.0227) vs this=0.8791 (var=0.0271)
+- Experiment 11: real=52.5984 (var=6.4849) vs this=114.0736 (var=12.7298)
+- Experiment 12: real=-0.4144 (var=0.4154) vs this=-0.2310 (var=0.5023)
+- Experiment 13: real=6.0286 (var=0.5984) vs this=-9.6424 (var=0.6044)
+- Experiment 14: real=0.2983 (var=0.0006) vs this=0.1215 (var=0.0002)
+- Experiment 15: real=12.9184 (var=1.0896) vs this=7.5133 (var=1.5781)
+- Experiment 16: real=0.4335 (var=0.0024) vs this=0.4754 (var=0.0011)
+- Experiment 17: real=0.8355 (var=2.6525) vs this=-0.2872 (var=0.6994)
+- Experiment 18: real=-0.2077 (var=0.1170) vs this=0.1782 (var=0.1651)
+
+
+## LOSS TRAJECTORY (this propose-loop)
+Aggregate loss across iterations of THIS propose-loop (lower = better, 0 = perfect, `+inf` = unscorable). The ACCEPTED / REJECTED tag is the loop's programmatic accept-gate decision — only ACCEPTED candidates have ever been used as the base for a subsequent iteration. Use this together with PRIOR FEEDBACK ITERATIONS below to grade which past critic advice actually paid off.
+
+- iter 1: loss=0.0855 -> ACCEPTED
+- iter 2: loss=0.0712 -> ACCEPTED
+- iter 3: loss=0.0798 -> REJECTED
+- iter 4: loss=0.0868 -> REJECTED
+- iter 5: loss=0.0788 -> REJECTED
+- iter 6: loss=0.0806 -> REJECTED
+- iter 7: loss=0.0910 -> REJECTED
+- iter 8: loss=0.0678 -> ACCEPTED
+- iter 9: loss=0.1072 -> REJECTED
+Running-best (last ACCEPTED) base: iter 8 at loss=0.0678 — this is the source shown verbatim below under `## PREVIOUS CANDIDATE (this loop)`. Push the next edit's loss strictly below that floor or the gate will reject it.
+
+## EXPERIMENTAL RESULTS
+### Experiment 1
+**Design**
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1]
+  A=[0, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 0, 0]
+  A=[0, 1, 1, 0, 0]  B=[1, 0, 0, 0, 0]
+  A=[0, 1, 0, 0, 0]  B=[0, 0, 1, 1, 1]
+  A=[0, 0, 1, 1, 1]  B=[0, 1, 0, 0, 0]
+  A=[1, 1, 0, 0, 0]  B=[0, 0, 1, 1, 0]
+  A=[0, 0, 1, 1, 0]  B=[1, 1, 0, 0, 0]
+  A=[1, 1, 1, 1, 0]  B=[0, 0, 0, 0, 1]
+  A=[0, 0, 0, 0, 1]  B=[1, 1, 1, 1, 0]
+  A=[1, 0, 1, 0, 1]  B=[0, 1, 0, 1, 0]
+  A=[0, 1, 0, 1, 0]  B=[1, 0, 1, 0, 1]
+  A=[0, 0, 1, 0, 0]  B=[0, 0, 0, 1, 1]
+  A=[0, 0, 0, 1, 1]  B=[0, 0, 1, 0, 0]
+  A=[1, 0, 0, 1, 1]  B=[0, 1, 1, 0, 0]
+  A=[0, 1, 1, 0, 0]  B=[1, 0, 0, 1, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    # Dissociation score: on trials where Take-The-Best (top-validity
+    # cascade) and Tallying (cue-count majority) make DIFFERENT modal
+    # predictions, how often does the subject side with the TTB option?
+    # TTB predicts > 0.5 on every such trial (constant sigmoid(beta)
+    # confidence, including on tally-tie trials 7/8 where Tallying must
+    # guess at exactly 50%). Tallying predicts < 0.5 on conflict trials
+    # (majority option wins) and exactly 0.5 on tally ties. So the metric
+    # is positive under TTB and negative under Tallying.
+    V = np.array([0.95, 0.85, 0.65, 0.60, 0.50])
+    order = np.argsort(-V, kind="stable")
+
+    a_col = data["option_a_ratings"].tolist()
+    b_col = data["option_b_ratings"].tolist()
+    resp = data["response"].to_numpy()
+
+    matches = []
+    for i in range(len(a_col)):
+        a = np.asarray(a_col[i], dtype=float)
+        b = np.asarray(b_col[i], dtype=float)
+
+        # TTB winner: first discriminating cue in validity order.
+        ttb = -1
+        for j in order:
+            if a[j] > b[j]:
+                ttb = 0
+                break
+            if b[j] > a[j]:
+                ttb = 1
+                break
+        if ttb == -1:
+            continue  # TTB guesses; not diagnostic
+
+        # Tallying winner: strict cue-count majority.
+        a_wins = int(np.sum(a > b))
+        b_wins = int(np.sum(b > a))
+        if a_wins > b_wins:
+            tal = 0
+        elif b_wins > a_wins:
+            tal = 1
+        else:
+            tal = -1  # tally tie -> Tallying guesses
+
+        # Keep only dissociation trials: the two theories' modal
+        # predictions differ (tally tie, or tally majority against TTB).
+        if tal == ttb:
+            continue
+
+        matches.append(1.0 if resp[i] == ttb else 0.0)
+
+    if len(matches) == 0:
+        return 0.0
+    # Center at 0.5: positive => TTB-like, negative => Tallying-like.
+    return float(np.mean(matches)) - 0.5
+```
+
+**Observed (real) value:** 0.1580 (var=0.0120)
+**Previous candidate values (this loop):**
+  - iter 1: 0.1660 (var=0.0096) (Δ vs real +0.0080)
+  - iter 2: 0.1417 (var=0.0052) (Δ vs real -0.0163)
+  - iter 3: 0.1593 (var=0.0059) (Δ vs real +0.0013)
+  - iter 4: 0.1633 (var=0.0067) (Δ vs real +0.0053)
+  - iter 5: 0.1627 (var=0.0083) (Δ vs real +0.0047)
+  - iter 6: 0.1510 (var=0.0096) (Δ vs real -0.0070)
+  - iter 7: 0.1673 (var=0.0075) (Δ vs real +0.0093)
+  - iter 8: 0.1583 (var=0.0074) (Δ vs real +0.0003)
+  - iter 9 (most recent): 0.1657 (var=0.0068) (Δ vs real +0.0077)
+**Other theories' values on this metric (for reference):**
+- pi_1: 0.3480 (var=0.0087)
+- pi_2: -0.2963 (var=0.0068)
+- pi_3: 0.2473 (var=0.0026)
+- pi_4: 0.1530 (var=0.0069)
+- pi_5: 0.2150 (var=0.0067)
+- pi_6: 0.1693 (var=0.0082)
+- pi_7: 0.1660 (var=0.0056)
+- pi_8: 0.1537 (var=0.0082)
+- pi_9: 0.1513 (var=0.0063)
+- pi_10: 0.1513 (var=0.0077)
+
+### Experiment 2
+**Design**
+  A=[0, 1, 1, 1, 1, 1, 0, 0]  B=[1, 0, 0, 0, 0, 0, 1, 1]
+  A=[0, 1, 1, 1, 1, 0, 0, 0]  B=[1, 0, 0, 0, 0, 1, 1, 1]
+  A=[0, 1, 1, 1, 0, 0, 0, 0]  B=[1, 0, 0, 0, 1, 1, 1, 1]
+  A=[1, 1, 0, 1, 1, 1, 1, 0]  B=[1, 1, 1, 0, 0, 0, 0, 1]
+  A=[0, 0, 0, 1, 1, 1, 0, 0]  B=[0, 0, 1, 0, 0, 0, 1, 1]
+  A=[1, 1, 0, 1, 1, 0, 0, 0]  B=[1, 1, 1, 0, 0, 1, 1, 1]
+  A=[1, 0, 0, 1, 0, 1, 1, 1]  B=[1, 0, 0, 1, 1, 0, 0, 0]
+  A=[0, 1, 1, 0, 0, 1, 1, 0]  B=[0, 1, 1, 0, 1, 0, 0, 1]
+  A=[1, 1, 0, 0, 0, 1, 0, 0]  B=[1, 1, 0, 0, 1, 0, 1, 1]
+  A=[1, 0, 0, 0, 0, 0, 1, 1]  B=[0, 1, 1, 1, 1, 1, 0, 0]
+  A=[1, 0, 0, 0, 0, 1, 1, 1]  B=[0, 1, 1, 1, 1, 0, 0, 0]
+  A=[1, 0, 0, 0, 1, 1, 1, 1]  B=[0, 1, 1, 1, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0, 0, 1]  B=[1, 1, 0, 1, 1, 1, 1, 0]
+  A=[0, 0, 1, 0, 0, 0, 1, 1]  B=[0, 0, 0, 1, 1, 1, 0, 0]
+  A=[1, 1, 1, 0, 0, 1, 1, 1]  B=[1, 1, 0, 1, 1, 0, 0, 0]
+  A=[0, 1, 1, 0, 1, 0, 0, 1]  B=[1, 0, 0, 1, 0, 1, 1, 1]
+  A=[1, 1, 0, 0, 1, 0, 1, 1]  B=[0, 1, 1, 0, 0, 1, 1, 0]
+  A=[1, 1, 1, 1, 1, 1, 1, 1]  B=[1, 1, 0, 0, 0, 1, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1, 1, 1]
+  A=[0, 1, 1, 1, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1, 1, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 0, 1, 0, 1, 0, 1, 0]  B=[1, 0, 1, 0, 1, 0, 1, 0]
+  A=[1, 0, 1, 0, 1, 0, 1, 0]  B=[0, 1, 0, 1, 0, 1, 0, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    """P(choose the TALLY winner | Tallying and Take-The-Best disagree).
+
+    On every trial we compute (a) the tally winner (option winning more
+    strict feature-wise comparisons) and (b) the TTB winner (winner on
+    the first discriminating cue in descending-validity order, cues here
+    are already ordered by validity). We keep only CONFLICT trials where
+    both heuristics have a definite winner and they point to opposite
+    options, and return the proportion of choices falling on the tally
+    winner's side.
+
+    Under Tallying this proportion is high (sigmoid(2*beta) on the
+    margin-2 grid conflicts, sigmoid(6*beta) on the extreme-conflict
+    trials where one option wins 7 of 8 cues); under TTB it is low
+    (1 - sigmoid(beta)). Works on the pooled DataFrame and on any
+    single subject's slice (each subject has 7 unique conflict trials
+    x 4 reps = 28 conflict observations).
+    """
+    validities = np.array([0.95, 0.90, 0.85, 0.80, 0.75, 0.70, 0.65, 0.60])
+    cue_order = np.argsort(-validities, kind="stable")
+
+    hits = []
+    for _, row in data.iterrows():
+        a = np.asarray(row["option_a_ratings"], dtype=float)
+        b = np.asarray(row["option_b_ratings"], dtype=float)
+        if a.shape != b.shape:
+            continue
+
+        a_wins = float(np.sum(a > b))
+        b_wins = float(np.sum(b > a))
+
+        # Tallying needs a strict majority; skip tied tallies.
+        if a_wins == b_wins:
+            continue
+        tally_winner = 0 if a_wins > b_wins else 1
+
+        # Take-The-Best winner: first discriminating cue in validity order.
+        ttb_winner = None
+        for j in cue_order:
+            if a[j] > b[j]:
+                ttb_winner = 0
+                break
+            if b[j] > a[j]:
+                ttb_winner = 1
+                break
+        if ttb_winner is None:
+            continue
+
+        # Keep only genuine conflicts between the two heuristics.
+        if ttb_winner == tally_winner:
+            continue
+
+        resp = int(row["response"])
+        hits.append(1.0 if resp == tally_winner else 0.0)
+
+    if len(hits) == 0:
+        return 0.5
+    return float(np.mean(hits))
+
+```
+
+**Observed (real) value:** 0.1814 (var=0.0118)
+**Previous candidate values (this loop):**
+  - iter 1: 0.1536 (var=0.0101) (Δ vs real -0.0279)
+  - iter 2: 0.1814 (var=0.0089) (Δ vs real +0.0000)
+  - iter 3: 0.1921 (var=0.0123) (Δ vs real +0.0107)
+  - iter 4: 0.1764 (var=0.0083) (Δ vs real -0.0050)
+  - iter 5: 0.1700 (var=0.0083) (Δ vs real -0.0114)
+  - iter 6: 0.1914 (var=0.0118) (Δ vs real +0.0100)
+  - iter 7: 0.1343 (var=0.0080) (Δ vs real -0.0471)
+  - iter 8: 0.1707 (var=0.0098) (Δ vs real -0.0107)
+  - iter 9 (most recent): 0.1536 (var=0.0100) (Δ vs real -0.0279)
+**Other theories' values on this metric (for reference):**
+- pi_2: 0.8664 (var=0.0110)
+- pi_1: 0.1536 (var=0.0134)
+- pi_3: 0.2557 (var=0.0053)
+- pi_4: 0.2579 (var=0.0137)
+- pi_5: 0.1479 (var=0.0061)
+- pi_6: 0.1793 (var=0.0080)
+- pi_7: 0.1764 (var=0.0097)
+- pi_8: 0.1571 (var=0.0041)
+- pi_9: 0.1714 (var=0.0079)
+- pi_10: 0.1714 (var=0.0079)
+
+### Experiment 3
+**Design**
+  A=[1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1]
+  A=[1, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 0, 0]
+  A=[0, 1, 1, 1, 0, 0]  B=[1, 0, 0, 0, 0, 0]
+  A=[1, 0, 0, 1, 0, 0]  B=[0, 1, 1, 0, 0, 0]
+  A=[0, 1, 1, 0, 0, 0]  B=[1, 0, 0, 1, 0, 0]
+  A=[1, 0, 1, 1, 0, 0]  B=[0, 1, 1, 1, 0, 0]
+  A=[0, 1, 1, 1, 0, 0]  B=[1, 0, 1, 1, 0, 0]
+  A=[1, 1, 1, 1, 0, 0]  B=[0, 1, 1, 1, 0, 0]
+  A=[0, 1, 1, 1, 0, 0]  B=[1, 1, 1, 1, 0, 0]
+  A=[1, 1, 1, 1, 1, 0]  B=[1, 1, 1, 1, 0, 0]
+  A=[1, 1, 1, 1, 0, 0]  B=[1, 1, 1, 1, 1, 0]
+  A=[1, 0, 1, 1, 0, 0]  B=[1, 1, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0]  B=[1, 0, 1, 1, 0, 0]
+  A=[1, 0, 1, 1, 0, 0]  B=[1, 1, 1, 1, 0, 0]
+  A=[1, 0, 1, 1, 0, 0]  B=[1, 0, 1, 1, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    """Depth/conflict invariance contrast for TTB vs PWEI.
+
+    Three structurally identified trial classes (validity order is fixed:
+    [0.90, 0.89, 0.88, 0.87, 0.70, 0.60]):
+
+    HIGH  - the top cue (0.90) discriminates and every other discriminating
+            cue agrees with it (design trials 1, 2, 9, 10; 24 obs/subject).
+            PWEI evidence margin |D| is maximal (~1 or w_top).
+    DEPTH5- cues 1-4 all tie; only the 0.70-validity cue discriminates
+            (design trials 11, 12; 12 obs/subject). PWEI's weight for
+            0.70^gamma is ~1e-5 of total, so PWEI predicts ~50% choices.
+    REV   - the top cue discriminates one way, the three sub-top cues
+            (0.89, 0.88, 0.87) discriminate the other way, tail cues tie
+            (design trials 3, 4; 12 obs/subject). In PWEI's steep-gamma
+            regime the sub-top block outweighs the top cue, so PWEI
+            chooses AGAINST the TTB winner.
+
+    For each class compute p = P(choose the TTB winner). TTB's structural
+    invariant is a single constant confidence p* on every discriminating
+    trial, so 2*p_HIGH - p_DEPTH5 - p_REV = 0 exactly, at ANY (beta, eps).
+    PWEI predicts p_HIGH ~ 0.9, p_DEPTH5 ~ 0.5, p_REV ~ 0.1-0.37, giving a
+    value ~0.9-1.2 across its entire parameter box.
+    """
+    VALS = np.array([0.90, 0.89, 0.88, 0.87, 0.70, 0.60])
+    order = np.argsort(-VALS, kind="stable")  # validity-descending cue indices
+
+    n_high, k_high = 0, 0
+    n_d5, k_d5 = 0, 0
+    n_rev, k_rev = 0, 0
+
+    a_col = data["option_a_ratings"]
+    b_col = data["option_b_ratings"]
+    r_col = data["response"]
+
+    for a_cell, b_cell, resp in zip(a_col, b_col, r_col):
+        a = np.asarray(a_cell, dtype=float)
+        b = np.asarray(b_cell, dtype=float)
+        s = np.sign(a - b)  # +1 favors A, -1 favors B, 0 tie, per cue
+
+        # First discriminating cue in validity order (TTB's search).
+        first = None
+        for j in order:
+            if s[j] != 0.0:
+                first = j
+                break
+        if first is None:
+            continue  # identical options: both theories say 50%
+
+        ttb_winner_is_a = s[first] > 0
+        chose_ttb = (int(resp) == 0) == ttb_winner_is_a
+
+        if first == 4:
+            # DEPTH5: only the 0.70-validity cue discriminates.
+            n_d5 += 1
+            k_d5 += int(chose_ttb)
+        elif first == 0 and s[1] == -s[0] and s[2] == -s[0] and s[3] == -s[0] \
+                and s[4] == 0.0 and s[5] == 0.0:
+            # REV: top cue vs the three sub-top cues, tail ties.
+            n_rev += 1
+            k_rev += int(chose_ttb)
+        elif first == 0:
+            # HIGH candidate: all other discriminating cues agree with top.
+            others = [s[j] for j in range(1, 6) if s[j] != 0.0]
+            if all(o == s[0] for o in others):
+                n_high += 1
+                k_high += int(chose_ttb)
+        # All other trial types (mixed conflicts, cue-2-led trials, ties)
+        # are deliberately excluded to keep the classes pure.
+
+    p_high = k_high / n_high if n_high > 0 else 0.5
+    p_d5 = k_d5 / n_d5 if n_d5 > 0 else 0.5
+    p_rev = k_rev / n_rev if n_rev > 0 else 0.5
+
+    return 2.0 * p_high - p_d5 - p_rev
+```
+
+**Observed (real) value:** -0.7167 (var=0.0939)
+**Previous candidate values (this loop):**
+  - iter 1: -0.6400 (var=0.0629) (Δ vs real +0.0767)
+  - iter 2: -0.7467 (var=0.0744) (Δ vs real -0.0300)
+  - iter 3: -0.7483 (var=0.0849) (Δ vs real -0.0317)
+  - iter 4: -0.6833 (var=0.0731) (Δ vs real +0.0333)
+  - iter 5: -0.7133 (var=0.0617) (Δ vs real +0.0033)
+  - iter 6: -0.7367 (var=0.0826) (Δ vs real -0.0200)
+  - iter 7: -0.7000 (var=0.0800) (Δ vs real +0.0167)
+  - iter 8: -0.6683 (var=0.0837) (Δ vs real +0.0483)
+  - iter 9 (most recent): -0.7433 (var=0.1038) (Δ vs real -0.0267)
+**Other theories' values on this metric (for reference):**
+- pi_1: 0.0033 (var=0.0461)
+- pi_3: 1.0483 (var=0.0759)
+- pi_2: 0.7083 (var=0.0512)
+- pi_4: -0.5050 (var=0.1068)
+- pi_5: -0.7033 (var=0.1239)
+- pi_6: -0.6950 (var=0.0763)
+- pi_7: -0.7067 (var=0.0731)
+- pi_8: -0.7200 (var=0.0585)
+- pi_9: -0.7233 (var=0.0493)
+- pi_10: -0.7750 (var=0.0581)
+
+### Experiment 4
+**Design**
+  A=[1, 1, 1, 1, 1, 1]  B=[0, 1, 1, 1, 1, 1]
+  A=[0, 1, 1, 1, 1, 1]  B=[1, 1, 1, 1, 1, 1]
+  A=[1, 1, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 1]
+  A=[0, 0, 1, 1, 1, 1]  B=[1, 1, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1]
+  A=[1, 1, 1, 1, 1, 1]  B=[1, 0, 1, 1, 1, 1]
+  A=[1, 0, 1, 1, 1, 1]  B=[1, 1, 1, 1, 1, 1]
+  A=[1, 1, 0, 1, 1, 1]  B=[1, 0, 1, 1, 1, 1]
+  A=[1, 0, 1, 1, 1, 1]  B=[1, 1, 0, 1, 1, 1]
+  A=[1, 1, 0, 0, 1, 1]  B=[1, 0, 1, 1, 1, 1]
+  A=[1, 0, 1, 1, 1, 1]  B=[1, 1, 0, 0, 1, 1]
+  A=[1, 1, 0, 0, 0, 1]  B=[1, 0, 1, 1, 1, 1]
+  A=[1, 0, 1, 1, 1, 1]  B=[1, 1, 0, 0, 0, 1]
+  A=[1, 1, 0, 0, 0, 0]  B=[1, 0, 1, 1, 1, 1]
+  A=[1, 0, 1, 1, 1, 1]  B=[1, 1, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1]
+  A=[1, 1, 1, 0, 0, 0]  B=[1, 1, 0, 1, 1, 1]
+  A=[1, 1, 0, 1, 1, 1]  B=[1, 1, 1, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1]  B=[1, 1, 0, 1, 1, 1]
+  A=[1, 1, 0, 1, 1, 1]  B=[1, 1, 1, 1, 1, 1]
+  A=[1, 0, 1, 0, 1, 0]  B=[1, 0, 1, 0, 1, 0]
+  A=[0, 1, 0, 1, 0, 1]  B=[0, 1, 0, 1, 0, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    # OLS slope of "chose the TTB (first-discriminating-cue) winner" on the
+    # PWEI power-weighted evidence margin measured TOWARD that winner.
+    # TTB: choice prob is one constant p* on every discriminating trial
+    #      (any beta, eps)  =>  slope exactly 0.
+    # PWEI: prob is a psychometric function of the weighted margin D
+    #      =>  strongly positive slope (~0.5 over the design's margin range).
+    val = np.array([0.95, 0.92, 0.91, 0.90, 0.89, 0.88], dtype=float)
+    gamma = 40.0  # mid of PWEI's calibrated regime [35, 50]
+    w = np.power(val, gamma)
+    w = w / w.sum()
+    cue_order = np.argsort(-val, kind="stable")
+
+    xs = []
+    ys = []
+    for a_cell, b_cell, r in zip(
+        data["option_a_ratings"], data["option_b_ratings"], data["response"]
+    ):
+        a = np.asarray(a_cell, dtype=float)
+        b = np.asarray(b_cell, dtype=float)
+        s = np.sign(a - b)
+        if not np.any(s != 0):
+            # Identical options: pure guessing for both theories; excluded.
+            continue
+        # TTB winner: first discriminating cue in descending-validity order.
+        winner = None
+        for j in cue_order:
+            if s[j] != 0:
+                winner = 0 if s[j] > 0 else 1
+                break
+        if winner is None:
+            continue
+        # Power-weighted evidence for option A.
+        D = float(np.sum(w * s))
+        # Margin re-signed so that positive = evidence favors the TTB winner.
+        x = D if winner == 0 else -D
+        y = 1.0 if int(r) == winner else 0.0
+        xs.append(x)
+        ys.append(y)
+
+    xs = np.asarray(xs, dtype=float)
+    ys = np.asarray(ys, dtype=float)
+    if xs.size < 3:
+        return 0.0
+    sxx = float(np.sum((xs - xs.mean()) ** 2))
+    if sxx <= 1e-12:
+        return 0.0
+    sxy = float(np.sum((xs - xs.mean()) * (ys - ys.mean())))
+    return float(sxy / sxx)
+```
+
+**Observed (real) value:** -0.5230 (var=0.0540)
+**Previous candidate values (this loop):**
+  - iter 1: -0.5538 (var=0.0264) (Δ vs real -0.0308)
+  - iter 2: -0.5133 (var=0.0355) (Δ vs real +0.0098)
+  - iter 3: -0.5349 (var=0.0305) (Δ vs real -0.0118)
+  - iter 4: -0.5103 (var=0.0334) (Δ vs real +0.0128)
+  - iter 5: -0.5430 (var=0.0267) (Δ vs real -0.0200)
+  - iter 6: -0.5246 (var=0.0231) (Δ vs real -0.0016)
+  - iter 7: -0.5630 (var=0.0308) (Δ vs real -0.0399)
+  - iter 8: -0.5063 (var=0.0269) (Δ vs real +0.0168)
+  - iter 9 (most recent): -0.5281 (var=0.0283) (Δ vs real -0.0051)
+**Other theories' values on this metric (for reference):**
+- pi_3: 0.5548 (var=0.0148)
+- pi_1: 0.0081 (var=0.0061)
+- pi_2: 0.5897 (var=0.0315)
+- pi_4: -0.4252 (var=0.0349)
+- pi_5: -0.5389 (var=0.0255)
+- pi_6: -0.5237 (var=0.0265)
+- pi_7: -0.5575 (var=0.0274)
+- pi_8: -0.5635 (var=0.0198)
+- pi_9: -0.5423 (var=0.0159)
+- pi_10: -0.5479 (var=0.0211)
+
+### Experiment 5
+**Design**
+  A=[1, 1, 1, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0]
+  A=[1, 0, 1, 0, 1, 0]  B=[0, 0, 1, 0, 1, 0]
+  A=[1, 0, 1, 0, 1, 0]  B=[0, 1, 1, 0, 1, 0]
+  A=[1, 0, 0, 0, 1, 0]  B=[0, 1, 1, 0, 1, 0]
+  A=[1, 0, 0, 0, 1, 0]  B=[0, 1, 1, 1, 1, 0]
+  A=[1, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1, 0]
+  A=[1, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1, 1]
+  A=[1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0, 0]
+  A=[0, 0, 1, 1, 0, 1]  B=[0, 0, 0, 1, 0, 1]
+  A=[0, 0, 0, 1, 0, 0]  B=[0, 0, 0, 0, 1, 1]
+  A=[0, 1, 1, 0, 1, 0]  B=[0, 0, 1, 0, 1, 0]
+  A=[1, 0, 1, 0, 1, 0]  B=[1, 0, 1, 0, 1, 0]
+  A=[0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 0, 0, 0]
+  A=[0, 0, 1, 0, 1, 0]  B=[1, 0, 1, 0, 1, 0]
+  A=[0, 1, 1, 0, 1, 0]  B=[1, 0, 1, 0, 1, 0]
+  A=[0, 1, 1, 0, 1, 0]  B=[1, 0, 0, 0, 1, 0]
+  A=[0, 1, 1, 1, 1, 0]  B=[1, 0, 0, 0, 1, 0]
+  A=[0, 1, 1, 1, 1, 0]  B=[1, 0, 0, 0, 0, 0]
+  A=[0, 1, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1]
+  A=[0, 0, 0, 1, 0, 1]  B=[0, 0, 1, 1, 0, 1]
+  A=[0, 0, 0, 0, 1, 1]  B=[0, 0, 0, 1, 0, 0]
+  A=[0, 0, 1, 0, 1, 0]  B=[0, 1, 1, 0, 1, 0]
+  A=[0, 1, 0, 1, 0, 1]  B=[0, 1, 0, 1, 0, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    """
+    Lower-cue evidence-usage slope.
+
+    For every trial with a discriminating cue, determine the Take-The-Best
+    winner (first cue in descending-validity order that differs). Pool trials
+    into cells keyed by the inverted-polarity integrated evidence favoring
+    that winner, E_w = sum_j w_j * (loser_j - winner_j), w_j proportional to
+    validity. Then compute the OLS slope of P(choose the TTB winner) on E_w
+    across cells.
+
+    TTB: the winner's choice probability is the SAME constant p* on every
+    discriminating trial (only the top discriminating cue is used), so the
+    psychometric function over E_w is exactly flat -> slope = 0 for ANY
+    (beta, epsilon).
+
+    SPI: choice probability is a strictly increasing sigmoid of E_w
+    (rho < 0.5 preserves monotonicity, lapse is affine), and the design's
+    cells sweep E_w from -1 (unanimous endorsement) to +0.58 -> large
+    positive slope.
+    """
+    validities = np.array([0.95, 0.85, 0.75, 0.70, 0.65, 0.60], dtype=float)
+    w = validities / validities.sum()
+    cue_order = np.argsort(-validities, kind="stable")
+
+    a_cells = data["option_a_ratings"].tolist()
+    b_cells = data["option_b_ratings"].tolist()
+    resp = data["response"].to_numpy()
+
+    n = len(data)
+    E_list = []
+    Y_list = []
+
+    for i in range(n):
+        a = np.asarray(a_cells[i], dtype=float).ravel()
+        b = np.asarray(b_cells[i], dtype=float).ravel()
+        if a.shape[0] != validities.shape[0] or b.shape[0] != validities.shape[0]:
+            continue
+
+        # TTB cascade: first discriminating cue in validity order.
+        winner = -1
+        for j in cue_order:
+            if a[j] > b[j]:
+                winner = 0
+                break
+            if b[j] > a[j]:
+                winner = 1
+                break
+        if winner < 0:
+            continue  # no discriminating cue: uninformative for the contrast
+
+        # Inverted-polarity integrated evidence favoring the TTB winner:
+        # the loser's endorsements (1s) count FOR the winner (sparse option).
+        if winner == 0:
+            E = float(np.sum(w * (b - a)))
+        else:
+            E = float(np.sum(w * (a - b)))
+
+        E_list.append(E)
+        Y_list.append(1.0 if int(resp[i]) == winner else 0.0)
+
+    if len(E_list) < 4:
+        return 0.0
+
+    E = np.asarray(E_list, dtype=float)
+    Y = np.asarray(Y_list, dtype=float)
+
+    # Pool trials into cells by (rounded) evidence value; mirrored twins and
+    # repetitions of the same pair share the same E_w and are averaged.
+    keys = np.round(E, 4)
+    uniq = np.unique(keys)
+    if uniq.shape[0] < 2:
+        return 0.0
+
+    cell_x = np.empty(uniq.shape[0], dtype=float)
+    cell_y = np.empty(uniq.shape[0], dtype=float)
+    for idx in range(uniq.shape[0]):
+        mask = keys == uniq[idx]
+        cell_x[idx] = E[mask].mean()
+        cell_y[idx] = Y[mask].mean()
+
+    x = cell_x - cell_x.mean()
+    y = cell_y - cell_y.mean()
+    denom = float(np.sum(x * x))
+    if denom <= 1e-12:
+        return 0.0
+
+    return float(np.sum(x * y) / denom)
+```
+
+**Observed (real) value:** 0.5944 (var=0.0376)
+**Previous candidate values (this loop):**
+  - iter 1: 0.5896 (var=0.0187) (Δ vs real -0.0048)
+  - iter 2: 0.5949 (var=0.0251) (Δ vs real +0.0005)
+  - iter 3: 0.5824 (var=0.0199) (Δ vs real -0.0120)
+  - iter 4: 0.5890 (var=0.0236) (Δ vs real -0.0054)
+  - iter 5: 0.5403 (var=0.0257) (Δ vs real -0.0541)
+  - iter 6: 0.6001 (var=0.0182) (Δ vs real +0.0057)
+  - iter 7: 0.5960 (var=0.0190) (Δ vs real +0.0016)
+  - iter 8: 0.5862 (var=0.0175) (Δ vs real -0.0082)
+  - iter 9 (most recent): 0.5357 (var=0.0298) (Δ vs real -0.0587)
+**Other theories' values on this metric (for reference):**
+- pi_1: -0.0009 (var=0.0089)
+- pi_4: 0.4379 (var=0.0326)
+- pi_2: -0.6876 (var=0.0238)
+- pi_3: 0.0089 (var=0.0056)
+- pi_5: 0.5894 (var=0.0647)
+- pi_6: 0.5414 (var=0.0227)
+- pi_7: 0.5915 (var=0.0172)
+- pi_8: 0.5704 (var=0.0179)
+- pi_9: 0.5813 (var=0.0162)
+- pi_10: 0.5701 (var=0.0179)
+
+### Experiment 6
+**Design**
+  A=[1, 0, 1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 0, 1, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 1, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 1, 1, 1]
+  A=[0, 1, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 1, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1, 1, 0, 0]
+  A=[1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1, 1, 1, 1]
+  A=[1, 1, 1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 0, 1, 1, 1, 1, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 0, 1, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 1, 1, 0, 0, 0, 0]  B=[1, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 1, 1, 1, 0, 0, 0]  B=[1, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 1, 1, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 1, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 1, 1, 1, 0, 0, 0]  B=[0, 1, 0, 0, 0, 0, 0, 0]
+  A=[0, 1, 1, 1, 1, 1, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 1, 1, 1, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1, 1, 1]  B=[1, 1, 1, 1, 1, 1, 1, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+
+    # Fixed design constants: 8 cues with the experiment's validities.
+    validities = np.array([0.95, 0.92, 0.62, 0.60, 0.62, 0.60, 0.62, 0.60])
+
+    # Parse per-trial rating vectors (cells are lists -> project safely).
+    a_lists = [list(r) for r in data["option_a_ratings"]]
+    b_lists = [list(r) for r in data["option_b_ratings"]]
+    A = np.asarray(a_lists, dtype=float)
+    B = np.asarray(b_lists, dtype=float)
+    resp = np.asarray(data["response"]).astype(int)
+
+    n_feat = A.shape[1]
+    if n_feat == len(validities):
+        cue_order = np.argsort(-validities, kind="stable")
+    else:
+        cue_order = np.arange(n_feat)
+
+    n_a = A.sum(axis=1)
+    n_b = B.sum(axis=1)
+
+    # TTB winner per trial: first discriminating cue in validity order.
+    winner = np.full(A.shape[0], -1, dtype=int)
+    for j in cue_order:
+        open_rows = winner == -1
+        if not open_rows.any():
+            break
+        wa = open_rows & (A[:, j] > B[:, j])
+        wb = open_rows & (B[:, j] > A[:, j])
+        winner[wa] = 0
+        winner[wb] = 1
+
+    abs_diff = np.abs(n_a - n_b)
+    denser = np.where(n_a > n_b, 0, 1)  # option carrying MORE 1-ratings
+
+    # Extreme-count trials only (|n_A - n_B| >= 5): the sign of SPI's
+    # evidence is robust across its whole parameter box on these cells.
+    valid = (winner >= 0) & (abs_diff >= 5)
+    ttb_picks_denser = (winner == denser)
+
+    chose_winner = (resp == winner)
+
+    grp_d = valid & ttb_picks_denser      # TTB winner is the DENSER option
+    grp_s = valid & (~ttb_picks_denser)    # TTB winner is the SPARSER option
+
+    nd = int(grp_d.sum())
+    ns = int(grp_s.sum())
+    if nd == 0 or ns == 0:
+        return 0.0
+
+    p_denser = float(chose_winner[grp_d].mean())
+    p_sparser = float(chose_winner[grp_s].mean())
+
+    return p_denser - p_sparser
+```
+
+**Observed (real) value:** -0.6758 (var=0.0393)
+**Previous candidate values (this loop):**
+  - iter 1: -0.6946 (var=0.0421) (Δ vs real -0.0188)
+  - iter 2: -0.6837 (var=0.0359) (Δ vs real -0.0079)
+  - iter 3: -0.6817 (var=0.0362) (Δ vs real -0.0058)
+  - iter 4: -0.6742 (var=0.0366) (Δ vs real +0.0017)
+  - iter 5: -0.6408 (var=0.0385) (Δ vs real +0.0350)
+  - iter 6: -0.6913 (var=0.0352) (Δ vs real -0.0154)
+  - iter 7: -0.6733 (var=0.0268) (Δ vs real +0.0025)
+  - iter 8: -0.6421 (var=0.0240) (Δ vs real +0.0337)
+  - iter 9 (most recent): -0.7200 (var=0.0217) (Δ vs real -0.0442)
+**Other theories' values on this metric (for reference):**
+- pi_4: -0.5012 (var=0.0594)
+- pi_1: 0.0138 (var=0.0135)
+- pi_2: 0.7354 (var=0.0335)
+- pi_3: -0.0125 (var=0.0078)
+- pi_5: -0.6912 (var=0.1205)
+- pi_6: -0.6900 (var=0.0330)
+- pi_7: -0.6850 (var=0.0317)
+- pi_8: -0.6883 (var=0.0128)
+- pi_9: -0.6725 (var=0.0255)
+- pi_10: -0.6917 (var=0.0411)
+
+### Experiment 7
+**Design**
+  A=[1, 1, 1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1, 1, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 1, 1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 1, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1, 1, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1, 1, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 1, 1, 1]  B=[1, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1, 1, 1]  B=[1, 1, 1, 1, 1, 1, 1, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    # Per-subject choice CONSISTENCY (extremity) toward the sparse option on
+    # near-unanimous trials (one option all-zeros, the other endorsed on at
+    # least n_features-1 cues), averaged over subjects.
+    #
+    # RFI-delta: polarity is a stable per-subject trait with only a small
+    # attentional slip (delta <= 0.12) and small lapse (eps <= 0.08), so EVERY
+    # subject -- majority (anti-endorsement) and minority (conventional)
+    # alike -- is strongly and stably consistent on these trials:
+    # per-subject p(sparse) is either ~[0.80, 0.92] or its mirror ~[0.08, 0.20],
+    # i.e. |2p-1| ~ [0.6, 0.85] for essentially all subjects, with tight
+    # between-subject spread.
+    #
+    # SPI: the wide lapse/polarity-mixing boxes (eps in [0.05, 0.35],
+    # rho in [0, 0.35], beta in [0.5, 20]) mean per-subject attenuation varies
+    # enormously; the average subject sits much closer to chance (mean
+    # |2p-1| far below RFI's), and the population spread is wide.
+    # The absolute value makes the statistic polarity-symmetric, so RFI's
+    # small conventional minority does NOT inflate the between-subject
+    # variance (both clusters have the same extremity).
+
+    a_ratings = data['option_a_ratings'].tolist()
+    b_ratings = data['option_b_ratings'].tolist()
+    resp = data['response'].astype(float).values
+    subj = data['subject_id'].values
+
+    n = len(data)
+    a_sum = np.empty(n, dtype=float)
+    b_sum = np.empty(n, dtype=float)
+    n_feat = np.empty(n, dtype=float)
+    for i in range(n):
+        av = list(a_ratings[i])
+        bv = list(b_ratings[i])
+        a_sum[i] = float(np.sum(av))
+        b_sum[i] = float(np.sum(bv))
+        n_feat[i] = float(len(av))
+
+    # Near-unanimous trials: sparse side has zero endorsements, dense side
+    # is endorsed on all or all-but-one cue (E in ~[0.8, 1.0] for any
+    # weighting gamma in [0, 2]).
+    thresh = n_feat - 1.0
+    sparse_is_a = (a_sum == 0.0) & (b_sum >= thresh)
+    sparse_is_b = (b_sum == 0.0) & (a_sum >= thresh)
+    extreme = sparse_is_a | sparse_is_b
+
+    # 1 if the subject chose the all-zeros (sparse) option, else 0.
+    chose_sparse = np.where(sparse_is_a, 1.0 - resp, resp)
+
+    vals = []
+    for s in np.unique(subj[extreme]):
+        m = extreme & (subj == s)
+        if m.sum() == 0:
+            continue
+        p = float(np.mean(chose_sparse[m]))
+        vals.append(abs(2.0 * p - 1.0))
+
+    if len(vals) == 0:
+        return 0.0
+    return float(np.mean(vals))
+```
+
+**Observed (real) value:** 0.7044 (var=0.0382)
+**Previous candidate values (this loop):**
+  - iter 1: 0.6800 (var=0.0402) (Δ vs real -0.0244)
+  - iter 2: 0.7044 (var=0.0331) (Δ vs real +0.0000)
+  - iter 3: 0.6622 (var=0.0362) (Δ vs real -0.0422)
+  - iter 4: 0.7278 (var=0.0314) (Δ vs real +0.0233)
+  - iter 5: 0.7156 (var=0.0316) (Δ vs real +0.0111)
+  - iter 6: 0.7111 (var=0.0240) (Δ vs real +0.0067)
+  - iter 7: 0.6567 (var=0.0376) (Δ vs real -0.0478)
+  - iter 8: 0.6767 (var=0.0421) (Δ vs real -0.0278)
+  - iter 9 (most recent): 0.6922 (var=0.0313) (Δ vs real -0.0122)
+**Other theories' values on this metric (for reference):**
+- pi_5: 0.7611 (var=0.0118)
+- pi_4: 0.5167 (var=0.0365)
+- pi_1: 0.6944 (var=0.0505)
+- pi_2: 0.7267 (var=0.0418)
+- pi_3: 0.6067 (var=0.0143)
+- pi_6: 0.7544 (var=0.0264)
+- pi_7: 0.7111 (var=0.0259)
+- pi_8: 0.7178 (var=0.0239)
+- pi_9: 0.6922 (var=0.0227)
+- pi_10: 0.7067 (var=0.0235)
+
+### Experiment 8
+**Design**
+  A=[0, 0, 0, 0, 1, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 1, 1, 1]  B=[0, 0, 0, 0, 0, 0, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 1, 1]  B=[0, 0, 0, 0, 0, 1, 1, 1]
+  A=[0, 0, 0, 0, 1, 1, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1, 1, 0, 0]
+  A=[0, 0, 0, 1, 1, 1, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 1, 1, 1, 0, 0]
+  A=[0, 0, 1, 1, 1, 1, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 1, 0, 0]
+  A=[0, 1, 1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0, 0, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 1, 1]  B=[0, 1, 1, 1, 1, 1, 1, 1]
+  A=[0, 1, 1, 1, 1, 1, 1, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1, 1, 1, 0]
+  A=[1, 1, 1, 1, 1, 1, 1, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1, 1, 0]
+  A=[1, 1, 1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1, 1, 1]
+  A=[1, 1, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1, 1, 1, 1]
+  A=[0, 0, 0, 0, 1, 1, 1, 1]  B=[1, 1, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0, 0, 0]  B=[0, 0, 0, 1, 1, 1, 1, 1]
+  A=[0, 0, 0, 1, 1, 1, 1, 1]  B=[1, 1, 1, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1, 1, 1]  B=[1, 1, 1, 1, 1, 1, 1, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    # Polarity-agnostic preference EXTREMITY on high-contrast trials.
+    #
+    # Select trials where the two options' endorsement counts differ by >= 3
+    # (design trials R3..R8 and mirrors: |E| in [~0.35, 1.0] for every gamma
+    # in [0,2]; the count-sparser option is the inverted-evidence-favored
+    # option on all of them). Per subject, compute p_hat = rate of choosing
+    # the count-sparser option on those 48 trials, then take |p_hat - 0.5|.
+    # The metric is invariant to a subject's polarity (a conventional-polarity
+    # subject and a red-flag subject both yield large extremity), which
+    # neutralizes RFI's ~5% minority cluster, and directly measures the
+    # ATTENUATION away from a pure deterministic preference: SPI's large
+    # lapse (eps in [0.05,0.35], mean ~0.20) plus polarity mixture
+    # (rho in [0,0.35], mean ~0.175) pulls per-subject p toward 0.5
+    # (predicted extremity ~0.22), whereas RFI-delta's small slip
+    # (delta ~0.10) and tiny lapse (eps <= 0.08) keep every subject
+    # near saturation (predicted extremity ~0.35, per-subject range
+    # [0.75, 0.92] in p). Applied to the pooled DataFrame the function
+    # returns the mean of the per-subject values, so the pooled point
+    # estimate is exactly the population mean of the per-subject metric.
+    sids = []
+    chose_sparse = []
+    for r in data.itertuples(index=False):
+        a = np.asarray(r.option_a_ratings, dtype=float)
+        b = np.asarray(r.option_b_ratings, dtype=float)
+        sa = int(a.sum())
+        sb = int(b.sum())
+        # Keep only high-contrast trials (count difference >= 3).
+        if abs(sa - sb) < 3:
+            continue
+        resp = int(r.response)  # 0 = chose A, 1 = chose B
+        sparse_is_a = sa < sb
+        picked_sparse = (resp == 0) if sparse_is_a else (resp == 1)
+        sids.append(r.subject_id)
+        chose_sparse.append(1.0 if picked_sparse else 0.0)
+    if len(sids) == 0:
+        return 0.0
+    tmp = pd.DataFrame({"sid": sids, "cs": chose_sparse})
+    per_subj = tmp.groupby("sid")["cs"].mean()
+    extremity = (per_subj - 0.5).abs()
+    return float(extremity.mean())
+```
+
+**Observed (real) value:** 0.3467 (var=0.0108)
+**Previous candidate values (this loop):**
+  - iter 1: 0.3433 (var=0.0068) (Δ vs real -0.0033)
+  - iter 2: 0.3571 (var=0.0063) (Δ vs real +0.0104)
+  - iter 3: 0.3112 (var=0.0083) (Δ vs real -0.0354)
+  - iter 4: 0.3612 (var=0.0046) (Δ vs real +0.0146)
+  - iter 5: 0.3258 (var=0.0076) (Δ vs real -0.0208)
+  - iter 6: 0.3667 (var=0.0046) (Δ vs real +0.0200)
+  - iter 7: 0.3542 (var=0.0089) (Δ vs real +0.0075)
+  - iter 8: 0.3508 (var=0.0071) (Δ vs real +0.0042)
+  - iter 9 (most recent): 0.3250 (var=0.0098) (Δ vs real -0.0217)
+**Other theories' values on this metric (for reference):**
+- pi_4: 0.2367 (var=0.0084)
+- pi_5: 0.3758 (var=0.0028)
+- pi_1: 0.3283 (var=0.0115)
+- pi_2: 0.3421 (var=0.0094)
+- pi_3: 0.1929 (var=0.0036)
+- pi_6: 0.3467 (var=0.0078)
+- pi_7: 0.3521 (var=0.0065)
+- pi_8: 0.3438 (var=0.0047)
+- pi_9: 0.3658 (var=0.0051)
+- pi_10: 0.3629 (var=0.0063)
+
+### Experiment 9
+**Design**
+  A=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0]  B=[1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0]  B=[1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0]
+  A=[1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1]  B=[1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1]  B=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]  B=[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+
+    V = np.array([0.98, 0.95, 0.88, 0.85, 0.82, 0.80,
+                  0.78, 0.76, 0.74, 0.72, 0.62, 0.62], dtype=float)
+    WTIE = np.power(V, 0.75)
+
+    df = data.reset_index(drop=True)
+
+    # ---------- 1. classify trials into evidence cells ----------
+    # Cell = the dense-minus-sparse endorsement pattern; its evidence under
+    # any gamma is x(gamma) = sum_j v_j^gamma * dvec_j  (>= 0 on this design).
+    subj_cells = {}
+    for i in range(len(df)):
+        a = np.asarray(df.at[i, "option_a_ratings"], dtype=float)
+        b = np.asarray(df.at[i, "option_b_ratings"], dtype=float)
+        if a.shape != b.shape or a.shape[0] != V.shape[0]:
+            continue
+        if np.array_equal(a, b):
+            continue  # identical vectors: uninformative
+        ca = float(np.sum(a))
+        cb = float(np.sum(b))
+        if ca < cb:
+            sparse, dvec = 0, b - a
+        elif cb < ca:
+            sparse, dvec = 1, a - b
+        else:
+            wa = float(np.dot(WTIE, a))
+            wb = float(np.dot(WTIE, b))
+            if wa < wb:
+                sparse, dvec = 0, b - a
+            else:
+                sparse, dvec = 1, a - b
+        y = 1.0 if int(df.at[i, "response"]) == sparse else 0.0
+        key = tuple(int(round(v)) for v in dvec)
+        sid = df.at[i, "subject_id"]
+        cells = subj_cells.setdefault(sid, {})
+        ent = cells.setdefault(key, [0, 0.0])
+        ent[0] += 1
+        ent[1] += y
+
+    if not subj_cells:
+        return 0.0
+
+    # ---------- 2. per-subject polarity orientation ----------
+    # RFI-delta has a ~5.5% conventional-polarity minority; orienting each
+    # subject by their overall sparse-choice rate maps that minority onto
+    # the majority cluster (removing the huge mixture variance a signed
+    # statistic would otherwise suffer). Under GSP every subject's overall
+    # sparse rate stays well above 0.5 (min ~0.65), so orientation never
+    # misfires there.
+    for cells in subj_cells.values():
+        tot_n = sum(e[0] for e in cells.values())
+        tot_k = sum(e[1] for e in cells.values())
+        if tot_n > 0 and tot_k < 0.5 * tot_n:
+            for e in cells.values():
+                e[1] = e[0] - e[1]
+
+    # ---------- 3. reference mixtures ----------
+    # Both theories reduce to the SAME per-subject family
+    #     p_i = q*sigmoid(s*x_i(gamma)) + (1-q)*(1 - sigmoid(s*x_i(gamma)))
+    # with theory-specific priors:
+    #   RFI: s = 2*beta/sum(v^gamma), beta~U[3,8]  -> s in [0.5, 1.69];
+    #        q = (1-eps)(1-delta)+eps/2 in [0.85, 0.92] (TIGHT); gamma in [0,1]
+    #   GSP: s = beta_raw in [1.1, 3.2] (log-uniform);
+    #        q = (1-eps)*m+eps/2 in [0.72, 0.98] (WIDE); gamma in [0, 1.5]
+    def sigmoid(z):
+        z = np.asarray(z, dtype=float)
+        out = np.empty_like(z)
+        pos = z >= 0.0
+        out[pos] = 1.0 / (1.0 + np.exp(-z[pos]))
+        ez = np.exp(z[~pos])
+        out[~pos] = ez / (1.0 + ez)
+        return out
+
+    keys = sorted({k for cells in subj_cells.values() for k in cells})
+    ncell = len(keys)
+    if ncell == 0:
+        return 0.0
+    key_mat = np.array([list(k) for k in keys], dtype=float)  # (C, 12)
+
+    GAMMAS = np.array([0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5])
+    XG = np.array([key_mat @ np.power(V, g) for g in GAMMAS])  # (7, C)
+
+    # RFI mixture components
+    BETAS = np.array([3.0, 4.25, 5.5, 6.75, 8.0])
+    Q_RFI = np.array([0.86, 0.885, 0.91])
+    QW_RFI = np.array([0.25, 0.5, 0.25])
+    rg, rs, rq, rw = [], [], [], []
+    for gi in range(5):  # gamma in [0, 1]
+        Sg = float(np.sum(np.power(V, GAMMAS[gi])))
+        for be in BETAS:
+            s = 2.0 * be / Sg
+            for qi in range(3):
+                rg.append(gi)
+                rs.append(s)
+                rq.append(Q_RFI[qi])
+                rw.append(QW_RFI[qi] / 25.0)
+    rg = np.array(rg); rs = np.array(rs); rq = np.array(rq); rw = np.array(rw)
+
+    # GSP mixture components
+    SG = np.exp(np.linspace(np.log(1.1), np.log(3.2), 7))
+    Q_GSP = np.array([0.735, 0.79, 0.845, 0.90, 0.955])
+    gg, gs, gq, gw = [], [], [], []
+    w_unit = 1.0 / (7 * 7 * 5)
+    for gi in range(7):  # gamma in [0, 1.5]
+        for s in SG:
+            for q in Q_GSP:
+                gg.append(gi); gs.append(s); gq.append(q); gw.append(w_unit)
+    gg = np.array(gg); gs = np.array(gs); gq = np.array(gq); gw = np.array(gw)
+
+    def comp_logps(gidx, slopes, qs):
+        z = slopes[:, None] * XG[gidx, :]
+        sig = sigmoid(z)
+        p = qs[:, None] * sig + (1.0 - qs[:, None]) * (1.0 - sig)
+        p = np.clip(p, 0.01, 0.99)
+        return np.log(p), np.log(1.0 - p)
+
+    LP_r, L1_r = comp_logps(rg, rs, rq)
+    LP_g, L1_g = comp_logps(gg, gs, gq)
+    LW_r = np.log(rw)
+    LW_g = np.log(gw)
+
+    def logmix(LP, L1, LW, k_vec, n_vec):
+        ll = (k_vec[None, :] * LP + (n_vec - k_vec)[None, :] * L1).sum(axis=1) + LW
+        m = np.max(ll)
+        return float(m + np.log(np.sum(np.exp(ll - m))))
+
+    # ---------- 4. per-subject marginal log-likelihood ratio ----------
+    vals = []
+    for sid in sorted(subj_cells, key=str):
+        cells = subj_cells[sid]
+        k_vec = np.zeros(ncell)
+        n_vec = np.zeros(ncell)
+        for ci, key in enumerate(keys):
+            ent = cells.get(key)
+            if ent is not None:
+                n_vec[ci] = float(ent[0])
+                k_vec[ci] = float(ent[1])
+        if n_vec.sum() <= 0:
+            continue
+        vals.append(logmix(LP_r, L1_r, LW_r, k_vec, n_vec)
+                    - logmix(LP_g, L1_g, LW_g, k_vec, n_vec))
+
+    if not vals:
+        return 0.0
+    return float(np.mean(vals))
+```
+
+**Observed (real) value:** -1.7633 (var=3.8102)
+**Previous candidate values (this loop):**
+  - iter 1: -1.2241 (var=2.7895) (Δ vs real +0.5392)
+  - iter 2: -1.1244 (var=2.3586) (Δ vs real +0.6388)
+  - iter 3: -1.4069 (var=3.0510) (Δ vs real +0.3563)
+  - iter 4: -0.8929 (var=1.6257) (Δ vs real +0.8703)
+  - iter 5: -1.0949 (var=1.8746) (Δ vs real +0.6684)
+  - iter 6: -1.0939 (var=2.4766) (Δ vs real +0.6693)
+  - iter 7: -1.1179 (var=2.5643) (Δ vs real +0.6453)
+  - iter 8: -1.1023 (var=2.0480) (Δ vs real +0.6609)
+  - iter 9 (most recent): -1.3024 (var=2.5854) (Δ vs real +0.4608)
+**Other theories' values on this metric (for reference):**
+- pi_5: 0.6498 (var=1.2048)
+- pi_6: -0.6480 (var=2.0074)
+- pi_1: -2.7859 (var=6.5552)
+- pi_2: -1.5565 (var=3.7090)
+- pi_3: -1.7169 (var=0.8671)
+- pi_4: -1.4521 (var=2.5200)
+- pi_7: -1.3031 (var=2.4039)
+- pi_8: -0.6950 (var=1.2398)
+- pi_9: -0.7021 (var=1.9618)
+- pi_10: -1.1568 (var=1.5167)
+
+### Experiment 10
+**Design**
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]
+  A=[0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1]  B=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1]  B=[0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1]  B=[0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1]  B=[1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]  B=[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+
+    # ------------------------------------------------------------------
+    # Theory-neutral psychometric slope test.
+    #
+    # Both theories are EXACTLY re-parameterizable, on every trial, as
+    #   p(choose A) = 0.5 + A * ( sigmoid(s * E_norm(gamma)) - 0.5 ),
+    #     E_norm(gamma) = sum_j v_j^gamma (b_j - a_j) / sum_j v_j^gamma,
+    # where
+    #   GSP  (raw weights):    s = beta_raw * sum(v^gamma) in [9.1, 38.4],
+    #                          A = (1-eps)(2m-1) in [0.44, 0.98];
+    #   RFI  (normalized wts): s = beta in [3, 8],
+    #                          A = +-(1-eps)(1-2 delta), |A| in [0.70, 0.84].
+    # The two slope supports are DISJOINT: every GSP subject's effective
+    # normalized evidence slope lies above ~9, every RFI subject's below 8.
+    # The attenuation (m, eps, delta) and the polarity sign are absorbed
+    # by the free coefficient A in [-1, 1], which removes exactly the
+    # level/attenuation heterogeneity that destroyed the level-based
+    # statistics tried before.
+    #
+    # Per subject we fit (gamma, s, A) by binomial maximum likelihood on
+    # ALL 96 trials (grid search; exact likelihood, no approximation),
+    # and report the posterior probability that s > 9.5 under a
+    # log-uniform prior on s in [1.2, 48] (profiled over gamma and A).
+    #   GSP subjects -> posterior mass almost entirely above 9.5
+    #                  (expected value ~0.75-0.85);
+    #   RFI subjects -> posterior mass below 9.5
+    #                  (expected value ~0.15-0.45).
+    # The pooled metric is the mean of the per-subject posterior
+    # probabilities; a single subject's slice returns that subject's
+    # posterior probability.
+    # ------------------------------------------------------------------
+
+    VALS = np.array([0.99, 0.95, 0.88, 0.85, 0.82, 0.80, 0.78,
+                     0.76, 0.74, 0.72, 0.50, 0.50], dtype=float)
+
+    GAMMA_GRID = np.array([0.0, 0.25, 0.50, 0.75, 1.00, 1.25, 1.50])
+    S_GRID = np.logspace(np.log10(1.2), np.log10(48.0), 40)
+    A_GRID = np.linspace(-0.98, 0.98, 41)
+    S_THRESH = 9.5
+
+    n_g, n_s, n_a = len(GAMMA_GRID), len(S_GRID), len(A_GRID)
+
+    # per-gamma cue weights and their totals
+    W = np.power(VALS[None, :], GAMMA_GRID[:, None])      # (n_g, F)
+    WSUM = W.sum(axis=1)                                  # (n_g,)
+    ABOVE = S_GRID > S_THRESH                            # (n_s,)
+
+    def _vec(x):
+        if isinstance(x, np.ndarray):
+            return x.astype(float)
+        return np.asarray(list(x), dtype=float)
+
+    def _subject_value(sub):
+        a_list = sub["option_a_ratings"].tolist()
+        b_list = sub["option_b_ratings"].tolist()
+        r = sub["response"].to_numpy()
+
+        # aggregate identical trials: key -> [n_chose_A, n_total]
+        agg = {}
+        for i in range(len(sub)):
+            a = _vec(a_list[i])
+            b = _vec(b_list[i])
+            key = (tuple(int(round(v)) for v in a),
+                   tuple(int(round(v)) for v in b))
+            y = 1 if int(r[i]) == 0 else 0   # response 0 = chose A
+            if key in agg:
+                agg[key][0] += y
+                agg[key][1] += 1
+            else:
+                agg[key] = [y, 1]
+
+        nll = np.zeros((n_g, n_s, n_a), dtype=float)
+        for (ta, tb), (k, n) in agg.items():
+            da = np.asarray(ta, dtype=float)
+            db = np.asarray(tb, dtype=float)
+            d = db - da                     # endorsement difference (B - A)
+            if not np.any(d != 0.0):
+                continue                    # tie trials: no information
+            e = (W @ d) / WSUM              # (n_g,) normalized evidence for A
+            for gi in range(n_g):
+                x = S_GRID * e[gi]           # (n_s,)
+                ax = np.abs(x)
+                ex = np.exp(-ax)
+                sg = np.where(x >= 0.0, 1.0 / (1.0 + ex), ex / (1.0 + ex))
+                dev = sg - 0.5                               # (n_s,)
+                p = 0.5 + A_GRID[None, :] * dev[:, None]     # (n_s, n_a)
+                p = np.clip(p, 1e-9, 1.0 - 1e-9)
+                nll[gi] -= k * np.log(p) + (n - k) * np.log1p(-p)
+
+        # profile the negative log-likelihood over gamma and A
+        prof = nll.min(axis=(0, 2))         # (n_s,)
+        w = np.exp(-(prof - prof.min()))   # likelihood weights (log-uniform s prior)
+        return float(w[ABOVE].sum() / w.sum())
+
+    subj = data["subject_id"].to_numpy()
+    vals = []
+    for s in np.unique(subj):
+        sub = data[subj == s]
+        vals.append(_subject_value(sub))
+    if len(vals) == 0:
+        return 0.5
+    return float(np.mean(vals))
+```
+
+**Observed (real) value:** 0.9113 (var=0.0227)
+**Previous candidate values (this loop):**
+  - iter 1: 0.8852 (var=0.0329) (Δ vs real -0.0262)
+  - iter 2: 0.9092 (var=0.0229) (Δ vs real -0.0021)
+  - iter 3: 0.8828 (var=0.0342) (Δ vs real -0.0286)
+  - iter 4: 0.9158 (var=0.0126) (Δ vs real +0.0045)
+  - iter 5: 0.8796 (var=0.0349) (Δ vs real -0.0318)
+  - iter 6: 0.8769 (var=0.0421) (Δ vs real -0.0345)
+  - iter 7: 0.8708 (var=0.0301) (Δ vs real -0.0406)
+  - iter 8: 0.9040 (var=0.0340) (Δ vs real -0.0073)
+  - iter 9 (most recent): 0.8399 (var=0.0377) (Δ vs real -0.0715)
+**Other theories' values on this metric (for reference):**
+- pi_6: 0.7849 (var=0.0519)
+- pi_5: 0.5780 (var=0.0892)
+- pi_1: 0.9526 (var=0.0112)
+- pi_2: 0.9697 (var=0.0075)
+- pi_3: 0.5167 (var=0.0397)
+- pi_4: 0.6639 (var=0.0486)
+- pi_7: 0.9161 (var=0.0235)
+- pi_8: 0.8983 (var=0.0297)
+- pi_9: 0.8413 (var=0.0356)
+- pi_10: 0.8791 (var=0.0271)
+
+### Experiment 11
+**Design**
+  A=[1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0]  B=[1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0]  B=[1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0]
+  A=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0]  B=[1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1]  B=[1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0]  B=[1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0]  B=[1, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0]
+
+**Metric**
+```python
+import numpy as np
+import pandas as pd
+from collections import defaultdict
+
+
+def metric(data: pd.DataFrame) -> float:
+    """Total log marginal-likelihood ratio (log Bayes factor) of RSD-vgp over GSP.
+
+    Both theories share the identical choice core
+        p(A) = 0.5 + A_eff * (sigmoid(beta * E) - 0.5),
+        E(gamma) = sum_j v_j**gamma * (b_j - a_j),
+    and differ ONLY in the population supports of (gamma, log beta):
+        RSD-vgp: gamma ~ U[0,2], log beta ~ U[ln1.8, ln6]
+        GSP    : gamma ~ U[0,1.5], log beta ~ U[ln1.1, ln3.2]
+    For every subject the exact binomial likelihood of their choices over the
+    distinct trial types is integrated (grid) against each theory's prior; the
+    attenuation A_eff gets a shared neutral prior (the two theories' A_eff
+    ranges nearly coincide, so it must not drive the comparison). Subjects are
+    independent, so on the pooled DataFrame the value is the sum of the
+    per-subject log Bayes factors (the joint log BF of the whole dataset); on a
+    single-subject slice it is that subject's individual log Bayes factor.
+    Positive values favor RSD-vgp, negative values favor GSP.
+    """
+    VAL = np.array([1.0, 0.99, 0.92, 0.85, 0.75, 0.65,
+                    0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5])
+
+    df = data
+    n_rows = len(df)
+    if n_rows == 0:
+        return 0.0
+
+    a_list = df['option_a_ratings'].tolist()
+    b_list = df['option_b_ratings'].tolist()
+    resp = np.asarray(df['response'].values, dtype=int)
+    subj = df['subject_id'].values
+
+    # Hashable string keys for the trial types (avoids unhashable list cells).
+    abmap = {}
+    key_list = []
+    for i in range(n_rows):
+        a = a_list[i]
+        b = b_list[i]
+        ka = ''.join(['1' if int(x) else '0' for x in a])
+        kb = ''.join(['1' if int(x) else '0' for x in b])
+        key = ka + '#' + kb
+        key_list.append(key)
+        if key not in abmap:
+            abmap[key] = (np.array([int(x) for x in a], dtype=float),
+                          np.array([int(x) for x in b], dtype=float))
+
+    tkeys = sorted(abmap.keys())
+    tidx = {k: i for i, k in enumerate(tkeys)}
+    T = len(tkeys)
+
+    K = defaultdict(lambda: np.zeros(T))  # A-choices per trial type
+    N = defaultdict(lambda: np.zeros(T))  # presentations per trial type
+    for i in range(n_rows):
+        s = subj[i]
+        ti = tidx[key_list[i]]
+        N[s][ti] += 1.0
+        if resp[i] == 0:
+            K[s][ti] += 1.0
+
+    # Parameter grids (cover both theories' supports).
+    gam = np.arange(0.02, 2.0001, 0.02)      # validity exponent gamma
+    lbg = np.arange(0.02, 1.9401, 0.02)      # log raw inverse temperature
+    Agr = np.arange(0.42, 0.9901, 0.03)     # effective attenuation A_eff
+    G, L, NA = len(gam), len(lbg), len(Agr)
+
+    # E_t(gamma) = sum_j v_j^gamma (b_j - a_j), shape (G, T)
+    W = VAL[None, :] ** gam[:, None]
+    E = np.empty((G, T))
+    for key in tkeys:
+        a, b = abmap[key]
+        E[:, tidx[key]] = W @ (b - a)
+
+    # s = sigmoid(beta * E) - 0.5, shape (L, G, T)
+    beta = np.exp(lbg)
+    u = beta[:, None, None] * E[None, :, :]
+    au = np.abs(u)
+    ex = np.exp(-au)
+    sig = np.where(u >= 0.0, 1.0 / (1.0 + ex), ex / (1.0 + ex))
+    s = sig - 0.5
+
+    # p(A) = 0.5 + A_eff * s, shape (NA, L, G, T)
+    P = 0.5 + Agr[:, None, None, None] * s[None, :, :, :]
+    P = np.clip(P, 1e-9, 1.0 - 1e-9)
+    logP = np.log(P)
+    log1P = np.log1p(-P)
+    del P, s, sig, u, au, ex, E, W
+
+    # Log priors.
+    logwA = -np.log(NA)  # shared neutral attenuation prior
+    logpR_g = np.full(G, np.log(0.5))                          # RSD: U[0,2]
+    logpG_g = np.where(gam <= 1.5, np.log(1.0 / 1.5), -np.inf)  # GSP: U[0,1.5]
+    loR, hiR = np.log(1.8), np.log(6.0)
+    loG, hiG = np.log(1.1), np.log(3.2)
+    logpR_b = np.where((lbg >= loR) & (lbg <= hiR),
+                       -np.log(hiR - loR), -np.inf)              # RSD: U[ln1.8, ln6]
+    logpG_b = np.where((lbg >= loG) & (lbg <= hiG),
+                       -np.log(hiG - loG), -np.inf)             # GSP: U[ln1.1, ln3.2]
+
+    PR = logpR_b[None, :, None] + logpR_g[None, None, :] + logwA  # (L, G)
+    PG = logpG_b[None, :, None] + logpG_g[None, None, :] + logwA  # (L, G)
+
+    def lse(x):
+        m = np.max(x)
+        if not np.isfinite(m):
+            return -np.inf
+        return m + np.log(np.sum(np.exp(x - m)))
+
+    total_llr = 0.0
+    for sid in list(N.keys()):
+        kk = K[sid]
+        nn = N[sid]
+        if nn.sum() <= 0:
+            continue
+        # binomial log-likelihood on the (NA, L, G) parameter grid
+        LL = (np.einsum('t,ijkt->ijk', kk, logP)
+              + np.einsum('t,ijkt->ijk', nn - kk, log1P))
+        total_llr += lse(LL + PR[None, :, :]) - lse(LL + PG[None, :, :])
+
+    return float(total_llr)
+```
+
+**Observed (real) value:** 52.5984 (var=6.4849)
+**Previous candidate values (this loop):**
+  - iter 1: 89.8509 (var=16.8172) (Δ vs real +37.2525)
+  - iter 2: 123.6290 (var=16.2951) (Δ vs real +71.0306)
+  - iter 3: 99.5888 (var=11.4993) (Δ vs real +46.9904)
+  - iter 4: 89.0108 (var=15.1797) (Δ vs real +36.4123)
+  - iter 5: 87.7761 (var=15.8149) (Δ vs real +35.1777)
+  - iter 6: 118.6151 (var=14.0601) (Δ vs real +66.0167)
+  - iter 7: 90.3397 (var=11.3638) (Δ vs real +37.7413)
+  - iter 8: 81.2990 (var=8.3767) (Δ vs real +28.7006)
+  - iter 9 (most recent): 103.8443 (var=15.2639) (Δ vs real +51.2458)
+**Other theories' values on this metric (for reference):**
+- pi_7: 96.6930 (var=15.9176)
+- pi_6: -21.1257 (var=0.4647)
+- pi_1: -150.7700 (var=0.2496)
+- pi_2: 220.1524 (var=4.1508)
+- pi_3: -87.8944 (var=0.2065)
+- pi_4: 18.4709 (var=6.0537)
+- pi_5: -41.9588 (var=1.0440)
+- pi_8: 67.3084 (var=8.4566)
+- pi_9: 113.8881 (var=19.4047)
+- pi_10: 114.0736 (var=12.7298)
+
+### Experiment 12
+**Design**
+  A=[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1]  B=[1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0]
+  A=[1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]  B=[1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0]  B=[1, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0]  B=[0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0]
+  A=[0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0]  B=[1, 1, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0]  B=[1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1]
+  A=[0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1]  B=[1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 1]  B=[1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 1, 1, 0, 1, 0, 1, 0, 0, 1]
+  A=[0, 0, 0, 1, 1, 0, 1, 0, 1, 0, 0, 1]  B=[1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 1, 1, 1, 1, 0, 1, 0, 0, 1]
+  A=[0, 0, 0, 1, 1, 1, 1, 0, 1, 0, 0, 1]  B=[1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0]  B=[1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0]
+
+**Metric**
+```python
+import numpy as np
+import pandas as pd
+
+
+def metric(data: pd.DataFrame) -> float:
+    # ------------------------------------------------------------------
+    # Per-subject BOUNDED log Bayes factor (GSP vs RSD-vgp), averaged
+    # over subjects:
+    #     score_i = tanh( log m_GSP(data_i) - log m_RSD(data_i) )
+    #
+    # Both theories share the EXACT per-trial likelihood
+    #     p(A) = 0.5 + A_eff * ( sigmoid(beta * E) - 0.5 ),
+    #     E    = sum_j v_j^gamma * (b_j - a_j)   (raw anti-endorsement),
+    #     A_eff = (1 - eps) * (2m - 1),
+    # so eps and m enter ONLY through A_eff and each subject's 96 choices
+    # identify just (gamma, ln beta, A_eff). The theories differ ONLY in
+    # the population prior over (gamma, ln beta):
+    #     GSP : gamma ~ U[0, 1.5],  ln beta ~ U[ln 1.1, ln 3.2]
+    #     RSD : gamma ~ U[0, 2.0],  ln beta ~ U[ln 1.8, ln 6.0]
+    # (RSD's two-component gamma mixture is algebraically uniform.)
+    # Each marginal is computed by grid quadrature over the theory's exact
+    # box, using THIS experiment's true validities
+    #     [1, 1, 1, .5, .5, .5, .5, .5, .5, .6, .6, .7]
+    # (verified by reproducing the design's own mid-box predictions:
+    # B1 = .77, F0 = .42, C2 = .74 at gamma=.75, beta=2, A_eff=.70).
+    # A_eff receives a shared uniform prior on [0.42, 0.98], which covers
+    # both theories' induced ranges and cancels in the ratio.
+    # tanh() bounds each subject's contribution to (-1, 1), capping the
+    # heavy log-BF tails that destroyed the between-subject variance
+    # budget of the unbounded version.
+    # ------------------------------------------------------------------
+
+    V = np.array([1.0, 1.0, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.6, 0.6, 0.7])
+
+    gam = np.linspace(0.0, 2.0, 81)                    # gamma grid (union)
+    lnb = np.linspace(np.log(1.1), np.log(6.0), 61)    # ln beta grid (union)
+    ave = np.linspace(0.42, 0.98, 12)                   # A_eff grid (shared)
+    betas = np.exp(lnb)
+    ng, nb, na = len(gam), len(lnb), len(ave)
+
+    gsp_g = gam <= 1.5 + 1e-9
+    gsp_b = lnb <= np.log(3.2) + 1e-9
+    rsd_b = lnb >= np.log(1.8) - 1e-9
+    all_g = np.ones(ng, dtype=bool)
+
+    def subject_score(sub: pd.DataFrame) -> float:
+        # ---- pool mirrored twins into canonical (X, Y) cells, X <= Y ----
+        agg = {}
+        for a, b, r in zip(sub["option_a_ratings"].tolist(),
+                           sub["option_b_ratings"].tolist(),
+                           sub["response"].tolist()):
+            ta = tuple((int(v) for v in a))
+            tb = tuple((int(v) for v in b))
+            if ta <= tb:
+                X, Y, choseX = ta, tb, (int(r) == 0)
+            else:
+                X, Y, choseX = tb, ta, (int(r) == 1)
+            key = (X, Y)
+            cnt = agg.get(key)
+            if cnt is None:
+                cnt = agg[key] = [0, 0]
+            cnt[0] += 1
+            if choseX:
+                cnt[1] += 1
+
+        D, kX, nT = [], [], []
+        for (X, Y), cnt in agg.items():
+            d = np.asarray(Y, dtype=float) - np.asarray(X, dtype=float)
+            if not np.any(d != 0.0):
+                continue            # exact tie: p = 0.5, cancels in the BF
+            D.append(d)
+            kX.append(float(cnt[1]))
+            nT.append(float(cnt[0]))
+        if not D:
+            return 0.0
+        D = np.vstack(D)                                # (C, F)
+        kX = np.asarray(kX)
+        kY = np.asarray(nT) - kX
+
+        nf = D.shape[1]
+        if nf <= len(V):
+            v = V[:nf]
+        else:
+            v = np.concatenate([V, np.full(nf - len(V), 0.6)])
+
+        W = np.power(v[None, :], gam[:, None])          # (ng, F)
+        E = D @ W.T                                     # (C, ng)
+        x = E[:, :, None] * betas[None, None, :]         # (C, ng, nb)
+        sig = 0.5 * (1.0 + np.tanh(0.5 * x))             # stable logistic
+        C = sig.shape[0]
+        sig = sig.reshape(C, ng * nb)
+
+        LL = np.empty((na, ng * nb))
+        for ia in range(na):
+            p = 0.5 + ave[ia] * (sig - 0.5)
+            p = np.clip(p, 1e-6, 1.0 - 1e-6)
+            ll = kX[:, None] * np.log(p) + kY[:, None] * np.log1p(-p)
+            LL[ia] = ll.sum(axis=0)
+        LL = LL.reshape(na, ng, nb)
+
+        def logm(gmask, bmask):
+            # grid-average of exp(LL) over the theory's box = marginal
+            # likelihood under the uniform prior on that box
+            sub_ = LL[:, gmask, :][:, :, bmask]
+            m = float(sub_.max())
+            return m + float(np.log(np.mean(np.exp(sub_ - m))))
+
+        lg = logm(gsp_g, gsp_b)
+        lr = logm(all_g, rsd_b)
+        return float(np.tanh(lg - lr))
+
+    data = data.reset_index(drop=True)
+    if len(data) == 0:
+        return 0.0
+    if "subject_id" not in data.columns:
+        return subject_score(data)
+    scores = [subject_score(sub)
+              for _, sub in data.groupby("subject_id", sort=False)]
+    if not scores:
+        return 0.0
+    return float(np.mean(scores))
+```
+
+**Observed (real) value:** -0.4144 (var=0.4154)
+**Previous candidate values (this loop):**
+  - iter 1: -0.1967 (var=0.3747) (Δ vs real +0.2178)
+  - iter 2: -0.2917 (var=0.3583) (Δ vs real +0.1227)
+  - iter 3: -0.2530 (var=0.3821) (Δ vs real +0.1614)
+  - iter 4: -0.1373 (var=0.3207) (Δ vs real +0.2771)
+  - iter 5: -0.2076 (var=0.4045) (Δ vs real +0.2068)
+  - iter 6: -0.2413 (var=0.4064) (Δ vs real +0.1732)
+  - iter 7: -0.2502 (var=0.3584) (Δ vs real +0.1642)
+  - iter 8: -0.2927 (var=0.3453) (Δ vs real +0.1217)
+  - iter 9 (most recent): -0.1769 (var=0.3944) (Δ vs real +0.2375)
+**Other theories' values on this metric (for reference):**
+- pi_6: 0.2650 (var=0.2313)
+- pi_7: -0.2520 (var=0.3854)
+- pi_1: 0.7899 (var=0.0150)
+- pi_2: -0.9161 (var=0.0663)
+- pi_3: 0.7753 (var=0.0098)
+- pi_4: 0.0191 (var=0.3421)
+- pi_5: 0.5030 (var=0.2038)
+- pi_8: -0.3417 (var=0.3534)
+- pi_9: -0.2905 (var=0.4581)
+- pi_10: -0.2310 (var=0.5023)
+
+### Experiment 13
+**Design**
+  A=[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0]
+  A=[0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0]
+  A=[0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0]
+  A=[0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0]
+  A=[0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0]  B=[1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0]
+
+**Metric**
+```python
+import numpy as np
+import pandas as pd
+
+
+def metric(data: pd.DataFrame) -> float:
+    # Joint log Bayes factor between the two population models.
+    # Both theories share the SAME per-trial likelihood
+    #   p(A) = 0.5 + A_eff * (sigmoid(beta * E_gamma) - 0.5),
+    #   E_gamma = sum_j v_j^gamma * (b_j - a_j),  A_eff = (1-eps)(2m-1).
+    # They differ ONLY in the population priors over (gamma, beta, A_eff):
+    #   RSD-vgp: gamma ~ U[0,2]; beta ~ logU[1.8,6]; m~U[0.74,1], eps~U[0.03,0.11]
+    #   EPAI-xp: gamma ~ 0.55*U[0,1.2] + 0.45*U[1.2,2.4]; beta ~ logU[2,7];
+    #            m~U[0.78,0.96], eps~U[0.03,0.10]
+    # The metric marginalizes the likelihood over each theory's prior by
+    # deterministic quadrature and returns sum_i ln[ m_RSD(data_i)/m_EPAI(data_i) ]
+    # over subjects (subjects are independent, so the joint log Bayes factor
+    # is exactly the sum of the per-subject log Bayes factors).
+    val = np.array([1.0, 1.0, 1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5])
+
+    if data is None or len(data) == 0:
+        return 0.0
+
+    # ---------- map trials to unique stimulus types ----------
+    a_lists = data['option_a_ratings'].tolist()
+    b_lists = data['option_b_ratings'].tolist()
+    keys = [(tuple(x), tuple(y)) for x, y in zip(a_lists, b_lists)]
+
+    type_index = {}
+    diff_rows = []
+    for kk in keys:
+        if kk not in type_index:
+            type_index[kk] = len(diff_rows)
+            diff_rows.append(np.asarray(kk[1], dtype=float) - np.asarray(kk[0], dtype=float))
+    D = np.vstack(diff_rows)                      # [T, F]  b - a per type
+    T = D.shape[0]
+    tidx = np.array([type_index[kk] for kk in keys], dtype=int)
+
+    resp_ser = pd.to_numeric(pd.Series(data['response'].values), errors='coerce')
+    resp = resp_ser.to_numpy(dtype=float)
+    if np.isnan(resp).any():
+        vals = [str(r).strip().upper() for r in data['response'].values]
+        resp = np.array([0.0 if v in ('0', 'A') else 1.0 for v in vals])
+
+    uq, sidx = np.unique(np.asarray(data['subject_id'].values), return_inverse=True)
+    n_sub = int(len(uq))
+
+    K = np.zeros((n_sub, T))                     # A-choice counts per type
+    N = np.zeros((n_sub, T))                     # total trials per type
+    isA = (resp == 0).astype(float)
+    np.add.at(K, (sidx, tidx), isA)
+    np.add.at(N, (sidx, tidx), 1.0)
+
+    # ---------- gamma quadrature: 96 midpoint bins on [0, 2.4] ----------
+    ge = np.linspace(0.0, 2.4, 97)
+    gm = 0.5 * (ge[:-1] + ge[1:])
+    dg = float(ge[1] - ge[0])
+    wR_g = np.where(gm <= 2.0, 0.5, 0.0) * dg                 # RSD: U[0,2]
+    wE_g = np.where(gm <= 1.2, 0.55 / 1.2, 0.45 / 1.2) * dg    # EPAI mixture
+    wR_g = wR_g / wR_g.sum()
+    wE_g = wE_g / wE_g.sum()
+    G = len(gm)
+
+    # ---------- beta quadrature: 12 midpoint bins in log space ----------
+    le = np.linspace(np.log(1.8), np.log(7.0), 13)
+    bm = 0.5 * (le[:-1] + le[1:])
+    beta = np.exp(bm)
+
+    def _log_overlap(lo, hi):
+        lo_c = np.clip(le[:-1], lo, hi)
+        hi_c = np.clip(le[1:], lo, hi)
+        w = np.maximum(hi_c - lo_c, 0.0)
+        s = w.sum()
+        return w / s if s > 0 else np.full_like(w, 1.0 / len(w))
+
+    wR_b = _log_overlap(np.log(1.8), np.log(6.0))   # logU[1.8, 6]
+    wE_b = _log_overlap(np.log(2.0), np.log(7.0))   # logU[2, 7]
+    B = len(beta)
+
+    # ---------- evidence and sigmoid - 0.5 ----------
+    Wg = np.power(val[None, :], gm[:, None])         # [G, F] v^gamma
+    Ev = Wg @ D.T                                    # [G, T]
+    x = beta[:, None, None] * Ev[None, :, :]         # [B, G, T]
+    x = np.clip(x, -60.0, 60.0)
+    u = 1.0 / (1.0 + np.exp(-x)) - 0.5               # sigmoid(beta*E) - 0.5
+    C = B * G
+    u_flat = u.reshape(C, T)                         # c = b*G + g
+
+    w_cR = (wR_b[:, None] * wR_g[None, :]).ravel()
+    w_cE = (wE_b[:, None] * wE_g[None, :]).ravel()
+
+    # ---------- A_eff quadrature from each theory's (m, eps) uniforms ----------
+    def _a_grid(m_lo, m_hi, e_lo, e_hi):
+        mm = m_lo + (m_hi - m_lo) * (np.arange(7) + 0.5) / 7.0
+        ee = e_lo + (e_hi - e_lo) * (np.arange(4) + 0.5) / 4.0
+        A = (2.0 * mm - 1.0)[:, None] * (1.0 - ee)[None, :]
+        return A.ravel()
+
+    def _prep(A_vals, w_c):
+        pu = 0.5 + A_vals[:, None, None] * u_flat[None, :, :]   # p(A)
+        D1 = np.log(pu) - np.log1p(-pu)                        # log p - log(1-p)
+        L0 = np.log1p(-pu)                                     # log(1-p)
+        nA = A_vals.size
+        D1m = D1.reshape(nA * C, T)
+        L0m = L0.reshape(nA * C, T)
+        logw = (np.full(nA, -np.log(nA))[:, None] + np.log(w_c)[None, :]).ravel()
+        return D1m, L0m, logw
+
+    A_R = _a_grid(0.74, 1.00, 0.03, 0.11)
+    A_E = _a_grid(0.78, 0.96, 0.03, 0.10)
+    D1R, L0R, lwR = _prep(A_R, w_cR)
+    D1E, L0E, lwE = _prep(A_E, w_cE)
+
+    def _logsumexp(z):
+        m = np.max(z)
+        return float(m + np.log(np.sum(np.exp(z - m))))
+
+    total = 0.0
+    for i in range(n_sub):
+        # log likelihood of subject i's counts at every grid point:
+        # sum_t [ K_t*log p_t + (N_t-K_t)*log(1-p_t) ]
+        lr = _logsumexp(D1R @ K[i] + L0R @ N[i] + lwR)
+        le_i = _logsumexp(D1E @ K[i] + L0E @ N[i] + lwE)
+        total += lr - le_i
+    return float(total)
+```
+
+**Observed (real) value:** 6.0286 (var=0.5984)
+**Previous candidate values (this loop):**
+  - iter 1: 6.9418 (var=0.4087) (Δ vs real +0.9132)
+  - iter 2: -3.8083 (var=0.9632) (Δ vs real -9.8369)
+  - iter 3: -2.8748 (var=0.9633) (Δ vs real -8.9034)
+  - iter 4: 5.0151 (var=0.2892) (Δ vs real -1.0135)
+  - iter 5: 7.0864 (var=0.4421) (Δ vs real +1.0578)
+  - iter 6: -14.6154 (var=1.8260) (Δ vs real -20.6440)
+  - iter 7: 11.4446 (var=0.2521) (Δ vs real +5.4159)
+  - iter 8: -7.7275 (var=1.2810) (Δ vs real -13.7561)
+  - iter 9 (most recent): -3.2199 (var=0.8284) (Δ vs real -9.2485)
+**Other theories' values on this metric (for reference):**
+- pi_7: 5.3165 (var=0.3027)
+- pi_8: -30.9335 (var=3.3944)
+- pi_1: 136.1063 (var=0.3030)
+- pi_2: -106.1209 (var=4.0607)
+- pi_3: 135.2209 (var=0.2267)
+- pi_4: 38.8942 (var=0.7056)
+- pi_5: 7.2875 (var=0.2574)
+- pi_6: 15.9085 (var=0.2273)
+- pi_9: 6.8983 (var=0.2368)
+- pi_10: -9.6424 (var=0.6044)
+
+### Experiment 14
+**Design**
+  A=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1]
+  A=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0]  B=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0]  B=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0]  B=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0]  B=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0]  B=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0]  B=[0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0]
+  A=[0, 1, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0]  B=[0, 1, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0]  B=[0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0]  B=[1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0]
+  A=[0, 1, 0, 0, 0, 1, 1, 0, 1, 0, 0, 1, 0]  B=[0, 1, 0, 0, 0, 1, 1, 0, 1, 0, 0, 1, 0]
+
+**Metric**
+```python
+import numpy as np
+import pandas as pd
+
+
+def metric(data: pd.DataFrame) -> float:
+    """Estimated population fraction of subjects whose validity exponent
+    gamma lies above 2.0 (the hard support edge of RSD-vgp's gamma box),
+    measured with the anti-endorsement raw-weight measurement model that
+    BOTH theories share per-trial, and stabilized by a weak empirical-Bayes
+    smoothing prior so the statistic is well-behaved on single subjects."""
+    VAL = np.array([1.0, 1.0, 1.0, 0.74, 0.72, 0.68, 0.63,
+                    0.5, 0.5, 0.5, 0.5, 0.5, 0.5])
+    KAPPA = 15.0      # smoothing prior strength (in subjects)
+    P0 = 0.075        # smoothing prior mean tail mass
+    TAIL = 2.0        # gamma support edge of the competing theory
+
+    if data is None or len(data) == 0:
+        return P0
+
+    # ---- tidy parse (list cells -> hashable tuples) ----
+    ka = [tuple(int(v) for v in x) for x in data['option_a_ratings']]
+    kb = [tuple(int(v) for v in x) for x in data['option_b_ratings']]
+    resp = np.asarray(data['response'].values).astype(int)
+    choseA = (resp == 0).astype(int)
+
+    df = pd.DataFrame({'s': np.asarray(data['subject_id'].values),
+                       'ka': ka, 'kb': kb, 'cA': choseA})
+    cnt = df.groupby(['s', 'ka', 'kb']).agg(
+        n=('cA', 'size'), k=('cA', 'sum')).reset_index()
+
+    uniq = sorted(set(zip(cnt['ka'].values, cnt['kb'].values)))
+    tidx = {t: i for i, t in enumerate(uniq)}
+    subjects = list(pd.unique(cnt['s']))
+    sidx = {s: i for i, s in enumerate(subjects)}
+    S = len(subjects)
+    T = len(uniq)
+    if S == 0 or T == 0:
+        return P0
+
+    K = np.zeros((S, T))   # A-choices per (subject, trial type)
+    N = np.zeros((S, T))   # trials per (subject, trial type)
+    for row in cnt.itertuples(index=False):
+        K[sidx[row.s], tidx[(row.ka, row.kb)]] = float(row.k)
+        N[sidx[row.s], tidx[(row.ka, row.kb)]] = float(row.n)
+
+    # ---- diffuse parameter grids (theory-neutral, covers both supports) ----
+    gam = np.linspace(0.0, 2.6, 53)                       # validity exponent
+    Agrid = np.linspace(0.35, 0.95, 7)                    # effective attenuation
+    Bgrid = np.exp(np.linspace(np.log(1.8), np.log(7.0), 7))  # inverse temp
+    Wg = VAL[None, :] ** gam[:, None]                     # (53, 13)
+
+    # per-trial-type choice probabilities under the shared core:
+    # p(A) = 0.5 + A_eff * (sigmoid(beta * E) - 0.5),
+    # E(gamma) = sum_j v_j^gamma * (b_j - a_j)
+    LP = np.empty((T, 53, 7, 7))
+    L1P = np.empty((T, 53, 7, 7))
+    for t, (a, b) in enumerate(uniq):
+        av = np.array(a, dtype=float)
+        bv = np.array(b, dtype=float)
+        E = Wg @ (bv - av)                                # (53,)
+        x = Bgrid[None, :] * E[:, None]                   # (53, 7)
+        ex = np.exp(-np.abs(x))
+        sig = np.where(x >= 0.0, 1.0 / (1.0 + ex), ex / (1.0 + ex))
+        P = 0.5 + Agrid[None, :, None] * (sig[:, None, :] - 0.5)  # (53,7,7)
+        P = np.clip(P, 1e-6, 1.0 - 1e-6)
+        LP[t] = np.log(P)
+        L1P[t] = np.log1p(-P)
+
+    tail_mask = gam > (TAIL + 1e-9)
+
+    # ---- per-subject posterior P(gamma > 2 | own 96 trials) ----
+    s_vals = np.empty(S)
+    chunk = 64
+    for i0 in range(0, S, chunk):
+        Kc = K[i0:i0 + chunk]
+        Nc = N[i0:i0 + chunk]
+        logL = (np.tensordot(Kc, LP, axes=(1, 0)) +
+                np.tensordot(Nc - Kc, L1P, axes=(1, 0)))   # (s,53,7,7)
+        m = logL.max(axis=(1, 2, 3), keepdims=True)
+        w = np.exp(logL - m)
+        post = w.sum(axis=(2, 3))                          # marginal over A,beta
+        tot = post.sum(axis=1)
+        tot = np.where(tot <= 0.0, 1.0, tot)
+        s_vals[i0:i0 + chunk] = post[:, tail_mask].sum(axis=1) / tot
+
+    raw = float(np.mean(s_vals))
+    # empirical-Bayes shrinkage toward the prior mean; with one subject the
+    # posterior mean is prior-dominated (tight across subjects), with many
+    # subjects the data dominate (population tail mass).
+    return (KAPPA * P0 + S * raw) / (KAPPA + S)
+```
+
+**Observed (real) value:** 0.2983 (var=0.0006)
+**Previous candidate values (this loop):**
+  - iter 1: 0.1864 (var=0.0003) (Δ vs real -0.1120)
+  - iter 2: 0.1069 (var=0.0002) (Δ vs real -0.1914)
+  - iter 3: 0.0828 (var=0.0001) (Δ vs real -0.2155)
+  - iter 4: 0.0908 (var=0.0002) (Δ vs real -0.2075)
+  - iter 5: 0.1177 (var=0.0002) (Δ vs real -0.1807)
+  - iter 6: 0.1737 (var=0.0004) (Δ vs real -0.1247)
+  - iter 7: 0.1152 (var=0.0002) (Δ vs real -0.1832)
+  - iter 8: 0.1461 (var=0.0002) (Δ vs real -0.1523)
+  - iter 9 (most recent): 0.0953 (var=0.0001) (Δ vs real -0.2031)
+**Other theories' values on this metric (for reference):**
+- pi_8: 0.1396 (var=0.0003)
+- pi_7: 0.0990 (var=0.0001)
+- pi_1: 0.0175 (var=0.0000)
+- pi_2: 0.7299 (var=0.0001)
+- pi_3: 0.0173 (var=0.0000)
+- pi_4: 0.1168 (var=0.0002)
+- pi_5: 0.0871 (var=0.0002)
+- pi_6: 0.0638 (var=0.0001)
+- pi_9: 0.0951 (var=0.0001)
+- pi_10: 0.1215 (var=0.0002)
+
+### Experiment 15
+**Design**
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]  B=[0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 1, 0]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]  B=[0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 0]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]  B=[0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 0]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]  B=[0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]  B=[0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]  B=[0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]  B=[0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1]
+  A=[0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 1, 0]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]
+  A=[0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 0]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]
+  A=[0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 0]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]
+  A=[0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]
+  A=[0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]
+  A=[0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]
+  A=[0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]
+  A=[1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]  B=[0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]
+  A=[0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]  B=[1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]  B=[0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]
+  A=[0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]  B=[0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0]
+  A=[0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]
+  A=[1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 1, 0]  B=[1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 1, 0]
+  A=[0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 0, 0, 1]  B=[0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 0, 0, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    # ==================================================================
+    # Population log Bayes factor: log P(data | RSD-vgp) - log P(data | SGAI-r7).
+    # Both theories share the identical per-trial choice kernel
+    #     p(A) = 0.5 + A_eff * (sigmoid(beta * E) - 0.5),
+    #     E = sum_j v_j^gamma * (b_j - a_j),  A_eff = (1-eps)(2m-1),
+    # and differ ONLY in their population priors over (gamma, beta, eps, m)
+    # plus SGAI's per-trial gamma jitter (prob ~0.11, +/-0.4 around the
+    # habitual gamma, capped at [0, 2.2]).  So the marginal likelihood
+    # under each theory's stated population prior isolates exactly the
+    # claims that separate them:
+    #   RSD-vgp: gamma ~ U[0,2] exactly; beta log-U[1.8,6]; eps U[.03,.11];
+            #   m U[.74,1]; no jitter.
+    #   SGAI-r7: 80% majority (gamma 20%[.8,1.3]/48%[1.3,1.7]/24%[1.7,2.0]/
+    #   8%(2.0,2.2]; beta log-U[1.8,6]; eps U[.03,.10]; m U[.8,.98]) plus
+    #   20% low-precision cluster (gamma U[0,1]; beta log-U[1.2,1.8];
+    #   eps U[.15,.25]); per-trial gamma jitter.
+    # The metric integrates the shared kernel over these priors on a grid
+    # (SGAI's jitter is folded into the per-trial kernel as a 0.89/0.11
+    # mixture over the +/-0.4 gamma window) and returns the total log
+    # likelihood ratio.  On a pooled DataFrame this is the dataset log Bayes
+    # factor (sum of independent per-subject contributions); on a single
+    # subject's slice it is that subject's log-BF contribution.
+    # ==================================================================
+    df = data.reset_index(drop=True)
+    if len(df) == 0:
+        return 0.0
+
+    v = np.array([1.0, 1.0, 1.0,
+                  0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5,
+                  0.6])
+    nf = len(v)
+
+    def _to_arr(x):
+        if isinstance(x, np.ndarray):
+            a = x.astype(float)
+            if a.size == nf:
+                return a
+        try:
+            a = np.asarray(list(x), dtype=float)
+            if a.size == nf:
+                return a
+        except (TypeError, ValueError):
+            pass
+        s = str(x).strip().strip("[]()")
+        return np.array([float(tok) for tok in s.replace(",", " ").split()])
+
+    A = np.vstack([_to_arr(r) for r in df["option_a_ratings"]])
+    B = np.vstack([_to_arr(r) for r in df["option_b_ratings"]])
+    resp = df["response"].to_numpy(dtype=float)  # 0 = chose A, 1 = chose B
+
+    # ---- unique trial types ----------------------------------------
+    keys = [(tuple(A[i]), tuple(B[i])) for i in range(len(df))]
+    index_of = {}
+    type_idx = np.empty(len(keys), dtype=int)
+    for i, k in enumerate(keys):
+        if k not in index_of:
+            index_of[k] = len(index_of)
+        type_idx[i] = index_of[k]
+    types = list(index_of.keys())
+    Amat = np.array([np.array(t[0], dtype=float) for t in types])
+    Bmat = np.array([np.array(t[1], dtype=float) for t in types])
+    T = len(types)
+
+    subj_codes = pd.factorize(df["subject_id"])[0]
+    S = int(subj_codes.max()) + 1
+    nA = np.zeros((S, T))
+    nB = np.zeros((S, T))
+    np.add.at(nA, (subj_codes, type_idx), (resp == 0).astype(float))
+    np.add.at(nB, (subj_codes, type_idx), (resp == 1).astype(float))
+
+    # ---- master parameter grids ------------------------------------
+    gmaster = np.round(np.arange(0.0, 2.2 + 1e-9, 0.05), 6)       # 45 gammas
+    bmaster = np.exp(np.linspace(np.log(1.2), np.log(6.0), 48))  # 48 betas
+
+    # E[g, t] = sum_j v_j^g * (B_tj - A_tj)
+    Vg = v[None, :] ** gmaster[:, None]
+    E = Vg @ (Bmat - Amat).T
+
+    def _sigmoid(x):
+        out = np.empty_like(x)
+        pos = x >= 0
+        out[pos] = 1.0 / (1.0 + np.exp(-x[pos]))
+        ex = np.exp(x[~pos])
+        out[~pos] = ex / (1.0 + ex)
+        return out
+
+    # s[g, b, t] = sigmoid(b * E) - 0.5   (kernel without jitter)
+    X = bmaster[None, :, None] * E[:, None, :]
+    s_master = _sigmoid(X) - 0.5
+
+    # SGAI per-trial gamma jitter folded into the kernel:
+    # s_jit(g) = 0.89*s(g) + 0.11*mean_{gt in [g-0.4, g+0.4] cap [0,2.2]} s(gt)
+    delta = 0.11
+    s_jit = np.empty_like(s_master)
+    for gi in range(len(gmaster)):
+        g = gmaster[gi]
+        lo = int(np.searchsorted(gmaster, max(0.0, g - 0.4) - 1e-9))
+        hi = int(np.searchsorted(gmaster, min(2.2, g + 0.4) + 1e-9))
+        if hi <= lo:
+            hi = lo + 1
+        s_jit[gi] = ((1.0 - delta) * s_master[gi]
+                     + delta * s_master[lo:hi].mean(axis=0))
+
+    def _logml(smat, g_idx, g_w, b_idx, b_w, alphas, a_w):
+        # marginal log-likelihood for every subject under one population
+        # component given by (gamma grid/weights, beta grid/weights,
+        # A_eff grid/weights); smat supplies the (possibly jittered) kernel.
+        s_sel = smat[np.ix_(g_idx, b_idx)]                 # (ng, nb, T)
+        p = 0.5 + alphas[None, None, :, None] * s_sel[:, :, None, :]
+        p = np.clip(p, 1e-12, 1.0 - 1e-12)                 # (ng, nb, na, T)
+        LP = np.log(p).reshape(-1, T)
+        LQ = np.log1p(-p).reshape(-1, T)
+        ll = nA @ LP.T + nB @ LQ.T                         # (S, ncombo)
+        w = (g_w[:, None, None] * b_w[None, :, None]
+             * a_w[None, None, :]).reshape(-1)
+        ll = ll + np.log(np.maximum(w, 1e-300))[None, :]
+        m = np.max(ll, axis=1)
+        return m + np.log(np.sum(np.exp(ll - m[:, None]), axis=1))
+
+    # ---- RSD-vgp population ----------------------------------------
+    g_idx = np.arange(0, 41)                    # gamma ~ U[0, 2]
+    g_w = np.full(41, 1.0 / 41)
+    b_idx = np.arange(12, 48)                   # beta log-U[1.8, 6]
+    b_w = np.full(36, 1.0 / 36)
+    eps = np.linspace(0.03, 0.11, 4)
+    mm = np.linspace(0.74, 1.00, 7)
+    al = ((1.0 - eps)[None, :] * (2.0 * mm[:, None] - 1.0)).reshape(-1)
+    lml_R = _logml(s_master, g_idx, g_w, b_idx, b_w, al,
+                   np.full(al.size, 1.0 / al.size))
+
+    # ---- SGAI-r7 low-precision cluster (weight 0.2) -----------------
+    g_idx = np.arange(0, 21)                    # gamma ~ U[0, 1]
+    g_w = np.full(21, 1.0 / 21)
+    b_idx = np.arange(0, 12)                    # beta log-U[1.2, 1.8]
+    b_w = np.full(12, 1.0 / 12)
+    eps = np.linspace(0.15, 0.25, 4)
+    mm = np.linspace(0.80, 0.98, 5)
+    al = ((1.0 - eps)[None, :] * (2.0 * mm[:, None] - 1.0)).reshape(-1)
+    lml_L = _logml(s_jit, g_idx, g_w, b_idx, b_w, al,
+                   np.full(al.size, 1.0 / al.size))
+
+    # ---- SGAI-r7 majority cluster (weight 0.8) ----------------------
+    g_idx = np.concatenate([np.arange(16, 26), np.arange(26, 34),
+                            np.arange(34, 40), np.arange(40, 45)])
+    g_w = np.concatenate([np.full(10, 0.20 / 10), np.full(8, 0.48 / 8),
+                          np.full(6, 0.24 / 6), np.full(5, 0.08 / 5)])
+    b_idx = np.arange(12, 48)                   # beta log-U[1.8, 6]
+    b_w = np.full(36, 1.0 / 36)
+    eps = np.linspace(0.03, 0.10, 3)
+    mm = np.linspace(0.80, 0.98, 5)
+    al = ((1.0 - eps)[None, :] * (2.0 * mm[:, None] - 1.0)).reshape(-1)
+    lml_M = _logml(s_jit, g_idx, g_w, b_idx, b_w, al,
+                   np.full(al.size, 1.0 / al.size))
+
+    lml_S = np.logaddexp(np.log(0.2) + lml_L, np.log(0.8) + lml_M)
+
+    llr = lml_R - lml_S   # per-subject log Bayes factor (RSD vs SGAI)
+    return float(np.sum(llr))
+```
+
+**Observed (real) value:** 12.9184 (var=1.0896)
+**Previous candidate values (this loop):**
+  - iter 1: 30.7524 (var=2.9313) (Δ vs real +17.8340)
+  - iter 2: 11.3814 (var=0.8739) (Δ vs real -1.5370)
+  - iter 3: 12.1967 (var=1.2827) (Δ vs real -0.7217)
+  - iter 4: 5.8539 (var=0.8464) (Δ vs real -7.0645)
+  - iter 5: 17.1450 (var=1.6148) (Δ vs real +4.2266)
+  - iter 6: 14.0452 (var=1.8957) (Δ vs real +1.1269)
+  - iter 7: 18.4445 (var=2.6055) (Δ vs real +5.5261)
+  - iter 8: 9.2176 (var=1.2691) (Δ vs real -3.7008)
+  - iter 9 (most recent): 30.1331 (var=2.1241) (Δ vs real +17.2147)
+**Other theories' values on this metric (for reference):**
+- pi_7: 23.7874 (var=2.2777)
+- pi_9: -14.1580 (var=0.3187)
+- pi_1: -19.5136 (var=0.1437)
+- pi_2: 11.8045 (var=1.9732)
+- pi_3: -21.6258 (var=0.1020)
+- pi_4: 6.5010 (var=0.5862)
+- pi_5: -8.3945 (var=0.2766)
+- pi_6: 28.0330 (var=1.5827)
+- pi_8: 17.1418 (var=1.6894)
+- pi_10: 7.5133 (var=1.5781)
+
+### Experiment 16
+**Design**
+  A=[1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0]  B=[1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]  B=[1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0]  B=[1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 0, 0, 0, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 0, 0, 0, 1, 0, 0, 1, 1, 1, 1, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 1, 0, 0, 1, 1, 1, 1, 0, 0, 0]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 0, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0]
+  A=[1, 1, 0, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 0, 0, 1, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0]
+  A=[1, 1, 0, 0, 1, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 0, 0, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1]
+  A=[1, 1, 0, 0, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0]  B=[1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0]  B=[1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0]
+  A=[0, 0, 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1]  B=[1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1]
+  A=[0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0]  B=[0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+
+    # Fixed design validities (15 experts, design-time constants).
+    V = np.array([1.0, 1.0, 1.0, 0.8, 0.75, 0.65, 0.6,
+                  0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5])
+
+    def to_vec(x):
+        if isinstance(x, str):
+            s = x.strip().lstrip('[').rstrip(']')
+            return np.array([float(t) for t in s.replace(',', ' ').split()])
+        arr = np.asarray(x, dtype=float)
+        if arr.ndim != 1:
+            arr = arr.ravel()
+        return arr
+
+    # Raw (unnormalized) validity weights at a low-gamma and a high-gamma
+    # regime. Under the shared anti-endorsement core, a trial's evidence is
+    # E(gamma) = sum_j v_j^gamma (b_j - a_j); the two critical 'flip' rungs
+    # of this design are exactly the trials where sign(E) changes between
+    # these two regimes (flip points gamma* ~ 0.73 and ~ 1.0).
+    w_lo = np.power(V, 0.5)
+    w_hi = np.power(V, 1.5)
+
+    # Bayesian (Beta) regularization of the sparse-side rate: 96 pseudo-
+    # trials centered at 0.5. Per subject only 16 critical trials exist
+    # (binomial SE ~ 0.12), so the raw per-subject rate is unstable; the
+    # shrinkage stabilizes individual-subject estimates while leaving the
+    # pooled estimate (16 x 25 = 400 critical trials) essentially
+    # unchanged.
+    KAPPA = 96.0
+    M0 = 0.5
+
+    k = 0  # sparse-side choices on flip trials
+    n = 0  # flip trials seen
+
+    a_col = data['option_a_ratings'].values
+    b_col = data['option_b_ratings'].values
+    r_col = data['response'].values
+
+    for a_raw, b_raw, r_raw in zip(a_col, b_col, r_col):
+        a = to_vec(a_raw)
+        b = to_vec(b_raw)
+        if a.size != V.size or b.size != V.size:
+            continue
+        e_lo = float(np.sum(w_lo * (b - a)))
+        e_hi = float(np.sum(w_hi * (b - a)))
+        if e_lo == 0.0 or e_hi == 0.0:
+            continue  # tie trial, uninformative
+        if (e_lo > 0.0) == (e_hi > 0.0):
+            continue  # not a flip trial (sign of evidence is gamma-invariant)
+        # Flip trial: low-gamma subjects prefer one side, high-gamma
+        # subjects the other. The low-gamma-preferred side is the one with
+        # the smaller raw validity weight (the 'count-sparser' side).
+        n += 1
+        sparse_is_a = (e_lo > 0.0)
+        chose_a = (int(float(r_raw)) == 0)
+        if chose_a == sparse_is_a:
+            k += 1
+
+    if n + KAPPA <= 0:
+        return float(M0)
+    return float((k + KAPPA * M0) / (n + KAPPA))
+```
+
+**Observed (real) value:** 0.4335 (var=0.0024)
+**Previous candidate values (this loop):**
+  - iter 1: 0.4397 (var=0.0010) (Δ vs real +0.0063)
+  - iter 2: 0.4275 (var=0.0009) (Δ vs real -0.0060)
+  - iter 3: 0.4275 (var=0.0009) (Δ vs real -0.0060)
+  - iter 4: 0.4911 (var=0.0009) (Δ vs real +0.0576)
+  - iter 5: 0.4353 (var=0.0010) (Δ vs real +0.0018)
+  - iter 6: 0.4397 (var=0.0012) (Δ vs real +0.0063)
+  - iter 7: 0.4676 (var=0.0009) (Δ vs real +0.0342)
+  - iter 8: 0.4308 (var=0.0011) (Δ vs real -0.0027)
+  - iter 9 (most recent): 0.4911 (var=0.0013) (Δ vs real +0.0576)
+**Other theories' values on this metric (for reference):**
+- pi_9: 0.3750 (var=0.0007)
+- pi_7: 0.5335 (var=0.0013)
+- pi_1: 0.8058 (var=0.0004)
+- pi_2: 0.1931 (var=0.0005)
+- pi_3: 0.8549 (var=0.0001)
+- pi_4: 0.5201 (var=0.0006)
+- pi_5: 0.5212 (var=0.0004)
+- pi_6: 0.5759 (var=0.0005)
+- pi_8: 0.4018 (var=0.0010)
+- pi_10: 0.4754 (var=0.0011)
+
+### Experiment 17
+**Design**
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1]  B=[0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1]
+  A=[0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1]  B=[0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1]
+  A=[0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1]  B=[0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1]
+  A=[0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1]  B=[0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1]
+  A=[0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1]  B=[0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1]
+  A=[0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1]  B=[0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1]
+  A=[1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1]  B=[0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1]
+  A=[0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1]  B=[1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1]
+  A=[1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1]  B=[1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1]
+  A=[1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1]  B=[1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1]  B=[0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1]
+  A=[0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1]
+  A=[1, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 1, 1, 0]  B=[1, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 1, 1, 0]
+  A=[0, 1, 1, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1]  B=[0, 1, 1, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1]
+
+**Metric**
+```python
+import numpy as np
+import pandas as pd
+
+_CACHE = {}
+
+_VALIDITIES = np.array([1.0, 1.0, 1.0,
+                        0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5,
+                        0.72, 0.63])
+
+
+def _to_array(x):
+    """Coerce a rating cell (list/tuple/ndarray/str) to a float ndarray."""
+    if isinstance(x, str):
+        x = [t for t in x.strip('[]() ').split(',') if t.strip() != '']
+    return np.asarray(list(x), dtype=float)
+
+
+def metric(data: pd.DataFrame) -> float:
+    """
+    Mean per-subject log Bayes factor, RSD-vgp vs HT-AEI-r6.
+
+    Both theories share the exact per-trial likelihood
+        p(A) = 0.5 + A_eff * (sigmoid(beta * E) - 0.5),
+        E    = sum_j v_j^gamma * (b_j - a_j),
+    so the ONLY thing that distinguishes them is the population
+    distribution of (gamma, beta). This metric integrates the exact
+    binomial likelihood of each subject's 96 choices over each theory's
+    stated population prior:
+      RSD-vgp : gamma ~ U[0, 2] exactly; beta log-U[1.8, 6.0].
+      HT-AEI  : 40% gamma U[0,1]  & beta log-U[2.2, 4.0];
+                25% gamma U[1.05,1.35] & beta log-U[2.2, 3.2];
+                35% gamma U[2.0,2.1]  & beta log-U[2.2, 2.8].
+    with a common neutral uniform prior on A_eff in [0.42, 0.97]
+    (the shared range of (1-eps)(2m-1) under both theories).
+
+    Returns the mean over subjects of log m_RSD - log m_HT.
+    Positive = data favor RSD-vgp; negative = data favor HT-AEI-r6.
+    On a single subject's slice it returns that subject's log Bayes
+    factor, so the pooled value is exactly the mean of the per-subject
+    values and the between-subject variance is well defined.
+    """
+    df = data.reset_index(drop=True).copy()
+
+    def _key(x):
+        return ''.join([str(int(round(v))) for v in _to_array(x)])
+
+    df['stim'] = (df['option_a_ratings'].apply(_key) + '|' +
+                  df['option_b_ratings'].apply(_key))
+
+    stims = sorted(set(df['stim'].tolist()))
+    ckey = tuple(stims)
+
+    if ckey not in _CACHE:
+        # ---------------- parameter grids ----------------
+        g_grid = np.round(np.arange(0.0, 2.1001, 0.01), 10)      # 211 pts
+        b_grid = np.exp(np.linspace(np.log(1.8), np.log(6.0), 41))
+        A_grid = np.linspace(0.42, 0.97, 15)
+
+        dg = float(g_grid[1] - g_grid[0])
+        dlb = float(np.log(b_grid[1]) - np.log(b_grid[0]))
+        dA = float(A_grid[1] - A_grid[0])
+
+        # ---------------- population priors ----------------
+        # gamma densities (per unit gamma)
+        pr_rsd = np.where(g_grid <= 2.0 + 1e-9, 0.5, 0.0)
+        pr_ht = (0.40 * np.where(g_grid <= 1.0 + 1e-9, 1.0, 0.0)
+                 + 0.25 * np.where((g_grid >= 1.05 - 1e-9) &
+                                   (g_grid <= 1.35 + 1e-9),
+                                   1.0 / 0.30, 0.0)
+                 + 0.35 * np.where((g_grid >= 2.0 - 1e-9) &
+                                   (g_grid <= 2.10 + 1e-9), 10.0, 0.0))
+
+        def _logu(lo, hi):
+            # log-uniform density on the beta grid
+            return np.where((b_grid >= lo - 1e-9) & (b_grid <= hi + 1e-9),
+                            1.0 / np.log(hi / lo), 0.0)
+
+        # joint (gamma, beta) grid log-masses for RSD
+        dens_rsd = pr_rsd[:, None] * _logu(1.8, 6.0)[None, :]
+        lw_rsd = np.full(dens_rsd.shape, -np.inf)
+        msk = dens_rsd > 0
+        lw_rsd[msk] = np.log(dens_rsd[msk]) + np.log(dg) + np.log(dlb)
+
+        # joint (gamma, beta) grid log-masses for HT (segment-specific beta)
+        bw_ht = np.zeros((len(g_grid), len(b_grid)))
+        bw_ht[g_grid <= 1.0 + 1e-9] = _logu(2.2, 4.0)
+        bw_ht[(g_grid >= 1.05 - 1e-9) & (g_grid <= 1.35 + 1e-9)] = _logu(2.2, 3.2)
+        bw_ht[(g_grid >= 2.0 - 1e-9) & (g_grid <= 2.10 + 1e-9)] = _logu(2.2, 2.8)
+        dens_ht = pr_ht[:, None] * bw_ht
+        lw_ht = np.full(dens_ht.shape, -np.inf)
+        msk = dens_ht > 0
+        lw_ht[msk] = np.log(dens_ht[msk]) + np.log(dg) + np.log(dlb)
+
+        # common neutral A_eff prior (uniform on the shared range)
+        log_a_w = float(np.log(dA / (0.97 - 0.42)))
+
+        # ---------------- per-stimulus likelihood tables ----------------
+        first = df.drop_duplicates(subset='stim').set_index('stim')
+        a_mat = np.vstack([_to_array(first.loc[s, 'option_a_ratings'])
+                           for s in stims])
+        b_mat = np.vstack([_to_array(first.loc[s, 'option_b_ratings'])
+                           for s in stims])
+        D = b_mat - a_mat                                  # (n_u, 14)
+        Wg = np.power(_VALIDITIES[:, None], g_grid[None, :])  # (14, n_g)
+        E = D @ Wg                                        # (n_u, n_g)
+
+        X = E[:, :, None] * b_grid[None, None, :]          # (n_u, n_g, n_b)
+        S = 1.0 / (1.0 + np.exp(-np.clip(X, -60.0, 60.0)))
+        core = S - 0.5
+        P = 0.5 + A_grid[None, None, None, :] * core[:, :, :, None]
+        P = np.clip(P, 1e-9, 1.0 - 1e-9)
+        logP = np.log(P)
+        log1mP = np.log1p(-P)
+
+        _CACHE[ckey] = (logP, log1mP, lw_rsd, lw_ht, log_a_w)
+    else:
+        logP, log1mP, lw_rsd, lw_ht, log_a_w = _CACHE[ckey]
+
+    stim_idx = {s: i for i, s in enumerate(stims)}
+    n_u = len(stims)
+
+    vals = []
+    for sid, sdf in df.groupby('subject_id', sort=True):
+        nA = np.zeros(n_u)
+        nB = np.zeros(n_u)
+        for s, v in sdf.groupby('stim')['response']:
+            v = np.asarray(v, dtype=float)
+            i = stim_idx[s]
+            nb = float(np.sum(v))          # response 1 = chose B
+            nB[i] = nb
+            nA[i] = float(len(v)) - nb    # response 0 = chose A
+
+        # exact binomial log-likelihood on the (gamma, beta, A_eff) grid
+        LL = (np.tensordot(nA, logP, axes=([0], [0])) +
+              np.tensordot(nB, log1mP, axes=([0], [0])))   # (n_g, n_b, n_A)
+
+        def _marg(lw):
+            tot = LL + lw[:, :, None] + log_a_w
+            mx = float(np.max(tot))
+            return mx + float(np.log(np.sum(np.exp(tot - mx))))
+
+        vals.append(_marg(lw_rsd) - _marg(lw_ht))
+
+    if len(vals) == 0:
+        return 0.0
+    return float(np.mean(vals))
+```
+
+**Observed (real) value:** 0.8355 (var=2.6525)
+**Previous candidate values (this loop):**
+  - iter 1: -0.0726 (var=0.9273) (Δ vs real -0.9081)
+  - iter 2: 0.1581 (var=0.8823) (Δ vs real -0.6774)
+  - iter 3: 0.1267 (var=0.5213) (Δ vs real -0.7088)
+  - iter 4: -0.0051 (var=0.6806) (Δ vs real -0.8406)
+  - iter 5: 0.1183 (var=0.9790) (Δ vs real -0.7172)
+  - iter 6: -0.0318 (var=1.0113) (Δ vs real -0.8673)
+  - iter 7: -0.0295 (var=0.5954) (Δ vs real -0.8650)
+  - iter 8: 0.0734 (var=1.7353) (Δ vs real -0.7621)
+  - iter 9 (most recent): -0.0188 (var=0.5180) (Δ vs real -0.8543)
+**Other theories' values on this metric (for reference):**
+- pi_7: 0.3381 (var=0.3081)
+- pi_10: -0.2872 (var=0.6994)
+- pi_1: 0.2008 (var=0.0004)
+- pi_2: -2.3152 (var=0.1061)
+- pi_3: 0.2408 (var=0.0009)
+- pi_4: 0.1507 (var=0.3046)
+- pi_5: 0.0018 (var=0.2637)
+- pi_6: 0.2901 (var=0.3029)
+- pi_8: -0.0356 (var=1.2437)
+- pi_9: 0.2908 (var=1.3375)
+
+### Experiment 18
+**Design**
+  A=[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0]  B=[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0]
+  A=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0]  B=[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1]
+  A=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1]  B=[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1]
+  A=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1]  B=[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 0, 0, 1, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 0, 0, 1, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 0, 0, 0, 1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]  B=[1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    # Crossing-point population statistic.
+    # Per subject: fit the shared core model p(B) = 0.5 - A*(sigmoid(beta*E(gamma)) - 0.5),
+    # E(gamma) = sum_j v_j^gamma * (b_j - a_j), by grid MLE over (gamma, beta, A),
+    # then score s = P(gamma > 1.95) - P(1.40 < gamma <= 1.95) under the flat-prior
+    # profile-likelihood posterior over gamma. Metric = mean of s over subjects.
+    a_list = data["option_a_ratings"].to_numpy()
+    b_list = data["option_b_ratings"].to_numpy()
+    A_mat = np.vstack([np.asarray(r, dtype=float) for r in a_list])
+    B_mat = np.vstack([np.asarray(r, dtype=float) for r in b_list])
+    y = data["response"].to_numpy(dtype=float)
+    subj = data["subject_id"].to_numpy()
+
+    n_feat = A_mat.shape[1]
+    if n_feat >= 8:
+        # design validities: six 1.00 cues, twenty-four 0.50 cues, 0.64, 0.76
+        V = np.array([1.0] * 6 + [0.5] * (n_feat - 8) + [0.64, 0.76], dtype=float)
+    else:
+        V = np.ones(n_feat, dtype=float)
+
+    gam = np.linspace(0.0, 2.5, 126)
+    bet = np.geomspace(1.6, 7.5, 8)
+    amps = np.linspace(0.25, 0.97, 9)
+
+    Wg = V[None, :] ** gam[:, None]  # (G, F) validity-power weights per gamma
+
+    scores = []
+    for s_id in pd.unique(data["subject_id"]):
+        m = subj == s_id
+        D = (B_mat[m] - A_mat[m]).astype(float)  # (n, F)
+        yy = y[m]  # 1 = chose B
+        E = D @ Wg.T  # (n, G) raw evidence for A over B
+        X = E[:, :, None] * bet[None, None, :]  # (n, G, B)
+        d = 0.5 * np.tanh(0.5 * X)  # sigmoid(X) - 0.5, stable, in [-0.5, 0.5]
+        ll_prof = np.full(gam.shape[0], -np.inf)  # profile log-likelihood over gamma
+        for a in amps:
+            P = np.clip(0.5 - a * d, 1e-9, 1.0 - 1e-9)  # p(choose B)
+            ll = np.sum(
+                yy[:, None, None] * np.log(P)
+                + (1.0 - yy)[:, None, None] * np.log(1.0 - P),
+                axis=0,
+            )  # (G, B)
+            ll_prof = np.maximum(ll_prof, ll.max(axis=1))
+        w = np.exp(ll_prof - ll_prof.max())
+        w = w / w.sum()  # posterior over gamma (flat prior on [0, 2.5])
+        p_hi = float(w[gam > 1.95].sum())          # tail mass above RSD's hard cap
+        p_gap = float(w[(gam > 1.40) & (gam <= 1.95)].sum())  # HT's empty-gap mass
+        scores.append(p_hi - p_gap)
+    return float(np.mean(scores))
+```
+
+**Observed (real) value:** -0.2077 (var=0.1170)
+**Previous candidate values (this loop):**
+  - iter 1: -0.1488 (var=0.2517) (Δ vs real +0.0590)
+  - iter 2: -0.0012 (var=0.1996) (Δ vs real +0.2065)
+  - iter 3: -0.1568 (var=0.2260) (Δ vs real +0.0510)
+  - iter 4: -0.1770 (var=0.2690) (Δ vs real +0.0308)
+  - iter 5: -0.0747 (var=0.3451) (Δ vs real +0.1330)
+  - iter 6: -0.0093 (var=0.2902) (Δ vs real +0.1984)
+  - iter 7: -0.0919 (var=0.2926) (Δ vs real +0.1159)
+  - iter 8: -0.2745 (var=0.2543) (Δ vs real -0.0668)
+  - iter 9 (most recent): -0.1628 (var=0.2086) (Δ vs real +0.0450)
+**Other theories' values on this metric (for reference):**
+- pi_10: 0.1782 (var=0.1651)
+- pi_7: -0.2078 (var=0.1272)
+- pi_1: -0.0043 (var=0.0003)
+- pi_2: 0.9966 (var=0.0002)
+- pi_3: -0.0004 (var=0.0000)
+- pi_4: -0.2504 (var=0.1229)
+- pi_5: 0.0592 (var=0.0565)
+- pi_6: -0.0842 (var=0.0441)
+- pi_8: -0.0112 (var=0.3413)
+- pi_9: -0.3784 (var=0.2838)
+
+## PREVIOUS CANDIDATE (this loop)
+The RUNNING-BEST (last ACCEPTED) candidate in this critique loop — i.e. the source the loop's accept gate kept as the best base so far. If your most recent attempt was REJECTED by the gate, this is NOT that attempt; it is the previously-accepted base the gate rolled back to. Iterate on this source — the next critic feedback should be applied on top of it.
+
+**Description**
+Jittered Uniform-Support Anti-Endorsement Integration (JU-AEI, clip-restoration pass). Subjects reading a product described by binary expert ratings treat an endorsement (rating = 1) as evidence AGAINST the option carrying it (a 'fewer red flags' reading), so the count-sparser option is perceived as higher quality. Within a trial, all cues are integrated additively with RAW (unnormalized) validity-power weights: E = sum_j v_j^gamma (b_j - a_j), so the absolute endorsement-count margin sets the evidence scale independent of feature count, and identical rating vectors give exactly 50%. Choice follows p(A) = (1-eps)*[m*sigmoid(beta*E) + (1-m)*(1-sigmoid(beta*E))] + eps/2, with A_eff = (1-eps)(2m-1) near 0.69 (steep normalized slope x moderate asymptote). The population: habitual gamma ~ U[0, 2.2] (single continuous uniform — no gaps, no cliffs, no narrow tail segment), beta log-uniform on [1.8, 6.0] independent of gamma. The novel mechanism is per-trial stochastic validity-attention jitter: with per-trial probability delta ~ 0.13-0.16, the effective gamma for that trial is redrawn uniformly from a SYMMETRIC window [gamma_habit - 0.50, gamma_habit + 0.50] clipped to [0, 2.4] — the arbiter's own prescribed geometry. The critical factorization this theory embodies: TRUE habitual mass above 2.2 is poison (it donates likelihood to EPAI's exclusive [2.2, 2.4] segment and destroys Exp 18's negative offset), while per-trial EXCURSIONS reaching 2.4 from habits below 2.2 are safe and are the only channel that moves the apparent-tail estimator (Exp 14) above 0.17. There is NO per-trial log-beta jitter: five passes of loop evidence establish that any per-trial precision noise flattens per-subject gamma posteriors toward the estimator's EB prior mean and caps the tail estimate at ~0.12, while gamma-only jitter at delta ~0.14 simultaneously satisfies the BF softening (Exps 15/9/12) and the flip-rate anchor (Exp 16). Falsifiable signatures: apparent tail-mass estimates ~0.17-0.20 on shallow-slope designs; positive RSD-vs-EPAI log BF ~[4, 10]; flip rates in [0.43, 0.45]; crossing statistic in [-0.15, -0.10]; steep-slope posterior >= 0.88; no plateau in recovered gamma rung ladders.
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, state, history):
+    # Jittered Uniform-Support Anti-Endorsement Integration (JU-AEI),
+    # clip-restoration pass: habitual support held at U[0, 2.2], the
+    # per-trial gamma-excursion clip restored to the arbiter's own [0, 2.4],
+    # gamma-only jitter (NO per-trial log-beta noise), symmetric +/-0.50
+    # window, delta in [0.13, 0.16].
+    # Stimulus: array-like of shape (2, n_features); row 0 = option A,
+    # row 1 = option B; entries are 0/1 cue values. History is ignored
+    # (no feedback in this task).
+    stim = np.asarray(state, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(
+            f"JU-AEI expects a (2, n_features) stimulus; got shape {stim.shape}."
+        )
+    n_features = stim.shape[1]
+
+    val = np.asarray(parameters["validities"], dtype=float)
+    if val.shape[0] != n_features:
+        raise ValueError(
+            f"validities length {val.shape[0]} != n_features {n_features}."
+        )
+
+    # ---- (1) GAMMA SUPPORT: single continuous uniform on [0, 2.2] ----
+    # Held exactly at [0, 2.2]: TRUE habitual mass above 2.2 is poison
+    # (it donates likelihood to EPAI's exclusive [2.2, 2.4] segment on
+    # Exp 13 and inflates Exp 18's p_hi term). Apparent tail mass is
+    # manufactured purely by the per-trial excursions below.
+    gamma_habit = 2.2 * float(parameters["gamma_u"])
+
+    # ---- (2) PRECISION: log-uniform raw inverse temperature, ----
+    # ---- independent of gamma (no segment-coupled beta boxes)  ----
+    # NO per-trial log-beta jitter: five loop passes establish that any
+    # per-trial precision noise flattens per-subject gamma posteriors
+    # toward the Exp 14 estimator's EB prior mean (0.075), capping the
+    # tail estimate at ~0.12, and pushes Exp 16's flip rate toward 0.5.
+    beta = float(np.exp(float(parameters["log_beta"])))
+    epsilon = float(parameters["epsilon"])
+    m = float(parameters["m"])
+
+    # ---- (3) PER-TRIAL STOCHASTIC VALIDITY-ATTENTION JITTER ----
+    # Gamma-only. With per-trial probability delta in [0.13, 0.16] the
+    # effective gamma is redrawn uniformly from a SYMMETRIC window
+    # [gamma_habit - 0.50, gamma_habit + 0.50], clipped to [0, 2.4]
+    # (the arbiter's own prescribed geometry). The 2.4 up-clip is the
+    # single change most implicated in the previous pass's rejection:
+    # excursions reaching 2.4 from habits in [1.7, 2.2] are what the
+    # fixed-gamma per-subject MLE reads as apparent tail mass (the only
+    # channel that has ever moved Exp 14 above 0.17), while habitual
+    # RESIDENCE above 2.2 (removed here by keeping the support at 2.2)
+    # is what flipped Exp 13's sign in the iter-6 pass.
+    delta = float(parameters["delta"])
+    if np.random.random() < delta:
+        lo = max(0.0, gamma_habit - 0.50)
+        hi = min(2.4, gamma_habit + 0.50)
+        gamma_t = lo + (hi - lo) * np.random.random()
+    else:
+        gamma_t = gamma_habit
+
+    # RAW validity weighting: w_j = v_j^gamma_t, NO normalization.
+    # This preserves the absolute endorsement-margin scale: a margin-2
+    # conflict carries twice the evidence of a margin-1 conflict,
+    # independent of n_features (the cross-experiment scale separation
+    # that per-experiment normalization provably erases).
+    w = np.power(val, gamma_t)
+
+    a, b = stim[0], stim[1]
+    # Anti-endorsement (sparse-preferring) evidence for A over B:
+    # each endorsement carried by B counts FOR A, each endorsement
+    # carried by A counts AGAINST A. E = 0 on identical rating vectors.
+    E = float(np.sum(w * (b - a)))
+
+    # Numerically stable logistic (both branches exponentiate a
+    # non-positive argument, so no overflow is possible).
+    x = beta * E
+    if x >= 0.0:
+        sig = 1.0 / (1.0 + np.exp(-x))
+    else:
+        ex = np.exp(x)
+        sig = ex / (1.0 + ex)
+
+    # Graded polarity: with per-trial probability m the subject responds
+    # with the INVERTED (sparse-preferring) polarity, with probability
+    # (1 - m) with the conventional polarity. Continuous, no empty
+    # middle, no mirror cluster. UNCHANGED (Exps 7/8 anchors are exact).
+    p_core = m * sig + (1.0 - m) * (1.0 - sig)
+
+    # Independent lapse to uniform choice. Ties (E = 0) give exactly 50%.
+    p_a = (1.0 - epsilon) * p_core + 0.5 * epsilon
+
+    return np.array([p_a, 1.0 - p_a])
+
+`policy(probs) -> int`:
+def policy(probs):
+    probs = np.asarray(probs, dtype=np.float64)
+    probs = probs / probs.sum()  # Guard against float drift.
+    return np.random.choice(len(probs), p=probs)
+
+`parameters`:
+- gamma_u: [0, 1]
+- log_beta: [0.588, 1.792]
+- epsilon: [0.03, 0.11]
+- m: [0.74, 1.0]
+- delta: [0.13, 0.16]
+- validities: validities
+
+`rationale`: This is a minimal-diff edit on the accepted JU-AEI base implementing the iter-7 critic's single surgical correction, plus the two consolidations its trajectory analysis validated. (1) RESTORE THE EXCURSION CLIP TO [0, 2.4] WHILE HOLDING THE HABITUAL SUPPORT AT U[0, 2.2]. The loop's seven-pass record now cleanly factorizes the two tail channels: TRUE habitual mass above 2.2 (iter 6) cost ~11-21 points on Exp 13 and all of Exp 18's negative offset, while per-trial EXCURSIONS reaching 2.4 from habits below 2.2 (iter 1) delivered the best simultaneous values ever achieved on the four resistant diagnostics — Exp 14 = 0.186, Exp 13 = +6.94, Exp 16 = 0.4397, Exp 18 = -0.149. The iter-7 pass's controlled comparison (only substantive changes: support 2.4->2.2 AND clip 2.4->2.2) saw Exp 14 fall 0.174 -> 0.115 and produced the loop's worst overall loss, implicating the 2.2 clip as the error — a deviation from the arbiter's own JU-AEI spec, which explicitly prescribes the redraw window 'clipped to [0, 2.4]'. This edit restores exactly that geometry: support [0, 2.2], clip [0, 2.4]. (2) REMOVE THE PER-TRIAL LOG-BETA JITTER ENTIRELY. Five passes of evidence are unambiguous: any per-trial precision noise, at any width, with or without box clipping, flattens per-subject gamma posteriors toward the Exp 14 estimator's EB prior mean and caps the tail estimate at ~0.12; the iter-6 pass proved that gamma-only jitter at delta ~0.14 simultaneously satisfies the BF softening (Exp 15 = 14.05 vs real 12.92) and the flip-rate anchor (Exp 16 = 0.4397 vs real 0.4335) — the first and only pass to do both. (3) SYMMETRIC +/-0.50 WINDOW, DELTA [0.13, 0.16]: the validated Pareto band — below ~0.10 the Exps 15/9/12 softening evaporates, above ~0.18 the asymptote anchors (Exps 7/8/10) and Exp 13's sign break. The window is wider than iter 1's +/-0.35, so at the same delta the apparent-tail channel should hold or slightly exceed iter 1's 0.186 on Exp 14. Expected landing zones from the loop's own trajectory: Exp 14 ~ 0.17-0.19, Exp 13 positive ~[4, 10], Exp 15 ~ 12-16, Exp 16 ~ 0.43-0.45, Exp 18 ~ -0.10 to -0.15, Exp 10 >= 0.88, Exps 7/8 within 0.02 of 0.704/0.347. All other code — the shared anti-endorsement raw-weight kernel, graded polarity, lapse, exact tie handling, the uniform [0, 2.2] habitual support, and the policy — is re-emitted from the accepted base with only the jitter block rewritten. Exp 11 (family overshoot; best reference value pi_8 = 67.3 vs real 52.6) and Exp 17 (between-subject variance 2.65, the noisiest diagnostic) remain accepted shared-family limitations, per seven passes of consistent evidence.
+
+## PRIOR FEEDBACK ITERATIONS
+The critic's verdicts on each previous in-loop candidate, in order. Each block ends with an **Outcome of this advice** line saying whether the candidate the proposer produced AFTER this advice was ACCEPTED (loss strictly beat the running best) or REJECTED (the gate discarded it). Address the most recent iteration's feedback in your next edit, but down-weight past advice whose candidates were REJECTED.
+
+### Iteration 1
+Verdict: regenerate
+Interpretation: The candidate is a substantial, genuinely mechanism-level improvement over both predecessors and was correctly accepted by the gate (loss 0.0855). The shared anti-endorsement raw-weight kernel is now essentially locked in: Exps 1, 3–10 all land within noise of the real values (dissociation 0.166 vs 0.158; depth contrast -0.64 vs -0.72; evidence slopes -0.55/0.59 vs -0.52/0.59; density contrast -0.69 vs -0.68; extremity anchors 0.68/0.34 vs 0.70/0.35; steep-slope posterior 0.885 vs 0.911), and the two headline repair targets were hit: Exp 16's flip rate is now 0.4397 vs real 0.4335 (pi_7 overshot at 0.5335) and Exp 18's crossing statistic is -0.149 vs real -0.208 (pi_10 catastrophically overshot at +0.178). However, the NEW mechanism — per-trial gamma jitter — is miscalibrated on exactly the diagnostics it was invented to explain. (1) Exp 14 (tail-mass estimator, tiny variance, so highly decisive): candidate 0.186 vs real 0.298; the arbiter's own falsifiable signature specified 0.25–0.35, and the jitter delivered only ~60% of the required apparent tail inflation. (2) Exp 15: candidate 30.75 vs real 12.9 — the jitter was supposed to ATTENUATE the RSD-vs-SGAI log BF 30–50% below pi_7's 23.8, but it actually INCREASED it to 30.8. The simulated subjects are still 'too clean' relative to real data. (3) Exp 11 shows the same failure in the same direction: 89.9 vs real 52.6 (pi_7: 96.7) — only ~7% attenuation where ~45% is needed. (4) Exp 12 (real -0.41 vs cand -0.20) and Exp 9 (real -1.76 vs cand -1.22) independently corroborate that real per-subject likelihoods are softer/lower-precision than the candidate simulates. (5) One counter-signal: Exp 17 went slightly negative (-0.07 vs real +0.84, where even no-jitter pi_7 only reaches +0.34) — the [2.0, 2.2] tail mass plus up-side jitter lets HT-AEI's edge-hug cluster partially fit the simulated subjects. This is a genuine tension: Exps 11/12/14/15 all demand noisier, higher-apparent-tail subjects, while Exps 17/18 penalize excessive true high-gamma mass. The resolution is to generate the apparent tail and the likelihood softness through the JITTER (which leaves the population density probe and crossing statistics intact) rather than through true support mass — i.e., strengthen the jitter while holding the gamma support fixed at [0, 2.2].
+Rationale: The candidate was accepted and the base will not regress, so one more calibration pass is cheap and clearly warranted: the theory's single novel mechanism under-delivers on its own falsifiable signatures, and in two cases (Exps 11, 15) moved in the WRONG direction relative to pi_7. Concrete in-family adjustments, all within the arbiter-prescribed JU-AEI family: (a) STRENGTHEN THE JITTER: raise delta from 0.10–0.13 to roughly 0.18–0.25 and/or widen the redraw window from ±0.35 to ±0.50 (clip to [0, 2.5]). This is the primary lever for Exp 14's apparent tail mass (0.186 → target ~0.28–0.32) and for the per-subject likelihood softening that Exps 11, 12, and 15 require (real subjects behave as if their effective gamma and precision fluctuate more trial-to-trial than any static parameter can absorb). (b) Optionally add a small correlated per-trial log-beta jitter (±0.15–0.25 on the same delta event) to soften BFs WITHOUT lowering the asymptote anchors — do NOT raise epsilon or lower m, since Exps 7/8 extremity (0.68/0.34) are currently spot-on and would degrade. (c) DO NOT extend the gamma support past 2.2 — the Exp 17 sign flip (-0.07 vs real +0.84) and the Exp 18 upward drift (-0.149 vs real -0.208) are both driven by true mass above 2.0 combining with up-side jitter; keep the support exactly [0, 2.2] and let the jitter alone manufacture the apparent tail. If Exp 18 rises above ~-0.10 under the stronger jitter, make the window asymmetric (e.g., [gamma - 0.55, gamma + 0.35]) — a minor adjustment, not a redesign. (d) Guardrails: after re-tuning, verify Exp 10 stays ≥ 0.85, Exp 16 stays in [0.43, 0.47], and Exp 2 (currently 0.154 vs real 0.181, already slightly low) does not drop further; if the stronger jitter pushes Exp 2 down, compensate with a slightly tighter epsilon range at the low end. Priority ordering if tensions remain: Exp 14 (var ~0.0003, decisive) and Exp 15 (the pi_10 catastrophe site) outweigh Exp 17, whose real between-subject variance (2.65) makes it the noisiest diagnostic in the battery.
+
+**Outcome of this advice:** iter 1 candidate loss=0.0855 -> iter 2 candidate loss=0.0712 -> the gate marked it ACCEPTED.
+
+### Iteration 2
+Verdict: regenerate
+Interpretation: The gate accepted this pass (loss 0.0855 -> 0.0712), and the shared core remains excellent: Exps 2, 5, 7 are now essentially exact (0.1814/0.5949/0.7044 vs real 0.1814/0.5944/0.7044), Exps 1, 3, 4, 6, 8, 10, 16 all sit within noise, and Exp 15 — the pi_10 catastrophe site — improved dramatically (30.75 -> 11.38 vs real 12.92). So the strengthening direction was partially right. However, two of the four adjustments in this calibration pass backfired on exactly the diagnostics they were aimed at, and one produced a new sign flip. (1) EXP 14 (tail-mass estimator, var ~0.0002, the most decisive diagnostic in the battery): 0.107 vs real 0.298 — WORSE than iter 1's 0.186, moving away from the arbiter-specified 0.25-0.35 signature. The down-tilted window [gamma-0.55, gamma+0.45] was applied on the theory it would 'manufacture apparent tail mass', but a fixed-gamma per-subject MLE recovers apparent high gamma only from UP-side excursions; biasing the redraw downward pulls the static fit down, and the tail estimate collapsed. The pre-registered down-tilt contingency in my prior critique was conditioned on Exp 18 rising above -0.10; it was applied unconditionally and demonstrably hurt Exp 14 without fixing Exp 18. (2) EXP 18: -0.001 vs real -0.208 — also WORSE than iter 1 (-0.149), so the down-tilt failed on its own target. (3) EXP 13 flipped sign: -3.81 vs real +6.03 (iter 1: +6.94, near-perfect). The likely culprit is the UP-side of the correlated log-beta jitter: a subject at habit beta ~3.3 drawing +0.2 in log space reaches beta ~7.3, which lies OUTSIDE RSD's box (beta <= 6) but INSIDE EPAI's (beta <= 7) — the jitter manufactures exactly the evidence pattern EPAI rewards. (4) EXP 11 shows the same pathology: 123.6 vs real 52.6, WORSE than iter 1's 89.9 — the up-side beta excursions make simulated subjects look super-steep, inflating RSD's advantage instead of attenuating it. (5) EXP 9 drifted slightly further (-1.12 vs real -1.76). On the plus side, Exp 12 improved (-0.29 vs -0.20, real -0.41) and Exp 17 improved (-0.07 -> 0.16, real 0.84), confirming that likelihood softening per se is the right medicine — the problem is the asymmetry direction of the two jitter windows, not the jitter mechanism.
+Rationale: verdict: regenerate
+
+**Outcome of this advice:** iter 2 candidate loss=0.0712 -> iter 3 candidate loss=0.0798 -> the gate marked it REJECTED.
+
+### Iteration 3
+Verdict: regenerate
+Interpretation: The gate rejected this pass (0.0798 vs the accepted 0.0712), and the per-experiment pattern shows a clean three-way decomposition of what worked and what failed. WHAT WORKED: (a) reversing the gamma-window asymmetry to up-tilted fixed Exp 18's iter-2 disaster (-0.001 -> -0.157 vs real -0.208, now back near iter 1's excellent -0.149); (b) the log-beta box clipping did what it was designed to do — Exp 11 came down from 123.6 to 99.6 and Exp 13 improved from -3.81 to -2.87 without the super-steep excursion pathology; (c) Exp 15 (12.20 vs real 12.92) and Exp 16 (0.4275 vs real 0.4335) remain excellent, and Exp 9 improved (-1.41 vs real -1.76). WHAT FAILED: (1) EXP 14, the most decisive diagnostic in the battery (var ~0.0001), collapsed FURTHER: 0.083 vs real 0.298, worse than iter 2's 0.107 and iter 1's 0.186. This refutes my iter-2 hypothesis in its strong form: the up-tilt alone does not manufacture apparent tail mass, because the confounded delta raise to [0.20, 0.26] dominates — heavier jitter softens per-subject likelihoods so much that the static fixed-gamma posterior concentrates LOW, and the tail estimate sinks. Across three passes the empirical relationship is monotone: delta ~0.10-0.13 -> Exp 14 ~ 0.19; delta ~0.20-0.26 -> Exp 14 ~ 0.08-0.11, regardless of window tilt. (2) The delta raise degraded the asymptote anchors that were exact at iter 2: Exp 7 0.704 -> 0.662 (real 0.704), Exp 8 0.357 -> 0.311 (real 0.347), Exp 10 0.909 -> 0.883 (real 0.911). (3) EXP 13 remains sign-flipped (-2.87 vs real +6.03); the clipping helped but did not cure it — the residual culprit is that the gamma jitter's up-side clip at 2.50 lets excursions escape the theory's own [0, 2.2] support into EPAI's [2.2, 2.4] segment, and the up-tilt's mean shift (+0.10 on 20-26% of trials) creates a genuine high-gamma lean in the effective trial population that EPAI's 45% [1.2, 2.4] segment rewards. (4) Exp 12 regressed slightly (-0.253 vs iter 2's -0.292, real -0.414). Net: the up-tilt direction and the beta clipping are keepers; the delta magnitude is the poison.
+Rationale: Regenerate, building on the UNCHANGED iter-2 accepted base, with three surgical edits (all minor, in-family JU-AEI adjustments): (1) CUT DELTA back to [0.10, 0.14]. This is the single highest-priority fix: it is the demonstrated cause of the Exp 14 collapse (the only passes near the 0.19-0.25 range ran delta at 0.10-0.13), of the Exp 7/8/10 anchor degradation, and of much of the Exp 13 EPAI donation. Do not go below 0.10 or the Exp 15/9 softening gains evaporate. (2) KEEP the up-tilted gamma window but MODERATE it to roughly [gamma - 0.35, gamma + 0.45] and CLIP THE UP-SIDE AT 2.2 (the theory's own true support), not 2.50. The up-tilt direction is validated by Exp 18's recovery, but excursions past 2.2 are pure cost: they donate likelihood to EPAI's [2.2, 2.4] segment (Exp 13's persistent sign flip) while the tail-mass estimator in Exp 14 reads habitual-plus-excursion structure that a low-delta up-tilt already supplies from habits in [1.6, 2.0] reaching past 2.0. (3) KEEP the box-clipped correlated log-beta jitter (it improved Exps 11 and 13 monotonically) but WIDEN its magnitude to about +/-0.30 in log space — since it is clipped to [ln 1.8, ln 6.0] it can soften per-subject likelihoods (the Exps 9/11/12/15 requirement) without ever donating to a competitor's wider precision box, partially compensating for the likelihood softening lost by cutting delta. If Exp 15 drifts back above ~20 under low delta, prefer widening the clipped beta jitter further (up to +/-0.4) over raising delta again — the three-pass trajectory shows delta above ~0.15 is strictly destructive on Exps 7/8/10/13/14. Accept explicitly: Exp 11 will likely remain high (~85-100 vs real 52.6) — every anti-endorsement raw-weight theory in the reference table overshoots it (best: pi_8 at 67.3), so treat it as a shared-family limitation and prioritize the tiny-variance diagnostics (Exp 14 var 0.0001, Exp 16 var 0.0024) and Exp 13's sign. Guardrails to verify before submitting: Exp 7 within 0.02 of 0.704, Exp 8 within 0.02 of 0.347, Exp 10 >= 0.88, Exp 16 in [0.43, 0.47], Exp 18 in [-0.25, -0.15], Exp 14 >= 0.17 (ideally 0.20+).
+
+**Outcome of this advice:** iter 3 candidate loss=0.0798 -> iter 4 candidate loss=0.0868 -> the gate marked it REJECTED.
+
+### Iteration 4
+Verdict: regenerate
+Interpretation: The gate rejected this pass (0.0868 vs the accepted iter-2 base at 0.0712), and the per-experiment pattern gives a clean read on which of my three iter-3 surgical edits worked and which backfired. WHAT WORKED: (a) the delta cut to [0.10, 0.14] restored the asymptote anchors (Exp 7: 0.728 vs real 0.704, Exp 8: 0.361 vs 0.347, Exp 10: 0.916 vs 0.911 — all at or near guardrail) and, together with the box-clipped beta jitter, RESTORED EXP 13'S SIGN (5.02 vs real 6.03, the best value any JU-AEI pass has achieved on this metric other than iter 1's 6.94); (b) the up-tilt direction remains validated: Exp 18 sits at -0.177 vs real -0.208, inside the guardrail; (c) Exps 1-6 remain essentially exact (e.g., Exp 6: -0.6742 vs -0.6758). WHAT FAILED: (1) EXP 14 — the most decisive diagnostic in the battery (var 0.0002) — did NOT recover: 0.091 vs real 0.298, essentially unchanged from iter 3's 0.083 and far below iter 1's 0.186. This refutes my iter-3 prediction that the delta cut alone would restore the tail estimate. The confound is now identifiable: iter 1 (Exp 14 = 0.186) differed from iter 4 in exactly two other respects — it clipped the gamma-jitter up-side at 2.4 (not 2.2) and had no wide correlated beta jitter. Both of my iter-3 'safety' edits — clipping at 2.2 and widening the beta jitter to +/-0.30 — are therefore the prime suspects for the Exp 14 collapse: excursions past 2.2 are what a fixed-gamma per-subject MLE reads as apparent tail mass, and per-trial log-beta noise flattens the per-subject gamma posterior toward the estimator's EB prior mean (0.075). (2) The same two edits over-attenuated EXP 15: 5.85 vs real 12.92 (iter 2: 11.38, iter 3: 12.20 — both good). The +/-0.30 beta jitter at low delta over-softened the RSD-vs-SGAI BF. (3) EXP 16 rose to 0.4911 vs real 0.4335, outside the [0.43, 0.47] guardrail — again consistent with the wide beta jitter pushing flip-trial choices toward 0.5 (iter 1, with no beta jitter, sat at 0.4397, nearly exact). (4) Exps 9 and 12 drifted in the wrong direction (-0.89 vs real -1.76; -0.137 vs -0.414), though both are high-variance diagnostics. Importantly, the iter-3 claim that excursions past 2.2 'donate likelihood to EPAI' and flip Exp 13's sign is now REFUTED by the loop's own evidence: iter 1 ran the up-clip at 2.4 with low delta and scored 6.94 on Exp 13 (near-perfect); the sign flips appeared only in iters 2-3 when DELTA was high (0.18-0.26). The poison was delta, not the 2.4 clip — I mis-attributed it.
+Rationale: Regenerate on the UNCHANGED iter-2 accepted base, walking back the two iter-3 edits that the trajectory now implicates, while keeping the two that are validated. Concretely, all in-family JU-AEI adjustments: (1) KEEP delta at [0.10, 0.14] — three passes establish that delta above ~0.15 is strictly destructive (anchors, Exp 13 sign, Exp 14 collapse) and delta below 0.10 loses the Exp 15 softening. (2) RESTORE THE GAMMA-JITTER UP-CLIP TO 2.4 — this is not a departure from the arbiter's prescription but a RETURN to it: the arbiter's JU-AEI spec explicitly says the redraw window is 'clipped to [0, 2.4]'. My iter-3 instruction to clip at 2.2 was a mistake: it removed exactly the excursion structure that Exp 14's tail estimator reads (iter 1, clip 2.4 + low delta: Exp 14 = 0.186, Exp 13 = 6.94, Exp 16 = 0.4397 — the best simultaneous values on those three diagnostics in the entire loop), and the alleged EPAI donation is contradicted by iter 1's Exp 13. Keep the window moderately up-tilted, e.g. [gamma - 0.30, gamma + 0.45] clipped to [0, 2.4]. (3) SHRINK the correlated log-beta jitter from +/-0.30 to roughly +/-0.12-0.18 (still hard-clipped to [ln 1.8, ln 6.0]). The +/-0.30 width is the prime suspect for all three of this pass's new failures: it flattens per-subject gamma posteriors (Exp 14 stuck at 0.091), over-attenuates Exp 15 (5.85 vs 12.92), and pushes Exp 16 toward 0.5 (0.4911 vs 0.4335). A moderate width should recover the iter-2-level softening (Exp 15 ~ 10-16) without any of these pathologies. The logic: excursions in GAMMA (clipped at 2.4) manufacture the APPARENT tail that Exps 14 and 16 demand, while a modest beta jitter supplies just enough per-subject likelihood softening for Exps 15/9/12 — the two jobs should not be loaded onto one knob. (4) Leave epsilon, m, the raw anti-endorsement kernel, the uniform [0, 2.2] habitual support, and the policy untouched. Guardrails to verify before submitting: Exp 14 >= 0.17 (ideally 0.20+, recovering toward iter 1's 0.186 and beyond), Exp 13 positive in [2, 9], Exp 15 in [9, 17], Exp 16 in [0.42, 0.47], Exp 18 in [-0.25, -0.12], Exp 7 within 0.02 of 0.704, Exp 8 within 0.02 of 0.347, Exp 10 >= 0.88. Accept as shared-family limitations: Exp 11 (every anti-endorsement raw-weight theory overshoots it; best in the reference table is pi_8 at 67.3 vs real 52.6) and Exp 17 (between-subject variance 2.65, the noisiest diagnostic in the battery). Priority if tensions remain: Exp 14 (var 0.0002) and Exp 16 (var 0.0009) outweigh everything else.
+
+**Outcome of this advice:** iter 4 candidate loss=0.0868 -> iter 5 candidate loss=0.0788 -> the gate marked it REJECTED.
+
+### Iteration 5
+Verdict: regenerate
+Interpretation: The gate rejected this pass (0.0788 vs the iter-2 base at 0.0712), and the per-experiment read is a clean verdict on my iter-4 advice: faithfully implemented, partially successful, and falsified on its central prediction. WHAT THE EDITS DELIVERED: Exp 13 = 7.09 vs real 6.03 (best since iter 1, sign solidly restored); Exp 16 = 0.4353 vs 0.4335 (essentially exact); Exp 15 = 17.15 vs 12.92 (near guardrail); Exp 7 = 0.716 (within 0.02 of 0.704); Exps 1-4, 6 within noise. WHAT FAILED: (1) EXP 14 — the most decisive diagnostic in the battery (var 0.0002) — came in at 0.118 vs real 0.298. My iter-4 prediction that restoring the 2.4 up-clip plus shrinking the beta jitter to ±0.15 would recover it toward 0.19+ was WRONG. This is the fourth consecutive pass stuck at 0.08-0.12. (2) EXP 18 = -0.075, outside the [-0.25, -0.12] guardrail and worse than iter 4's -0.177 — the up-tilt pushed it up. (3) EXP 5 regressed to 0.540 vs real 0.594 (every prior pass: 0.58-0.59); Exp 10 = 0.880 and Exp 8 = 0.326 sit just below guardrail. (4) Exps 9/12 remain undertoned (-1.09 vs -1.76; -0.21 vs -0.41). The five-pass record now supports two firm conclusions. FIRST: per-trial log-beta jitter at ANY width destroys Exp 14 — the only pass without it (iter 1) is the only one reaching 0.186; ±0.15 unclipped, ±0.30, and ±0.15 clipped all land at 0.08-0.12. Even modest per-trial precision noise flattens the per-subject gamma posterior toward the estimator's EB prior mean (0.075). SECOND, and more important: no jitter configuration within the habitual support [0, 2.2] has ever exceeded 0.19 on Exp 14, while the real value 0.298 implies (after undoing the KAPPA=15, P0=0.075 shrinkage over ~25-30 subjects) a raw per-subject tail posterior of roughly 0.40. The apparent-tail deficit is structural, not a calibration residue: the population needs substantially more true high-gamma mass than U[0, 2.2] supplies (P(habit>2) = 9%). Meanwhile the up-tilt direction I endorsed twice delivered nothing on Exp 14 and actively hurt Exp 18.
+Rationale: Regenerate on the unchanged iter-2 accepted base, with a genuinely new direction — attack the SUPPORT, not the jitter shape. All edits are in-family JU-AEI parameter adjustments: (1) EXTEND THE HABITUAL GAMMA SUPPORT from U[0, 2.2] to U[0, 2.4]. This remains a single continuous uniform (no gaps, no cliffs, no narrow tail segment), so it preserves the arbiter's prescribed structure; it is a parameter-range widening of exactly the sanctioned kind. Justification: P(habit > 2.0) rises from 9% to ~17%, and habits in [1.7, 2.0] combined with excursions supply the rest — the only lever in the family with the right order of magnitude for Exp 14's ~0.40 raw tail. Predicted Exp 14 ~ 0.22-0.28. Watch Exp 13 (EPAI's [1.2, 2.4] segment gains density; iter 1's record suggests moderate leakage is tolerated — keep it positive) and Exp 18 (accept up to -0.05 if necessary; its sim variance is 0.12-0.35). (2) REMOVE THE CORRELATED LOG-BETA JITTER ENTIRELY — make the attention event gamma-only. Five passes of evidence are unambiguous: any per-trial log-beta noise, at any width, with or without box clipping, flattens per-subject gamma posteriors and caps Exp 14 at ~0.12. Iter 1 (no beta jitter) simultaneously had the best Exp 14 (0.186) AND a near-exact Exp 13 (6.94) — the beta jitter is not needed for Exp 13 and is poison for Exp 14. (3) RECOVER THE BF SOFTENING (Exps 15/9/12) THROUGH THE GAMMA CHANNEL INSTEAD: keep delta at [0.12, 0.15] (slightly above the current floor to compensate the lost precision noise) and use a SYMMETRIC window of ±0.40-0.45 clipped to [0, 2.4] — the arbiter's own geometry. Drop the up-tilt: it is now implicated in Exp 18's drift (-0.075 vs real -0.208) and demonstrably added nothing to Exp 14. If Exp 15 balloons above ~25 without beta jitter, prefer widening the gamma window toward ±0.55 or raising delta to at most 0.16 over ever re-introducing beta jitter. (4) Leave epsilon, m, the raw anti-endorsement kernel, and the policy untouched. Guardrails before submitting: Exp 14 >= 0.20 (the pass fails if it does not move materially), Exp 13 positive, Exp 16 in [0.42, 0.47], Exp 18 <= -0.10, Exp 5 back to >= 0.57 (its 0.540 regression this pass is a red flag for the up-tilt), Exp 10 >= 0.88, Exps 7/8 within 0.02. Continue to accept Exp 11 (every anti-endorsement raw-weight theory overshoots it; best in the reference table is pi_8 at 67.3 vs real 52.6) and Exp 17 (between-subject variance 2.65, the noisiest diagnostic) as shared-family limitations. Acknowledgment of my own record: my iter-4 recommendation was rejected by the gate and its central prediction (2.4-clip restoration + narrow beta jitter recovers Exp 14) was falsified — hence this critique deliberately abandons the jitter-shape micro-tuning that consumed iters 3-5 and redirects at the one structural knob (support width) never yet moved.
+
+**Outcome of this advice:** iter 5 candidate loss=0.0788 -> iter 6 candidate loss=0.0806 -> the gate marked it REJECTED.
+
+### Iteration 6
+Verdict: regenerate
+Interpretation: The gate rejected this pass (0.0806 vs the iter-2 base at 0.0712), and the per-experiment read is a clear verdict on my iter-5 advice: faithfully implemented, and falsified on both of its central predictions. WHAT THE EDITS DELIVERED: Exp 14 finally moved materially for the first time in four passes (0.118 -> 0.174, best since iter 1's 0.186); Exp 16 = 0.4397 vs real 0.4335 (essentially exact); Exp 15 = 14.05 vs 12.92 (good); Exps 1-7 within noise (Exp 5 recovered to 0.600, Exp 7 = 0.711). The gamma-only jitter decision is also validated: no beta noise, yet Exp 15's BF softening and Exp 16's flip rate are both fine simultaneously — the first pass to achieve that. WHAT FAILED: (1) EXP 13 COLLAPSED TO -14.62 vs real +6.03 — the worst value of any pass in the entire loop, a ~21-point swing from iter 5's +7.09. The widened habitual support U[0, 2.4] puts ~8% of true mass into [2.2, 2.4], which is EPAI-xp's exclusive high-gamma segment (its mixture places 0.375 density per unit there); simulated subjects with habits in that band are fit better by EPAI than by RSD, and the joint log BF flips hard negative. My iter-5 claim that 'moderate high-gamma leakage into EPAI's segment is tolerated' (based on iter 1's clip-at-2.4 excursions) was wrong: per-trial EXCURSIONS into [2.2, 2.4] are tolerated, but habitual RESIDENCE there is not. (2) EXP 18 = -0.0093 vs real -0.2077, far outside the <= -0.10 guardrail. The true P(habit > 2) ~ 17% directly inflates the crossing statistic's p_hi term; iter 1 (support [0, 2.2], excursions only) sat at -0.149, confirming that excursions past 2.0 are benign while true mass past 2.0 is poison. (3) Exp 11 worsened to 118.6 vs real 52.6. (4) Exp 10 = 0.877, just below the 0.88 guardrail. Net versus the unchanged base: +0.067 on Exp 14, but -10.8 on Exp 13, -0.03 on Exp 10 — strictly negative trade. The six-pass record now cleanly separates two channels: APPARENT tail (up-side gamma excursions from habits below 2.2, read by Exp 14's per-subject estimator) is cheap and safe; TRUE tail mass (habitual support past 2.2) is expensive — it buys ~0.07 on Exp 14 and costs ~11 on Exp 13 plus all of Exp 18's negative offset.
+Rationale: Regenerate on the unchanged iter-2 base, walking back the one falsified edit while consolidating the two validated ones. Concretely, all in-family JU-AEI parameter adjustments: (1) REVERT THE HABITUAL SUPPORT TO U[0, 2.2] — the arbiter's own specification. The 2.4 widening is now empirically refuted on both targets it was meant to serve: Exp 14 gained only +0.067 (0.174 vs iter 1's 0.186 with support [0, 2.2] — the gain is within sim noise), while Exp 13 swung 21 points negative and Exp 18 lost its negative offset. The apparent-tail deficit must be manufactured by excursions, not by true mass. (2) KEEP THE GAMMA-ONLY JITTER — this pass proves the point: with zero beta noise, Exp 15 = 14.05 (real 12.92) and Exp 16 = 0.4397 (real 0.4335) were simultaneously satisfied for the first time, and Exp 13's sign problem this pass is attributable to the support, not the jitter. (3) TO PUSH EXP 14 FURTHER WITHOUT TRUE TAIL MASS: widen the symmetric excursion window to about +/-0.45-0.50, clipped to [0, 2.2] (NOT 2.4 — excursions reaching 2.4 from habits at 1.9-2.0 are what iter 1 used to reach 0.186, but clipping at 2.2 keeps everything inside the theory's own support and protects Exp 13; if Exp 14 lands below 0.16, a modest up-tilt [gamma - 0.30, gamma + 0.55] clipped to [0, 2.2] is the secondary lever — untested without beta jitter, and cheaper on Exp 18 than true support mass, but monitor Exp 18 <= -0.10). (4) Hold delta at [0.13, 0.16] — high enough to retain the Exp 15/9/12 softening this pass achieved, below the ~0.18 threshold that iters 2-3 showed destroys the anchors and Exp 14. (5) Leave epsilon, m, the raw anti-endorsement kernel, and the policy untouched. GUARDRAILS before submitting: Exp 13 positive (this is the pass's primary job — iter 1's config with support [0,2.2] and gamma-only jitter scored 6.94), Exp 18 in [-0.25, -0.10], Exp 15 in [8, 18], Exp 16 in [0.42, 0.47], Exp 14 >= 0.16, Exp 10 >= 0.88, Exps 7/8 within 0.02 of 0.704/0.347. ACCEPT as shared-family limitations, now with six passes of evidence: Exp 11 (every anti-endorsement raw-weight theory overshoots it; best in the reference table is pi_8 at 67.3 vs real 52.6), Exp 17 (between-subject variance 2.65, the noisiest diagnostic), and the residual Exp 14 gap — the family's apparent-tail ceiling is ~0.19-0.21 versus the real 0.298, and every lever that could close it (true support past 2.2, beta noise, delta above 0.18) is demonstrably more costly elsewhere in the loss than the gap itself. Self-assessment of my record: my last four critiques each proposed a different jitter/support micro-configuration and each was rejected; the common thread of the failures is loading the Exp 14 requirement onto knobs that also move true population mass. This critique restricts the search to the one configuration region (support [0, 2.2], gamma-only symmetric jitter, delta ~0.14) that the loop's own evidence shows is Pareto-optimal, and asks only for a modest window widening within it.
+
+**Outcome of this advice:** iter 6 candidate loss=0.0806 -> iter 7 candidate loss=0.0910 -> the gate marked it REJECTED.
+
+### Iteration 7
+Verdict: regenerate
+Interpretation: The gate rejected this pass with the worst loss of the entire loop (0.0910 vs the iter-2 base at 0.0712), and the per-experiment read is a clear verdict on my iter-6 advice: it was implemented faithfully (support [0, 2.2], gamma-only jitter, symmetric +/-0.50 window, delta [0.13, 0.16]) and falsified on its central prediction. WHAT HELD: Exp 13 is solidly positive again (11.44 vs real 6.03 — the best sign-secured value with support [0, 2.2] other than iter 1's 6.94), Exp 18 recovered most of its negative offset (-0.092 vs real -0.208, vs iter 6's -0.009), and Exps 1, 3-6, 8 remain within noise. WHAT FAILED: (1) EXP 14, the most decisive diagnostic in the battery (var 0.0002), came in at 0.115 vs real 0.298 — below the >= 0.16 guardrail and essentially at the iter-2/3/4 floor. My iter-6 prediction that the wider symmetric window would deliver 0.16+ was wrong, and the iter-6-to-iter-7 controlled comparison now isolates WHY: the only substantive changes were habitual support 2.4 -> 2.2 and clip 2.4 -> 2.2, and Exp 14 fell 0.174 -> 0.115 while Exp 15 rose 14.05 -> 18.44. The 2.2 hard clip truncates exactly the up-side excursions from habits in [1.7, 2.2] that a fixed-gamma per-subject MLE reads as apparent tail mass. (2) EXP 2 dropped to 0.134 vs real 0.181 — the worst value of any pass on this metric. (3) EXP 7 = 0.657 vs real 0.704, outside the 0.02 guardrail (though this metric's pass-to-pass range 0.66-0.73 suggests part of this is sim noise). (4) Exp 15 = 18.44, just above the [8, 18] guardrail. (5) Exp 10 = 0.871, marginally below 0.88. The critical re-read of the six-pass record: the configuration 'habitual support [0, 2.2] + excursion clip at 2.4' has been tested exactly once — iter 1 — and it delivered the best simultaneous values on the four diagnostics that have resisted every subsequent pass: Exp 14 = 0.186, Exp 13 = 6.94, Exp 16 = 0.4397, Exp 18 = -0.149. Every subsequent pass either added beta jitter (iters 2-5: poisons Exp 14, caps ~0.12), raised delta above 0.18 (iters 2-3: destroys anchors and Exp 13 sign), or widened the habitual support past 2.2 (iter 6: catastrophic Exp 13 via habitual residence in EPAI's [2.2, 2.4] segment). My iter-6 instruction to clip at 2.2 conflated two different things: TRUE habitual mass past 2.2 (which is genuinely poison — iter 6 proved it) and per-trial EXCURSIONS past 2.2 (which iter 1 proved are safe and are the only channel that has ever moved Exp 14 above 0.17). Note also that the arbiter's original JU-AEI specification explicitly prescribes the redraw window 'clipped to [0, 2.4]' — the 2.2 clip was my deviation, not the arbiter's, and it should be walked back.
+Rationale: Regenerate on the unchanged iter-2 accepted base with ONE surgical edit, all in-family and in fact a return to the arbiter's own prescription: (1) RESTORE THE EXCURSION CLIP TO [0, 2.4] while KEEPING the habitual support at U[0, 2.2]. The loop's evidence now cleanly separates the two channels: habitual residence above 2.2 costs ~11-21 points on Exp 13 and all of Exp 18's negative offset (iter 6 vs iter 7), while per-trial up-side excursions reaching 2.4 from habits below 2.2 are what Exp 14's estimator reads as apparent tail mass (iter 1: 0.186 with the 2.4 clip; iter 7: 0.115 with the 2.2 clip, same delta band, same gamma-only jitter). This is not oscillation — it is the factorization the last two passes were designed to identify: support 2.2 (fixed, validated), clip 2.4 (restored, validated by iter 1). (2) KEEP everything else from the current pass exactly as-is: gamma-only jitter (no beta noise — five passes prove any per-trial log-beta noise caps Exp 14 at ~0.12), symmetric window of +/-0.50, delta [0.13, 0.16] (the validated band: below ~0.10 the Exp 15/9/12 softening evaporates, above ~0.18 the anchors and Exp 13 sign break), epsilon, m, the raw anti-endorsement kernel, and the policy untouched. Expected landing zones from the loop's own trajectory: Exp 14 ~ 0.17-0.19 (iter 1 reached 0.186 with a NARROWER +/-0.35 window; the wider window at the same delta should hold or slightly exceed it), Exp 13 positive ~[4, 10] (iter 1's existence proof: 6.94 with this exact support/clip geometry), Exp 15 ~ 12-16 (iter 6's clip-2.4 config scored 14.05), Exp 16 ~ 0.43-0.45 (iter 1: 0.4397; iter 6: 0.4397), Exp 18 ~ -0.10 to -0.15 (iter 1: -0.149). GUARDRAILS before submitting: Exp 14 >= 0.16 (the pass fails without material movement — this is the primary job), Exp 13 positive, Exp 15 in [9, 18], Exp 16 in [0.42, 0.47], Exp 18 <= -0.10, Exp 2 >= 0.15 (monitor: it fell to 0.134 this pass; if the 2.4 clip does not restore it toward 0.17+, tighten epsilon's lower bound slightly rather than touching the jitter), Exp 7 >= 0.685, Exp 10 >= 0.88. If Exp 15 balloons above ~20 under the 2.4 clip, raise delta to at most 0.16-0.17 rather than narrowing the window — the record shows delta is the cheaper softening lever. Continue to ACCEPT as shared-family limitations (seven passes of evidence): Exp 11 (every anti-endorsement raw-weight theory overshoots it; best in the reference table is pi_8 at 67.3 vs real 52.6), Exp 17 (between-subject variance 2.65, the noisiest diagnostic in the battery), Exps 9/12 residual undertone, and the residual Exp 14 gap (family ceiling ~0.19-0.21 vs real 0.298 — every lever that could close it costs more elsewhere in the loss). Self-assessment of my record: my iter-6 critique correctly identified the Pareto region (support 2.2, gamma-only, delta ~0.14) but the 2.2 clip instruction was my error, not the arbiter's, and it is the single change most implicated in this pass's rejection; this critique corrects it with minimal additional movement elsewhere.
+
+**Outcome of this advice:** iter 7 candidate loss=0.0910 -> iter 8 candidate loss=0.0678 -> the gate marked it ACCEPTED.
+
+### Iteration 8
+Verdict: regenerate
+Interpretation: The gate ACCEPTED this pass with the best loss of the entire loop (0.0678 vs the previous best 0.0712), and my iter-7 advice (restore the excursion clip to [0, 2.4] while holding habitual support at [0, 2.2]) was validated in its main predictions: Exp 1 is exact (0.1583 vs 0.1580), Exp 16 essentially exact (0.4308 vs 0.4335), Exp 15 landed at 9.22 (real 12.92, inside guardrail), Exps 2-6, 8, 10 all within noise, and the aggregate fit is the strongest any JU-AEI configuration has achieved. The factorization the loop spent seven passes identifying — true habitual mass above 2.2 is poison while per-trial excursions reaching 2.4 are the apparent-tail channel — is now empirically established. However, two diagnostics degraded relative to both prediction and to iter 1's geometry, and they share a single identifiable cause. (1) EXP 13 FLIPPED SIGN: -7.73 vs real +6.03 (iter 1, same support/clip geometry: +6.94). The wider symmetric window (+/-0.50 vs iter 1's +/-0.35) combined with the higher delta band ([0.13, 0.16] vs [0.10, 0.13]) puts substantially more per-trial excursion mass into EPAI-xp's exclusive [2.2, 2.4] segment — habits in [1.7, 2.2] now reach EPAI's territory on ~13-16% of trials, and the joint log BF swings negative. This is the same mechanism that produced iter 6's -14.6 via true mass, now operating at excursion strength. (2) EXP 14 came in at 0.146 vs the predicted 0.17-0.19 and below iter 1's 0.186 — the wider window did NOT buy apparent tail mass (the extra down-side excursions from low-gamma habits dilute what the up-side gains), so the widening was pure cost on Exp 13 with no benefit on Exp 14. (3) Minor: Exp 18 overshot negative (-0.2745 vs real -0.2077; iter 1 with the narrower window sat at -0.149, bracketing the real value from the other side), and Exp 7 is marginally low (0.677 vs 0.704, within this metric's pass-to-pass sim noise of 0.66-0.73). The accepted shared-family limitations remain: Exp 11 (81.3 vs 52.6; every anti-endorsement raw-weight theory overshoots, best reference pi_8 = 67.3), Exp 17 (0.07 vs 0.84; between-subject variance 2.65, the noisiest diagnostic), Exps 9/12 residual undertone, and the structural Exp 14 ceiling (~0.19-0.21 vs real 0.298).
+Rationale: verdict: regenerate
+
+**Outcome of this advice:** iter 8 candidate loss=0.0678 -> iter 9 candidate loss=0.1072 -> the gate marked it REJECTED.
+
+### Iteration 9 (most recent — address this)
+Verdict: regenerate
+Interpretation: The gate REJECTED this pass (0.1072 vs the accepted iter-8 base at 0.0678), and the per-experiment read is a clean refutation of my iter-8 advice — but a refutation that finally completes the causal factorization the loop has been circling for nine passes. The candidate faithfully restored the +/-0.35 window and trimmed delta to [0.12, 0.15] exactly as I instructed, and the predictions failed on every targeted diagnostic: Exp 13 stayed NEGATIVE (-3.22 vs real +6.03; predicted positive [2,9]; iter 1 at the same window scored +6.94), Exp 14 COLLAPSED to 0.095 (predicted 0.17-0.19; iter 1: 0.186), Exp 15 BALLOONED to 30.13 (predicted 10-15; iter 8: 9.22; iter 1: 30.75), Exp 16 rose to 0.4911 (outside [0.42,0.47]; iter 8: 0.4308), and the anchors degraded (Exp 10 = 0.840 < 0.88, Exp 5 = 0.536, Exp 2 = 0.154, Exp 6 = -0.720). The three controlled comparisons now available pin down which knob does what, and my iter-8 attribution was wrong: (A) WINDOW WIDTH, NOT DELTA, DRIVES EXP 15. Iter 1 vs iter 9 (same +/-0.35 window, delta 0.115 vs 0.135): Exp 15 essentially unchanged (30.75 vs 30.13). Iter 8 vs iter 9 (delta 0.145 vs 0.135, nearly identical; window 0.50 vs 0.35): Exp 15 swings 9.22 -> 30.13. The BF softening the accepted base achieves comes from the WIDE +/-0.50 window, which the proposer's rationale misattributed to the delta band (citing iter 6, which actually ran a different support geometry). (B) DELTA, NOT WINDOW WIDTH, DRIVES EXP 13'S SIGN. Iter 1 vs iter 9 (same window, delta 0.115 vs 0.135): +6.94 -> -3.22. The mean-delta rise of just ~0.02 flipped the sign; the window narrowing I prescribed as the Exp 13 cure delivered nothing. (C) The narrow-window + medium-delta combination is the worst corner of the 2x2: it loses the wide window's Exp 15 softening AND keeps enough delta to flip Exp 13, while halving Exp 14 relative to iter 1. The one untested corner of the (window x delta) grid is exactly the complement: WIDE WINDOW (+/-0.50, clip [0, 2.4]) + LOW DELTA ([0.10, 0.13]) — the configuration that keeps iter 8's Exp 15/16/10 machinery while restoring iter 1's Exp 13 sign, Exp 14 level, and anchor quality. Supporting evidence that this corner is favorable: Exp 18 at wide window was -0.2745 and at low delta was -0.149 (real -0.2077 sits between them, so the combination should land near the real value); Exp 14 at wide window was 0.146 and at low delta 0.186 (the combination should land ~0.15-0.19, at or above the accepted base's 0.146); and every anchor metric (Exps 2, 5, 10) was fine at BOTH parent configurations and only degraded in this pass's mid-delta/narrow-window mix. The accepted shared-family limitations stand (nine passes of evidence): Exp 11 (every anti-endorsement raw-weight theory overshoots; best reference pi_8 = 67.3 vs real 52.6), Exp 17 (between-subject variance 2.65, noisiest diagnostic), Exps 9/12 residual undertone, and the structural Exp 14 ceiling (~0.19-0.21 vs real 0.298).
+Rationale: REGENERATE on the UNCHANGED iter-8 accepted base with ONE single-knob edit, correcting my own iter-8 mis-attribution: (1) CUT DELTA FROM [0.13, 0.16] TO [0.10, 0.13] AND KEEP THE +/-0.50 SYMMETRIC WINDOW EXACTLY AS-IS (clip [0, 2.4], habitual support U[0, 2.2], gamma-only jitter, no beta noise). Do NOT narrow the window — my iter-8 instruction to restore +/-0.35 was rejected by the gate and is now empirically identified as the direct cause of this pass's Exp 15 catastrophe (30.13 vs the wide window's 9.22 at near-identical delta): the window width, not delta, is the BF-softening lever. Conversely, delta is the Exp 13 lever: the same window flipped from +6.94 to -3.22 when mean delta rose ~0.02, so cutting delta back to iter 1's band should restore the positive sign while the wide window preserves the Exp 15 softening delta cannot supply. This is the one corner of the (window x delta) grid never tested, and both parent configurations (iter 1 and iter 8) were the two best passes of the loop. (2) If Exp 15 nonetheless balloons above ~20 at low delta (it should not, per the iter-1-vs-iter-9 controlled comparison), widen the window toward +/-0.55 rather than raising delta — the record shows delta above ~0.13 is strictly destructive on Exps 13/14/10/5/2. (3) If Exp 13 remains negative even at delta <= 0.13, the second lever is a mildly asymmetric window [gamma - 0.50, gamma + 0.40] (trimming only the up-side excursion mass into EPAI's [2.2, 2.4] segment while keeping the down-side width that softens Exp 15) — try this only after the delta cut, one change at a time. (4) Leave epsilon, m, log_beta ranges, the raw anti-endorsement kernel, the U[0, 2.2] habitual support, and the policy untouched. GUARDRAILS before submitting: Exp 13 positive (primary job), Exp 15 in [8, 18], Exp 16 in [0.42, 0.47], Exp 14 >= 0.14, Exp 18 in [-0.28, -0.13], Exp 10 >= 0.88, Exp 5 >= 0.57, Exp 2 >= 0.15, Exps 7/8 within 0.02 of 0.704/0.347. Continue to ACCEPT as shared-family limitations: Exp 11, Exp 17, the Exps 9/12 undertone, and the Exp 14 ceiling (~0.19-0.21 vs real 0.298 — every lever that could close it costs more elsewhere). Self-assessment: my iter-8 critique correctly diagnosed that the widening was 'pure cost on Exp 13' but wrongly inferred the narrow window would fix it; the iter-9 controlled comparison shows the window's cost on Exp 13 is ~4 points while delta's is ~10, and the window's benefit on Exp 15 is ~21 points — so the correct move is to keep the window and cut the delta, the exact inverse of my previous recommendation.
+
+**Outcome of this advice:** iter 9 candidate loss=0.1072 -> next candidate accept-status=PENDING (this is the advice you are addressing now).
+
+
+## IMPLEMENTATION GUARDRAILS
+- The parameters should be within the specified ranges.
+- The model's predictions should be valid probability distributions (non-negative and sum to 1).
+- When converting logits to probabilities via softmax, always use the numerically stable form: subtract the max before exponentiating (`x = x - np.max(x); p = np.exp(x); p /= p.sum()`). A naive `np.exp(x) / np.sum(np.exp(x))` overflows to Inf/NaN for large logits. Alternatively, use `scipy.special.softmax`.
+
+
+## PROPOSAL — MINIMAL-DIFF EDIT (do NOT rewrite from scratch)
+The RUNNING-BEST (last ACCEPTED) candidate is shown verbatim above under `## PREVIOUS CANDIDATE (this loop)`. This is the base the loop's accept gate is currently keeping; the most recent critic feedback (see `## PRIOR FEEDBACK ITERATIONS`) should be applied on top of it. Apply the SMALLEST edit that addresses the critic's diagnosis while staying inside the arbiter's prescribed mechanism family:
+  - Re-emit the previous source verbatim, then change ONLY the lines needed to address the critic (a parameter range, a normalization, a softmax temperature, an attention scheme, a gating term, a buggy indexing line, etc.).
+  - Keep all unaffected functions, equations, parameter names, and the overall mechanism intact.
+  - Do NOT rewrite `predict` / `policy` end-to-end if a few lines would do, and do NOT switch mechanism families — that is the arbiter's decision, not yours in this loop.
+  - Briefly explain the minimal edit in `rationale`.
+If you genuinely believe a larger rewrite is required, you may do one, but justify in `rationale` why the minimal-diff path was insufficient.
+
+## RESPONSE FORMAT
+Return a JSON object with the following fields:
+- theory: The theoretical claim this theory makes about cognition.
+- predict: Python source defining def predict(parameters, state, history) -> np.ndarray.
+- policy: Python source defining def policy(probs) -> int.
+- parameters: Parameter ranges (e.g. "[1.0, 10.0]") or choices (e.g. "{1, 2}"), sampled per subject.
+- rationale: Reasoning behind this theory design; used to explain why this theory is better then the previous ones.
+
+
+## Response
+
+```json
+```json
+{
+  "theory": "Jittered Uniform-Support Anti-Endorsement Integration (JU-AEI). Subjects reading a product described by binary expert ratings treat an endorsement (rating = 1) as evidence AGAINST the option carrying it (a 'fewer red flags' reading), so the count-sparser option is perceived as higher quality. Within a trial, all cues are integrated additively with RAW (unnormalized) validity-power weights: the evidence for A over B is E = sum_j v_j^gamma (b_j - a_j), so the absolute endorsement-count margin sets the evidence scale independent of feature count, and identical rating vectors give exactly 50%. Choice follows p(A) = (1-eps)*[m*sigmoid(beta*E) + (1-m)*(1-sigmoid(beta*E))] + eps/2, with A_eff = (1-eps)(2m-1) near 0.69 (steep normalized slope x moderate asymptote). The population: habitual gamma ~ U[0, 2.2] (single continuous uniform, no gaps, no cliffs, no narrow tail segment), beta log-uniform on [1.8, 6.0] independent of gamma. The novel mechanism is per-trial stochastic validity-attention jitter: with per-trial probability delta, the effective gamma for that trial is redrawn uniformly from a symmetric window [gamma_habit - 0.50, gamma_habit + 0.50] clipped to [0, 2.4]. The critical factorization this theory embodies: TRUE habitual mass above 2.2 is poison (it donates likelihood to EPAI's exclusive [2.2, 2.4] segment and destroys Exp 18's negative offset), while per-trial EXCURSIONS reaching 2.4 from habits below 2.2 are safe and are the channel that supplies apparent tail mass (Exp 14) and per-subject likelihood softening (Exps 15/9/12). The (window x delta) factorization completed by the loop's controlled comparisons: the WIDE +/-0.50 window is the BF-softening lever (Exp 15: 9.22 wide vs 30.13 narrow at near-identical delta), while delta is the Exp 13 sign lever (same window flipped +6.94 -> -3.22 when mean delta rose ~0.02). The optimal untested corner is wide window + low delta, which this instantiation implements. Falsifiable signatures: apparent tail-mass estimates ~0.15-0.19 on shallow-slope designs; positive RSD-vs-EPAI log BF; flip rates in [0.43, 0.45]; crossing statistic in [-0.28, -0.13]; steep-slope posterior >= 0.88; no plateau in recovered gamma rung ladders.",
+  "predict": "def predict(parameters, state, history):\n    # Jittered Uniform-Support Anti-Endorsement Integration (JU-AEI),\n    # low-delta pass: habitual support U[0, 2.2], symmetric +/-0.50\n    # gamma-excursion window clipped to [0, 2.4], gamma-only jitter\n    # (NO per-trial log-beta noise), delta trimmed to [0.10, 0.13].\n    # Stimulus: array-like of shape (2, n_features); row 0 = option A,\n    # row 1 = option B; entries are 0/1 cue values. History is ignored\n    # (no feedback in this task).\n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"JU-AEI expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n    n_features = stim.shape[1]\n\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    if val.shape[0] != n_features:\n        raise ValueError(\n            f\"validities length {val.shape[0]} != n_features {n_features}.\"\n        )\n\n    # ---- (1) GAMMA SUPPORT: single continuous uniform on [0, 2.2] ----\n    # Held exactly at [0, 2.2]: TRUE habitual mass above 2.2 is poison\n    # (it donates likelihood to EPAI's exclusive [2.2, 2.4] segment on\n    # Exp 13 and inflates Exp 18's p_hi term). Apparent tail mass is\n    # manufactured purely by the per-trial excursions below.\n    gamma_habit = 2.2 * float(parameters[\"gamma_u\"])\n\n    # ---- (2) PRECISION: log-uniform raw inverse temperature, ----\n    # ---- independent of gamma (no segment-coupled beta boxes)  ----\n    # NO per-trial log-beta jitter: five loop passes establish that any\n    # per-trial precision noise flattens per-subject gamma posteriors\n    # toward the Exp 14 estimator's EB prior mean (0.075), capping the\n    # tail estimate at ~0.12, and pushes Exp 16's flip rate toward 0.5.\n    beta = float(np.exp(float(parameters[\"log_beta\"])))\n    epsilon = float(parameters[\"epsilon\"])\n    m = float(parameters[\"m\"])\n\n    # ---- (3) PER-TRIAL STOCHASTIC VALIDITY-ATTENTION JITTER ----\n    # Gamma-only. With per-trial probability delta in [0.10, 0.13] the\n    # effective gamma is redrawn uniformly from a SYMMETRIC window\n    # [gamma_habit - 0.50, gamma_habit + 0.50], clipped to [0, 2.4].\n    # The loop's controlled comparisons factor the two knobs: the WIDE\n    # +/-0.50 window is the Exp 15 BF-softening lever (9.22 wide vs\n    # 30.13 narrow at near-identical delta), while delta is the Exp 13\n    # sign lever (the same window flipped +6.94 -> -3.22 when mean\n    # delta rose ~0.02). This pass keeps the wide window exactly as in\n    # the accepted base and trims ONLY delta to the iter-1 band, the\n    # one corner of the (window x delta) grid never yet tested.\n    delta = float(parameters[\"delta\"])\n    if np.random.random() < delta:\n        lo = max(0.0, gamma_habit - 0.50)\n        hi = min(2.4, gamma_habit + 0.50)\n        gamma_t = lo + (hi - lo) * np.random.random()\n    else:\n        gamma_t = gamma_habit\n\n    # RAW validity weighting: w_j = v_j^gamma_t, NO normalization.\n    # This preserves the absolute endorsement-margin scale: a margin-2\n    # conflict carries twice the evidence of a margin-1 conflict,\n    # independent of n_features (the cross-experiment scale separation\n    # that per-experiment normalization provably erases).\n    w = np.power(val, gamma_t)\n\n    a, b = stim[0], stim[1]\n    # Anti-endorsement (sparse-preferring) evidence for A over B:\n    # each endorsement carried by B counts FOR A, each endorsement\n    # carried by A counts AGAINST A. E = 0 on identical rating vectors.\n    E = float(np.sum(w * (b - a)))\n\n    # Numerically stable logistic (both branches exponentiate a\n    # non-positive argument, so no overflow is possible).\n    x = beta * E\n    if x >= 0.0:\n        sig = 1.0 / (1.0 + np.exp(-x))\n    else:\n        ex = np.exp(x)\n        sig = ex / (1.0 + ex)\n\n    # Graded polarity: with per-trial probability m the subject responds\n    # with the INVERTED (sparse-preferring) polarity, with probability\n    # (1 - m) with the conventional polarity. Continuous, no empty\n    # middle, no mirror cluster. UNCHANGED (Exps 7/8 anchors are exact).\n    p_core = m * sig + (1.0 - m) * (1.0 - sig)\n\n    # Independent lapse to uniform choice. Ties (E = 0) give exactly 50%.\n    p_a = (1.0 - epsilon) * p_core + 0.5 * epsilon\n\n    return np.array([p_a, 1.0 - p_a])",
+  "policy": "def policy(probs):\n    probs = np.asarray(probs, dtype=np.float64)\n    probs = probs / probs.sum()  # Guard against float drift.\n    return np.random.choice(len(probs), p=probs)",
+  "parameters": {
+    "gamma_u": "[0, 1]",
+    "log_beta": "[0.588, 1.792]",
+    "epsilon": "[0.03, 0.11]",
+    "m": "[0.74, 1.0]",
+    "delta": "[0.10, 0.13]",
+    "validities": "validities"
+  },
+  "rationale": "This is a single-knob minimal-diff edit on the accepted iter-8 base, implementing the iter-9 critic's diagnosis after its controlled comparisons finally completed the (window x delta) factorization. THE ONE CHANGE: delta trimmed from [0.13, 0.16] to [0.10, 0.13]; every other line — the shared anti-endorsement raw-weight kernel, the U[0, 2.2] habitual support, the symmetric +/-0.50 excursion window clipped to [0, 2.4], the gamma-only jitter (no beta noise), graded polarity, lapse, exact tie handling, and the policy — is re-emitted verbatim from the accepted base. WHY THIS CORNER: the loop's two best passes (iter 1, loss 0.0855; iter 8, loss 0.0678) bracket the untested configuration. The iter-9 rejection's controlled comparisons show: (A) window width, not delta, drives Exp 15 — iter 1 vs iter 9 (same +/-0.35 window, delta 0.115 vs 0.135) gave Exp 15 essentially unchanged (30.75 vs 30.13), while iter 8 vs iter 9 (window 0.50 vs 0.35 at near-identical delta) swung Exp 15 from 9.22 to 30.13. So the wide +/-0.50 window must be KEPT to preserve the accepted base's BF softening (Exp 15 = 9.22 vs real 12.92). (B) delta, not window width, drives Exp 13's sign — the same window flipped from +6.94 (iter 1, delta ~0.115) to -3.22 (iter 9, delta ~0.135) on a mean-delta rise of just ~0.02. So cutting delta back to the iter-1 band [0.10, 0.13] is the surgical lever to restore Exp 13's positive sign (real +6.03) that the accepted base lost (-7.73) via its higher [0.13, 0.16] band. The iter-9 pass's failures were caused by the critic's own iter-8 instruction to narrow the window (which destroyed the Exp 15 softening) combined with a mid delta (which kept Exp 13 negative); the wide-window + low-delta corner avoids both errors simultaneously. Expected landing zones from the parent configurations: Exp 15 ~ 9-16 (iter 8's wide-window machinery), Exp 13 positive ~[2, 9] (iter 1's delta band), Exp 14 ~ 0.15-0.19 (between iter 8's 0.146 and iter 1's 0.186), Exp 16 ~ 0.43-0.45 (both parents ~0.43-0.44), Exp 18 ~ -0.15 to -0.25 (iter 1's -0.149 and iter 8's -0.2745 bracket the real -0.2077), Exp 10 >= 0.88, Exps 2/5/7/8 within noise (fine at BOTH parent configurations). Per the critic's contingency ordering, if Exp 15 nonetheless balloons above ~20 the secondary lever is widening the window toward +/-0.55 (never raising delta), and if Exp 13 stays negative the tertiary lever is a mildly asymmetric window [gamma - 0.50, gamma + 0.40] — neither is applied now, one change at a time. Accepted shared-family limitations (nine passes of evidence): Exp 11 (every anti-endorsement raw-weight theory overshoots it; best reference pi_8 = 67.3 vs real 52.6), Exp 17 (between-subject variance 2.65, the noisiest diagnostic), the Exps 9/12 residual undertone, and the structural Exp 14 ceiling (~0.19-0.21 vs real 0.298 — every lever that could close it costs more elsewhere in the loss)."
+}
+```
+```
+
+## Usage
+
+```json
+{
+  "input_tokens": 86901,
+  "output_tokens": 3137,
+  "reasoning_tokens": 177,
+  "provider": "Sail Research"
+}
+```

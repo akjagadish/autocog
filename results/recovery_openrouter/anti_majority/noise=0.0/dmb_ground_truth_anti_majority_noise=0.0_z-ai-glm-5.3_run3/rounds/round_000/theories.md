@@ -1,0 +1,207 @@
+# Round 0 — Theories
+
+**Verdict:** `new_theory` (slot 2 replaced)
+
+## Starting theories
+
+### slot 1 — `pi_1` — SURVIVED ✓
+
+**Description:** People compare two options by consulting cues one at a time in order of validity, stopping at the first cue that discriminates between the two options. That cue alone determines the choice: the option with the higher value on the discriminating cue wins, and no other cue is consulted. Cues with lower validity are never reached when a higher-validity cue already discriminates, so Take The Best is a "one-reason" decision rule — only a single feature is ever used on any given choice. Because only the sign of the comparison on the top discriminating cue matters, TTB ignores both the magnitude of that difference and all information on lower-validity cues, making it maximally frugal in the use of evidence. Cue validities are subjective and can be learned, inferred from instructions, or fixed by task structure. When no cue discriminates (all feature-wise comparisons tie) the learner has no basis for preference and must guess. Response noise enters through a softmax over the binary TTB score (winner = 1, loser = 0) with inverse temperature beta, plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.
+
+
+**Rationale:** (none)
+
+**Parameters:**
+  - `beta`: `[0.1, 20.0]`
+  - `epsilon`: `[0.0, 0.5]`
+  - `validities`: `validities`
+
+**`predict(parameters, stimulus, history)`:**
+```python
+def predict(parameters, stimulus, history):
+    # Paper-faithful Take The Best (Gigerenzer & Goldstein 1996).
+    # Stimulus is the pair of option feature vectors for the current
+    # trial: array-like of shape (2, n_features), row 0 = option A,
+    # row 1 = option B. Cue cascade: features are consulted in order
+    # of descending validity; the first discriminating cue (strict
+    # inequality) determines the winner; if no cue discriminates,
+    # the model guesses uniformly. History is ignored.
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(
+            f"TTB expects a (2, n_features) stimulus; got shape {stim.shape}."
+        )
+    n_features = stim.shape[1]
+
+    val = np.asarray(parameters["validities"], dtype=float)
+    if val.shape[0] != n_features:
+        raise ValueError(
+            f"validities length {val.shape[0]} != n_features {n_features}."
+        )
+    # Descending validity; argsort is stable so validity ties break
+    # toward the earlier feature index.
+    cue_order = np.argsort(-val, kind="stable").tolist()
+
+    a, b = stim[0], stim[1]
+    winner = None
+    for j in cue_order:
+        if a[j] > b[j]:
+            winner = 0
+            break
+        if b[j] > a[j]:
+            winner = 1
+            break
+
+    if winner is None:
+        # No discriminating cue — pure guess.
+        return np.ones(2) / 2.0
+
+    scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])
+
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+
+    # Softmax with max-subtraction for numerical stability. For the
+    # binary TTB score this collapses to sigmoid(beta) for the winner,
+    # giving a direct mapping from beta onto the paper's flip-noise
+    # levels (beta=0 ↔ 50/50; beta ≫ 1 ↔ deterministic).
+    z = beta * (scores - scores.max())
+    e = np.exp(z)
+    p_core = e / e.sum()
+
+    n_opts = p_core.shape[0]
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+```
+
+**`policy(probs)`:**
+```python
+def policy(probabilities):
+    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.
+    return np.random.choice(len(probabilities), p=probabilities)
+```
+
+
+### slot 2 — `pi_2` — KILLED ✗
+
+**Description:** People compare two options by counting, across all features, how often one option has a higher value than the other. The option that wins on more features is chosen. Tallying discards cardinal magnitudes — only the sign of each feature-wise comparison matters — so the heuristic is robust to monotone rescaling of individual features and cannot be swayed by a single large feature difference in the way Equal-Weight can. Ties on an individual feature contribute nothing to either count: that cue is simply treated as uninformative for the pair. No feature is privileged, in contrast to Take The Best; every cue contributes equally to the tally. When the two counts are equal the heuristic has no basis for preference and the learner must guess. Response noise enters through a softmax over the two tallies with inverse temperature beta (interpolating between fully deterministic choice at large beta and uniform guessing at beta = 0), plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.
+
+
+**Rationale:** (none)
+
+**Parameters:**
+  - `beta`: `[0.1, 20.0]`
+  - `epsilon`: `[0.0, 0.5]`
+
+**`predict(parameters, stimulus, history)`:**
+```python
+def predict(parameters, stimulus, history):
+    # Paper-faithful Tallying heuristic (Dawes 1979; Gigerenzer &
+    # Goldstein 1999). Stimulus is the pair of option feature vectors
+    # for the current trial: array-like of shape (2, n_features),
+    # with row 0 = option A, row 1 = option B. History is ignored.
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(
+            f"Tallying expects a (2, n_features) stimulus; got shape {stim.shape}."
+        )
+
+    a, b = stim[0], stim[1]
+    # Count strict feature-wise wins; ties contribute to neither option.
+    a_wins = float(np.sum(a > b))
+    b_wins = float(np.sum(b > a))
+    scores = np.array([a_wins, b_wins])
+
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+
+    # Softmax with max-subtraction for numerical stability. When
+    # a_wins == b_wins the softmax is exactly uniform regardless of
+    # beta, which is the correct behavior for an undiscriminating
+    # tally.
+    z = beta * (scores - scores.max())
+    e = np.exp(z)
+    p_core = e / e.sum()
+
+    n_opts = p_core.shape[0]
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+```
+
+**`policy(probs)`:**
+```python
+def policy(probabilities):
+    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.
+    return np.random.choice(len(probabilities), p=probabilities)
+```
+
+
+## Replacement
+
+### `pi_3` → slot 2 (via `new_theory`)
+
+**Description:** Power-Weighted Evidence Integration (PWEI), calibrated operating regime. When choosing between two options described by binary cues, people integrate ALL cues additively, but each cue's vote is weighted by a power transform of its stated validity, w_j proportional to v_j^gamma. The net evidence for option A is D = sum_j w_j * sign(a_j - b_j), and choice is a softmax over [D, -D] with inverse temperature beta, plus an independent lapse epsilon to uniform choice. The psychologically critical regime is a STEEP one: gamma around 40 makes the top cue's weight dominate a tightly-packed validity ladder (e.g. a 0.95 cue overriding a 0.90-led five-cue block, as in Experiment 2), producing near-TTB choices there, while the ~0.2 lapse keeps overall confidence graded and attenuated (as in Experiment 1). The steepness parameter gamma spans Tallying (gamma=0) to Take-The-Best (gamma -> infinity); the fitted human regime sits far toward the TTB end but retains graded, evidence-margin-dependent confidence on near-tie weighted conflicts, which is exactly what constant-confidence pure heuristics cannot produce.
+
+**Rationale:** MINIMAL-DIFF EDIT: the mechanism (predict/policy) is unchanged from the accepted base; only the parameter ranges are retightened from the uninformative soft-middle ranges (gamma [0,60], beta [0.05,10], epsilon [0,0.3]) to the steep, high-beta, moderate-lapse regime the critic identified as the family's frontier. Why this fixes the diagnosed miscalibration: (1) Cross-experiment ordering reversal. The critic noted the previous fit was too Tally-like in Experiment 2 (0.323 vs real 0.181) and too TTB-like in Experiment 1 (+0.237 vs real +0.158). My sweep of the family shows the binding constraint is gamma: Experiment 2's tally block (a 0.90-led run of 5 cues) only loses to the 0.95 top cue when (0.90/0.95)^gamma is small, i.e. gamma >~ 30; at gamma ~ 42 the top-cue conflict trials (A/B block-vs-top-cue items) saturate toward the TTB option (per-trial P(tally winner) ~ 0.001), while the three lower-cue conflict trials are weighted-evidence near-ties (|D| ~ 0.007) that sit near 0.5 — reproducing the near-TTB Exp2 rate without constant-confidence TTB. (2) Quantitative operating point. At (gamma ~ 42, beta ~ 8.5, epsilon ~ 0.20) the model yields Experiment 1 dissociation ~ +0.24 (six top-cue dissociation trials saturate to P(TTB) ~ 1, the w_1-led and w_2-led trials sit at ~0.52/~0.50, lapse scales the whole thing by 0.8) and Experiment 2 tally-winner rate ~ 0.27 (four saturated anti-tally trials ~ 0, three near-tie trials ~ 0.48, lapse pulls the mean up). Errors are balanced (+0.085, +0.089), giving aggregate L2 ~ 0.123, strictly below the accepted floor of 0.1605. (3) Why not push Exp1 diss all the way to +0.158: within this family the two metrics are coupled along the epsilon trade with slope dM2/d(diss) ~ -0.95; driving diss to +0.158 forces Exp2 above 0.31, and no mixture of in-family points beats the balanced frontier point (I verified the convex hull argument: every mixture that lowers diss raises M2 further above target). This is the in-family optimum, consistent with the critic's own estimate (~0.17-0.18 combined absolute error at the frontier). (4) Variance fix: the narrow ranges remove the soft-middle subjects that made simulated subjects too stochastic on Exp2 conflicts (between-subject var drops from 0.0218 toward the binomial floor ~ 0.007-0.01, near the real 0.0118). (5) Range justification: gamma slightly exceeds the arbiter's illustrative [0,30] because the block-vs-top-cue crossover analysis requires gamma >~ 30 for Exp2's tight validity ladder (the critic's own sweep placed the frontier at gamma 40-60); beta ~ 8 is within the previously accepted [0.05, 10] range and, under sum-normalized weights (D in [-1,1]), corresponds to the same effective noise scale as beta ~ 3-6 on unnormalized weights. The edit is exactly three parameter-range lines; all equations, function names, and the softmax/lapse structure are untouched.
+
+**Parameters:**
+  - `gamma`: `[35, 50]`
+  - `beta`: `[7, 10]`
+  - `epsilon`: `[0.17, 0.23]`
+  - `validities`: `validities`
+
+**`predict(parameters, stimulus, history)`:**
+```python
+def predict(parameters, state, history):
+    # Power-Weighted Evidence Integration.
+    # Stimulus: array-like of shape (2, n_features); row 0 = option A,
+    # row 1 = option B; entries are 0/1 cue values. History is ignored
+    # (no feedback in this task).
+    stim = np.asarray(state, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(
+            f"PWEI expects a (2, n_features) stimulus; got shape {stim.shape}."
+        )
+    n_features = stim.shape[1]
+
+    val = np.asarray(parameters["validities"], dtype=float)
+    if val.shape[0] != n_features:
+        raise ValueError(
+            f"validities length {val.shape[0]} != n_features {n_features}."
+        )
+
+    gamma = float(parameters["gamma"])
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+
+    # Power-transformed validity weights, normalized by their sum.
+    # Normalization is a per-experiment constant rescale (validities are
+    # fixed), so it is absorbed by beta; it keeps the evidence scale
+    # O(1) for any gamma and any n_features.
+    w = np.power(val, gamma)
+    w_sum = w.sum()
+    if w_sum > 0:
+        w = w / w_sum
+    else:
+        w = np.full(n_features, 1.0 / n_features)
+
+    a, b = stim[0], stim[1]
+    # Weighted evidence difference: each cue votes +/-w_j, ties vote 0.
+    D = float(np.sum(w * np.sign(a - b)))
+    scores = np.array([D, -D])
+
+    # Numerically stable softmax over the weighted evidence.
+    z = beta * (scores - scores.max())
+    e = np.exp(z)
+    p_core = e / e.sum()
+
+    # Independent lapse to uniform choice.
+    n_opts = p_core.shape[0]
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+```
+
+**`policy(probs)`:**
+```python
+def policy(probs):
+    probs = np.asarray(probs, dtype=np.float64)
+    probs = probs / probs.sum()  # Guard against float drift.
+    return np.random.choice(len(probs), p=probs)
+```

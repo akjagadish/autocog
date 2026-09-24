@@ -1,0 +1,1505 @@
+# feedback_iter_09
+
+## System Prompt
+
+You are a renowned cognitive scientist critiquing a freshly proposed candidate theory and model in the Decision Making (Binary Features) domain.
+
+The candidate has been simulated on every previously run experiment. For each experiment you are shown the design, the metric, the value the metric takes on real data, and the value it takes on the candidate's simulated data.
+
+Each metric value below is shown as `point_estimate (var=X)`, where `point_estimate` is `metric(data)` evaluated on the full pooled dataset and `var` is the population (between-subject) variance of the same metric re-applied per `subject_id`. The point estimate is the canonical scalar; `var` reports how consistent that estimate is across subjects (lower = more consistent). `var=n/a` means the metric could not be applied to a single-subject slice.
+
+The goal of the feedback is to SURFACE theories that are EXPERIMENT-INVARIANT: that is,theories that explain data across multiple experiments. 
+Your task is to determine whether the candidate captures the human/real behavior well enough across these experiments. Return a verdict:
+  * "continue"   — the candidate is good enough; carry on.
+  * "regenerate" — the candidate fails to capture the empirical pattern; the proposing agent must produce a new candidate, taking your rationale into account.
+
+Justify the verdict with a concrete diagnosis (which experiments fail, in what direction, what mechanism is likely missing or miscalibrated).
+
+## SCOPE OF YOUR CRITIQUE — STAY INSIDE THE ARBITER'S MECHANISM FAMILY
+When an "## ARBITER RECOMMENDATION" block is present below, the proposer was explicitly instructed to implement the mechanism family the arbiter prescribed. Your job is to grade FIT QUALITY *within that prescribed family*, not to relitigate which family should be used — that is the arbiter's call, made one level above this loop.
+
+Concretely:
+  * If the candidate misses the data, you may push for MINOR ADJUSTMENTS that keep the prescribed mechanism intact: tightening / widening parameter ranges, adding a temperature, swapping a normalization scheme, fixing a softmax / distance metric, re-balancing attention weights, fixing a learning-rate sign, correcting a bug in the gating or recurrence, etc.
+  * You MUST NOT recommend switching to a different mechanism family. Such a switch is the arbiter's prerogative; recommending it here will mislead the proposer into oscillating between families across iterations.
+  * Also grade FAITHFULNESS to the recommendation explicitly: if the candidate has clearly drifted into a different family than the one prescribed, say so in the rationale and ask for a return to the prescribed family — again, with minor adjustments, not a re-design.
+
+## ACCEPT GATE — HOW THE LOOP DECIDES WHAT TO BUILD ON NEXT
+This propose-loop has a programmatic accept gate. After every iteration the candidate's `aggregate_loss` is compared against the running-best loss (`accepted_loss`):
+  * `loss < accepted_loss` → ACCEPTED. The candidate becomes the new running-best base; the next iteration's proposer will build on THIS candidate.
+  * `loss >= accepted_loss` → REJECTED. The base is unchanged; the next iteration's proposer will build on the SAME `accepted` candidate again, with your new feedback on top. Rejected candidates are discarded — the loop guarantees the base never regresses, so you do NOT need to ask the proposer to "revert" anything; that already happens for free.
+
+Two consequences for your verdict:
+  * If the candidate you are grading was REJECTED by the gate, returning `"continue"` is silently downgraded to `"regenerate"` (returning a worse candidate would defeat the gate). Spend your rationale on a NEW direction the proposer should try on top of the unchanged accepted base, not on defending the rejected attempt.
+  * If the candidate was ACCEPTED, you can return `"continue"` to stop the loop and ship this candidate, or `"regenerate"` to keep tuning further.
+
+## LEARN FROM YOUR OWN PAST ADVICE
+When a "## YOUR PRIOR CRITIQUES" block is present below, each prior iteration ends with an "Outcome of your advice" line that says whether the next candidate the proposer produced was ACCEPTED (your advice helped — its loss strictly beat the running best) or REJECTED (your advice didn't help — the proposer discarded the result and reset to the previous accepted base). This is the loop's ground-truth signal on whether *your own previous critique was good*. Use it explicitly:
+  * If a previous piece of advice was ACCEPTED, it is OK to repeat / extend it. Reinforce in the same direction.
+  * If a previous piece of advice was REJECTED, do NOT repeat the same recommendation; in your new rationale, briefly acknowledge that the previous push in that direction was rejected by the gate and try a different in-family knob (or a smaller step in the same direction) instead.
+  * If you find yourself oscillating (e.g. iter 1 said "increase α", iter 2 said "decrease α", iter 3 about to say "increase α" again), STOP and recommend a value between the two flanking iterations instead.
+  * The "## LOSS TRAJECTORY" block at the top of the user prompt summarises the same information at the loop level — consult it before issuing a new regenerate-with-direction recommendation.
+
+
+## User Prompt
+
+## EXPERIMENTAL DOMAIN
+Subjects repeatedly choose between two fictitious products, A and B. Each option is described by a vector of binary expert ratings (each 0 or 1). Every experiment fixes its own feature count (via `validities` length) and per-expert validities; both are LLM-proposed. The validities are communicated to the subject in the instructions. Subjects pick whichever product they believe is of higher quality. There is no trial-by-trial correctness feedback.
+
+## ARBITER RECOMMENDATION (mechanism family the proposer was told to implement)
+The arbiter labelled this round's two theories in its recommendation as follows:
+- THEORY 1 = `pi_8`
+- THEORY 2 = `pi_9`
+- The recommendation below acts on THEORY 1 (= `pi_8`).
+
+Replace pi_8 with a new theory, e.g. 'Gated validity-gap compensation' (GVC). Keep the successful low-cue core from pi_9: below-median cues receive median/MAD deviance-anchored weight, with lone-diagnostic-cue amplification and count-dependent attenuation for multiple simultaneously diagnostic low cues. Change the high-cue side qualitatively: drop the rank-based high-cue baseline entirely. Instead give at/above-median cues only a small baseline plus a bonus proportional to a validity-gap score, e.g. (validity - median)/scale, and gate that bonus by a low-cue configuration factor. The gate should be near zero when a lone below-median cue is diagnostic (preserving Exp1 and Exp14 lone-low following), small when low cues have very large deviance (preserving Exp2, 7, 10, 11), and larger when below-median cues form a homogeneous bloc of three or more (allowing the high-cue influence seen in Exp4, 6, and 13). Conflict between low and high evidence should further damp the high-cue bonus. Finally, use a fixed-temperature softmax with no lapse floor, since Exp15 estimates lapse at 0.0. This differs from pi_8 by removing the rank-based high-cue baseline and the entropy/conflict temperature machinery, and differs from pi_9 by replacing its rank-ordered high-cue bonus with a validity-gap bonus gated by low-bloc homogeneity/deviance, which should also reduce the over-predicted high-cue contrast in Exp8 while retaining high-cue effects where validity gaps are large.
+
+
+## CANDIDATE THEORY
+Conflict-gated validity-gap compensation with oppositional lone amplification and homogeneity-sensitive low-bloc attenuation (GVC-hom). People anchor each advertised expert validity to the ensemble median. Below-median cues earn decision weight through a median/MAD-normalized deviance score. A single diagnostically deviant low cue is strongly amplified, with amplification increasing in the number of opposed at-or-above-median cues. When multiple below-median cues are diagnostic, a homogeneous low-deviant group is attenuated by cue count, with that count-based attenuation strengthened when the group is internally near-identical. At-or-above-median cues receive no default weight; their validity-gap bonus is licensed only by a very homogeneous, sufficiently deviant bloc of three or more simultaneously diagnostic below-median cues, and is sharply damped by low-versus-high conflict. Choice is a fixed-temperature softmax with no lapse floor.
+
+`predict(parameters, state, history) -> np.ndarray`:
+import numpy as np
+
+
+def predict(parameters, state, history):
+    stim = np.asarray(state, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError('GVC expects a (2, n_features) stimulus.')
+
+    validities = np.asarray(parameters['validities'], dtype=float).reshape(-1)
+    n_feat = validities.shape[0]
+    if n_feat != stim.shape[1]:
+        raise ValueError('validities length must match n_features.')
+
+    c = float(parameters['c'])
+    median = float(np.median(validities))
+    abs_dev = np.abs(validities - median)
+    mad = float(np.median(abs_dev))
+    scale = mad + c
+    if scale <= 1e-12:
+        scale = 1e-12
+
+    dev = np.maximum(0.0, median - validities) / scale
+    below = validities < median - 1e-12
+    at_or_above = ~below
+    gap = np.maximum(0.0, validities - median) / scale
+
+    w0 = float(parameters['w0'])
+    kappa = float(parameters['kappa'])
+    gamma = float(parameters['gamma'])
+    lam = float(parameters['lambda'])
+    sigma = float(parameters['sigma'])
+    phi = float(parameters['phi'])
+    nu = float(parameters['nu'])
+    opp_cap = float(parameters['opp_cap'])
+    focal_ratio = float(parameters['focal_ratio'])
+    eta_hom_low = float(parameters['eta_hom_low'])
+    H_spread = float(parameters['H_spread'])
+
+    raw = np.zeros(n_feat, dtype=float)
+    dev_bounded = np.minimum(dev, 100.0)
+    raw[below] = w0 + kappa * np.power(dev_bounded[below], gamma)
+
+    diff = stim[0] - stim[1]
+    active_below = below & (np.abs(diff) > 1e-12)
+    n_active = int(np.count_nonzero(active_below))
+
+    def lone_amplification(idx):
+        base_amp = 1.0 + lam * np.tanh(float(dev[idx]) / sigma)
+        opp = at_or_above & (np.abs(diff) > 1e-12) & (diff * diff[idx] < 0.0)
+        n_opp = int(np.count_nonzero(opp))
+        return base_amp * (1.0 + nu * min(float(n_opp), opp_cap))
+
+    if n_active == 1:
+        focal = int(np.flatnonzero(active_below)[0])
+        raw[focal] = raw[focal] * lone_amplification(focal)
+    elif n_active >= 2:
+        att = 1.0 / (1.0 + phi * (n_active - 1))
+        active_devs = dev[active_below]
+        i_max = int(np.argmax(active_devs))
+        max_dev = float(active_devs[i_max])
+        med_dev = float(np.median(active_devs))
+        if med_dev > 1e-12 and max_dev > focal_ratio * med_dev:
+            focal = int(np.flatnonzero(active_below)[i_max])
+            others = below.copy()
+            others[focal] = False
+            raw[others] = raw[others] * att
+            raw[focal] = raw[focal] * lone_amplification(focal)
+        else:
+            att_eff = att
+            if n_active >= 3:
+                low_vals = validities[active_below]
+                spread_norm_low = float(np.std(low_vals)) / scale
+                hom_low = 1.0 / (1.0 + (spread_norm_low / H_spread) ** 12.0)
+                att_eff = 1.0 / (1.0 + phi * (1.0 + eta_hom_low * hom_low) * (n_active - 1))
+            raw[below] = raw[below] * att_eff
+
+    gate_base = float(parameters['gate_base'])
+    lone_floor = float(parameters['lone_floor'])
+    D_half = float(parameters['D_half'])
+    q_dev = float(parameters['q_dev'])
+    b_boost = float(parameters['b_boost'])
+    D_boost = float(parameters['D_boost'])
+    K = float(parameters['K'])
+
+    gate = gate_base
+    if n_active == 1:
+        gate *= lone_floor
+
+    if n_active > 0:
+        active_devs = dev[active_below]
+        dmax = float(np.max(active_devs))
+    else:
+        dmax = 0.0
+
+    if dmax > 1e-12:
+        gate *= 1.0 / (1.0 + (dmax / D_half) ** q_dev)
+
+    if n_active >= 3:
+        low_vals = validities[active_below]
+        spread = float(np.std(low_vals))
+        spread_norm = spread / scale
+        hom = 1.0 / (1.0 + (spread_norm / H_spread) ** 12.0)
+        mean_dev = float(np.mean(dev[active_below]))
+        act = float(np.tanh(mean_dev / D_boost))
+        gate += b_boost * hom * act
+
+    w_hi0 = float(parameters['w_hi0'])
+    rho = float(parameters['rho'])
+    alpha = float(parameters['alpha'])
+
+    gap_bounded = np.minimum(gap, 100.0)
+    hi_pre = np.zeros(n_feat, dtype=float)
+    if np.any(at_or_above):
+        hi_pre[at_or_above] = w_hi0 + rho * np.power(gap_bounded[at_or_above], alpha)
+
+    E_low = float(np.dot(raw, diff))
+    E_high_pre = float(np.dot(hi_pre, diff))
+
+    if E_low * E_high_pre < 0.0:
+        conflict = 2.0 * min(abs(E_low), abs(E_high_pre)) / (abs(E_low) + abs(E_high_pre) + 1e-12)
+        gate *= 1.0 / (1.0 + (conflict / K) ** 2.0)
+
+    gate = float(np.maximum(gate, 0.0))
+
+    raw_high = np.zeros(n_feat, dtype=float)
+    if np.any(at_or_above):
+        raw_high[at_or_above] = w_hi0 + rho * np.power(gap_bounded[at_or_above], alpha) * gate
+
+    raw_all = raw + raw_high
+    total = float(np.sum(raw_all))
+    if total <= 0.0:
+        weights = np.ones(n_feat, dtype=float) / float(max(n_feat, 1))
+    else:
+        weights = raw_all / total
+
+    evidence_A = float(np.dot(weights, diff))
+
+    beta = float(parameters['beta'])
+    logits = np.array([evidence_A, 0.0], dtype=float)
+    z = beta * (logits - float(np.max(logits)))
+    e = np.exp(z)
+    probs = e / np.sum(e)
+    return probs
+
+
+`policy(probs) -> int`:
+import numpy as np
+
+
+def policy(probs):
+    probs = np.asarray(probs, dtype=float)
+    probs = probs / probs.sum()
+    return int(np.random.choice(probs.shape[0], p=probs))
+
+
+`parameters`:
+- c: [0.008, 0.012]
+- w0: [0.007, 0.012]
+- kappa: [1.9, 2.3]
+- gamma: [1.25, 1.45]
+- lambda: [4.5, 5.5]
+- sigma: [0.10, 0.18]
+- phi: [0.55, 0.75]
+- nu: [0.15, 0.25]
+- opp_cap: {5}
+- focal_ratio: [3.0, 4.0]
+- eta_hom_low: [0.3, 0.8]
+- gate_base: {0.0}
+- lone_floor: [0.00, 0.03]
+- D_half: [0.35, 0.55]
+- q_dev: {2}
+- b_boost: [0.02, 0.08]
+- D_boost: [0.6, 1.2]
+- H_spread: [0.005, 0.02]
+- K: [0.30, 0.50]
+- w_hi0: {0.0}
+- rho: [0.08, 0.14]
+- alpha: [1.1, 1.8]
+- beta: [1.4, 1.8]
+- validities: validities
+
+`rationale`:
+Minimal in-family edit on top of the accepted GVC-strict base. The only mechanism changed is the low-cue count attenuation in the non-focal multi-active-low branch. When three or more active below-median cues are diagnostic and the most extreme low cue is not a clear focal outlier, the effective attenuation is now phi * (1 + eta_hom_low * hom_low), where hom_low is the same steep internal-similarity factor already used for high-cue licensing. This directly reduces the decision weight of near-identical below-median blocs, which is the diagnosed source of the Exp2 low-cue dominance and the Exp6 over-predicted block contrast. All previously accepted parameter bands, the hard-zero high-cue default, the no-lapse fixed-temperature softmax, conflict damping, lone-cue amplification, and the homogeneous high-cue license are preserved. Exp15, Exp16, Exp5, Exp12, and no-active-low Exp14 should be largely unaffected because lone-cue trials receive no homogeneity-dependent attenuation and this edit does not reopen gate_base or high-cue weight.
+
+## LOSS TRAJECTORY (this propose-loop)
+Aggregate loss across iterations of THIS propose-loop (lower = better, 0 = perfect, `+inf` = unscorable). The ACCEPTED / REJECTED tag is the loop's programmatic accept-gate decision: `loss < accepted_loss` -> ACCEPTED (becomes new base), else REJECTED (base unchanged). Use this together with the per-experiment values below to grade fit-quality AND your own past advice (see `## YOUR PRIOR CRITIQUES` below).
+
+- iter 1: loss=0.1932 -> ACCEPTED
+- iter 2: loss=0.1021 -> ACCEPTED
+- iter 3: loss=0.0786 -> ACCEPTED
+- iter 4: loss=0.0631 -> ACCEPTED
+- iter 5: loss=0.0580 -> ACCEPTED
+- iter 6: loss=0.0632 -> REJECTED
+- iter 7: loss=0.0678 -> REJECTED
+- iter 8: loss=0.0625 -> REJECTED
+- iter 9: loss=0.1249 -> REJECTED
+- iter 10 (current candidate you are grading): loss=0.0740 -> REJECTED
+Running-best (last accepted) base: iter 5 at loss=0.0580.
+
+## EXPERIMENTAL RESULTS (candidate vs real, per experiment)
+### Experiment 1
+**Design**
+  A=[1, 1, 1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 0, 1, 1, 1]  B=[0, 0, 0, 0, 1, 0, 0, 0]
+  A=[1, 1, 0, 1, 1, 1, 0, 1]  B=[0, 0, 1, 0, 0, 0, 1, 0]
+  A=[1, 0, 1, 1, 1, 0, 1, 0]  B=[0, 1, 0, 0, 0, 1, 0, 1]
+  A=[1, 1, 1, 0, 0, 1, 0, 0]  B=[0, 0, 0, 1, 1, 0, 1, 1]
+  A=[1, 0, 0, 0, 1, 0, 0, 1]  B=[0, 1, 1, 1, 0, 1, 1, 0]
+  A=[1, 0, 1, 0, 0, 0, 0, 0]  B=[0, 1, 0, 1, 1, 1, 1, 1]
+  A=[1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1, 1, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1, 1, 1]
+  A=[0, 0, 0, 0, 1, 0, 0, 0]  B=[1, 1, 1, 1, 0, 1, 1, 1]
+  A=[0, 0, 1, 0, 0, 0, 1, 0]  B=[1, 1, 0, 1, 1, 1, 0, 1]
+  A=[0, 1, 0, 0, 0, 1, 0, 1]  B=[1, 0, 1, 1, 1, 0, 1, 0]
+  A=[0, 0, 0, 1, 1, 0, 1, 1]  B=[1, 1, 1, 0, 0, 1, 0, 0]
+  A=[0, 1, 1, 1, 0, 1, 1, 0]  B=[1, 0, 0, 0, 1, 0, 0, 1]
+  A=[0, 1, 0, 1, 1, 1, 1, 1]  B=[1, 0, 1, 0, 0, 0, 0, 0]
+  A=[0, 1, 1, 1, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0, 0, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    if data.empty:
+        return 0.0
+
+    def subject_slope(sdf):
+        a = np.array(sdf['option_a_ratings'].tolist(), dtype=float)
+        b = np.array(sdf['option_b_ratings'].tolist(), dtype=float)
+        resp = sdf['response'].to_numpy(dtype=float)
+        n = a.shape[0]
+
+        top = np.full(n, -1, dtype=int)
+        top[a[:, 0] > b[:, 0]] = 0
+        top[b[:, 0] > a[:, 0]] = 1
+        valid = top >= 0
+
+        opp_wins = np.zeros(n, dtype=int)
+        for j in range(1, a.shape[1]):
+            opp_wins[(top == 0) & (b[:, j] > a[:, j])] += 1
+            opp_wins[(top == 1) & (a[:, j] > b[:, j])] += 1
+
+        choose_top = np.where(resp == top, 1.0, 0.0)
+
+        x = opp_wins[valid].astype(float)
+        y = choose_top[valid]
+        if x.size < 2 or np.ptp(x) == 0:
+            return 0.0
+        return float(np.polyfit(x, y, 1)[0])
+
+    slopes = data.groupby('subject_id', sort=False).apply(subject_slope)
+    vals = np.atleast_1d(np.asarray(slopes, dtype=float))
+    if vals.size == 0:
+        return 0.0
+    return float(np.mean(vals))
+```
+
+**Observed (real) value:** -0.0959 (var=0.0010)
+**Candidate trajectory (this loop):**
+  - iter 1: -0.1206 (var=0.0003) (Δ vs real -0.0247)
+  - iter 2: -0.1176 (var=0.0003) (Δ vs real -0.0217)
+  - iter 3: -0.1195 (var=0.0002) (Δ vs real -0.0236)
+  - iter 4: -0.1002 (var=0.0002) (Δ vs real -0.0043)
+  - iter 5: -0.0981 (var=0.0002) (Δ vs real -0.0022)
+  - iter 6: -0.1001 (var=0.0004) (Δ vs real -0.0041)
+  - iter 7: -0.0996 (var=0.0004) (Δ vs real -0.0037)
+  - iter 8: -0.1123 (var=0.0003) (Δ vs real -0.0164)
+  - iter 9: -0.1114 (var=0.0003) (Δ vs real -0.0155)
+  - iter 10 (current): -0.0979 (var=0.0004) (Δ vs real -0.0019)
+**Other theories' values on this metric (for reference):**
+- pi_1: 0.0006 (var=0.0002)
+- pi_2: -0.1360 (var=0.0009)
+- pi_3: -0.1493 (var=0.0006)
+- pi_4: -0.1505 (var=0.0003)
+- pi_5: -0.1025 (var=0.0003)
+- pi_6: -0.1359 (var=0.0002)
+- pi_7: -0.1246 (var=0.0002)
+- pi_8: -0.1140 (var=0.0002)
+- pi_9: -0.1230 (var=0.0002)
+
+### Experiment 2
+**Design**
+  A=[1, 0, 1, 1, 1, 1]  B=[0, 1, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 1, 1]  B=[0, 1, 1, 1, 0, 0]
+  A=[1, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1, 1]
+  A=[1, 1, 0, 1, 1, 1]  B=[1, 0, 1, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0]  B=[1, 0, 1, 1, 1, 1]
+  A=[1, 1, 1, 0, 1, 1]  B=[1, 1, 0, 1, 0, 0]
+  A=[1, 1, 1, 0, 0, 1]  B=[1, 1, 0, 1, 1, 0]
+  A=[1, 1, 1, 0, 0, 0]  B=[1, 1, 0, 1, 1, 1]
+  A=[0, 1, 0, 0, 0, 0]  B=[1, 0, 1, 1, 1, 1]
+  A=[0, 1, 1, 1, 0, 0]  B=[1, 0, 0, 0, 1, 1]
+  A=[0, 1, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0, 0]
+  A=[1, 0, 1, 0, 0, 0]  B=[1, 1, 0, 1, 1, 1]
+  A=[1, 0, 1, 1, 1, 1]  B=[1, 1, 0, 0, 0, 0]
+  A=[1, 1, 0, 1, 0, 0]  B=[1, 1, 1, 0, 1, 1]
+  A=[1, 1, 0, 1, 1, 0]  B=[1, 1, 1, 0, 0, 1]
+  A=[1, 1, 0, 1, 1, 1]  B=[1, 1, 1, 0, 0, 0]
+
+**Metric**
+```python
+import numpy as np
+import pandas as pd
+
+def metric(data: pd.DataFrame) -> float:
+    validities = np.array([0.9, 0.8, 0.7, 0.6, 0.6, 0.6], dtype=float)
+    cue_order = np.argsort(-validities, kind='stable')
+
+    y = data['response'].astype(float).to_numpy()
+    dirs = np.zeros(len(data), dtype=float)
+    margins = np.zeros(len(data), dtype=float)
+
+    for i, (_, row) in enumerate(data.iterrows()):
+        a = np.asarray(row['option_a_ratings'], dtype=int)
+        b = np.asarray(row['option_b_ratings'], dtype=int)
+
+        margins[i] = float(np.sum(a > b) - np.sum(b > a))
+
+        direction = 0.0
+        for j in cue_order:
+            if a[j] > b[j]:
+                direction = 1.0
+                break
+            if b[j] > a[j]:
+                direction = -1.0
+                break
+        dirs[i] = direction
+
+    d_pos = dirs == 1.0
+    d_neg = dirs == -1.0
+    m_pos = margins > 0.0
+    m_neg = margins < 0.0
+
+    directional_contrast = y[d_neg].mean() - y[d_pos].mean()
+    margin_contrast = y[m_neg].mean() - y[m_pos].mean()
+
+    return float(directional_contrast - margin_contrast)
+
+```
+
+**Observed (real) value:** -0.8592 (var=0.0589)
+**Candidate trajectory (this loop):**
+  - iter 1: -0.6811 (var=0.0146) (Δ vs real +0.1781)
+  - iter 2: -0.6896 (var=0.0150) (Δ vs real +0.1696)
+  - iter 3: -0.7440 (var=0.0117) (Δ vs real +0.1151)
+  - iter 4: -0.6431 (var=0.0136) (Δ vs real +0.2161)
+  - iter 5: -0.6440 (var=0.0112) (Δ vs real +0.2151)
+  - iter 6: -0.6239 (var=0.0101) (Δ vs real +0.2353)
+  - iter 7: -0.6271 (var=0.0105) (Δ vs real +0.2321)
+  - iter 8: -0.7064 (var=0.0133) (Δ vs real +0.1528)
+  - iter 9: -0.6946 (var=0.0130) (Δ vs real +0.1646)
+  - iter 10 (current): -0.5856 (var=0.0205) (Δ vs real +0.2736)
+**Other theories' values on this metric (for reference):**
+- pi_2: -0.7597 (var=0.0423)
+- pi_1: 0.7279 (var=0.0420)
+- pi_3: -0.6946 (var=0.0665)
+- pi_4: -0.8321 (var=0.0089)
+- pi_5: -0.7328 (var=0.0080)
+- pi_6: -0.8021 (var=0.0109)
+- pi_7: -0.7272 (var=0.0075)
+- pi_8: -0.7515 (var=0.0116)
+- pi_9: -0.7776 (var=0.0100)
+
+### Experiment 3
+**Design**
+  A=[0, 0, 0, 0, 0, 1]  B=[1, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 1, 0]  B=[1, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 1, 0, 0]  B=[1, 0, 0, 0, 0, 0]
+  A=[0, 0, 1, 0, 0, 0]  B=[1, 0, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0]  B=[0, 0, 1, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0]  B=[0, 0, 0, 1, 0, 0]
+  A=[1, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1, 0]
+  A=[1, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 1]
+  A=[0, 0, 1, 1, 1, 1]  B=[1, 1, 0, 0, 0, 0]
+  A=[0, 1, 0, 1, 1, 1]  B=[1, 0, 1, 0, 0, 0]
+  A=[1, 0, 0, 1, 1, 1]  B=[0, 1, 1, 0, 0, 0]
+  A=[1, 0, 1, 0, 1, 1]  B=[0, 1, 0, 1, 0, 0]
+  A=[1, 1, 0, 0, 1, 1]  B=[0, 0, 1, 1, 0, 0]
+  A=[1, 1, 0, 1, 1, 0]  B=[0, 0, 1, 0, 0, 1]
+  A=[1, 1, 1, 0, 1, 0]  B=[0, 0, 0, 1, 0, 1]
+  A=[1, 1, 1, 1, 0, 0]  B=[0, 0, 0, 0, 1, 1]
+
+**Metric**
+```python
+def metric(data):
+    pairs_ordered = [
+        (0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0),
+        (0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0),
+        (0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0),
+        (0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0),
+        (1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0),
+        (1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0),
+        (1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0),
+        (1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1),
+        (0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0),
+        (0, 1, 0, 1, 1, 1, 1, 0, 1, 0, 0, 0),
+        (1, 0, 0, 1, 1, 1, 0, 1, 1, 0, 0, 0),
+        (1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 0, 0),
+        (1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0),
+        (1, 1, 0, 1, 1, 0, 0, 0, 1, 0, 0, 1),
+        (1, 1, 1, 0, 1, 0, 0, 0, 0, 1, 0, 1),
+        (1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1)
+    ]
+    order = {p: i for i, p in enumerate(pairs_ordered)}
+
+    def pair_key(row):
+        return tuple(list(row['option_a_ratings']) + list(row['option_b_ratings']))
+
+    keys = data.apply(pair_key, axis=1)
+    pos = keys.map(order)
+    if pos.isna().any():
+        return 0.0
+
+    rank = (pos % 8).to_numpy(dtype=float) + 1.0
+    chose_a = (data['response'].to_numpy() == 0).astype(float)
+
+    subj_corrs = []
+    for sid in data['subject_id'].unique():
+        mask = data['subject_id'].to_numpy() == sid
+        if np.std(rank[mask]) == 0.0 or np.std(chose_a[mask]) == 0.0:
+            subj_corrs.append(0.0)
+            continue
+        r = float(np.corrcoef(rank[mask], chose_a[mask])[0, 1])
+        subj_corrs.append(r)
+
+    return float(np.mean(subj_corrs))
+```
+
+**Observed (real) value:** -0.3485 (var=0.0198)
+**Candidate trajectory (this loop):**
+  - iter 1: -0.5111 (var=0.0040) (Δ vs real -0.1626)
+  - iter 2: -0.4977 (var=0.0067) (Δ vs real -0.1492)
+  - iter 3: -0.5365 (var=0.0079) (Δ vs real -0.1880)
+  - iter 4: -0.4294 (var=0.0083) (Δ vs real -0.0809)
+  - iter 5: -0.4469 (var=0.0064) (Δ vs real -0.0984)
+  - iter 6: -0.4320 (var=0.0113) (Δ vs real -0.0835)
+  - iter 7: -0.4318 (var=0.0069) (Δ vs real -0.0833)
+  - iter 8: -0.4943 (var=0.0057) (Δ vs real -0.1458)
+  - iter 9: -0.4859 (var=0.0088) (Δ vs real -0.1374)
+  - iter 10 (current): -0.4424 (var=0.0083) (Δ vs real -0.0939)
+**Other theories' values on this metric (for reference):**
+- pi_3: 0.5096 (var=0.0191)
+- pi_2: 0.0215 (var=0.0080)
+- pi_1: 0.5469 (var=0.0262)
+- pi_4: -0.2535 (var=0.0057)
+- pi_5: -0.3414 (var=0.0125)
+- pi_6: -0.3640 (var=0.0059)
+- pi_7: -0.2726 (var=0.0068)
+- pi_8: -0.4045 (var=0.0105)
+- pi_9: -0.4851 (var=0.0096)
+
+### Experiment 4
+**Design**
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0]
+  A=[1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0]
+  A=[1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0]  B=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0]  B=[1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1]  B=[1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1]  B=[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0]
+
+**Metric**
+```python
+import numpy as np
+import pandas as pd
+
+def metric(data: pd.DataFrame) -> float:
+    high_a = (1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0)
+    low_a = (0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1)
+
+    a_key = data['option_a_ratings'].apply(tuple)
+    mask_high_a = a_key == high_a
+    mask_low_a = a_key == low_a
+
+    if mask_high_a.sum() == 0 or mask_low_a.sum() == 0:
+        return 0.0
+
+    pA_high = 1.0 - float(data.loc[mask_high_a, 'response'].mean())
+    pA_low = 1.0 - float(data.loc[mask_low_a, 'response'].mean())
+
+    return float(pA_high - pA_low)
+
+```
+
+**Observed (real) value:** -0.6533 (var=0.0604)
+**Candidate trajectory (this loop):**
+  - iter 1: -0.7900 (var=0.0167) (Δ vs real -0.1367)
+  - iter 2: -0.7875 (var=0.0135) (Δ vs real -0.1342)
+  - iter 3: -0.7783 (var=0.0114) (Δ vs real -0.1250)
+  - iter 4: -0.6408 (var=0.0224) (Δ vs real +0.0125)
+  - iter 5: -0.6775 (var=0.0151) (Δ vs real -0.0242)
+  - iter 6: -0.6583 (var=0.0148) (Δ vs real -0.0050)
+  - iter 7: -0.6433 (var=0.0150) (Δ vs real +0.0100)
+  - iter 8: -0.6975 (var=0.0241) (Δ vs real -0.0442)
+  - iter 9: -0.7608 (var=0.0113) (Δ vs real -0.1075)
+  - iter 10 (current): -0.6925 (var=0.0190) (Δ vs real -0.0392)
+**Other theories' values on this metric (for reference):**
+- pi_2: -0.1783 (var=0.0317)
+- pi_3: 0.8683 (var=0.0156)
+- pi_1: 0.6692 (var=0.0641)
+- pi_4: -0.7908 (var=0.0142)
+- pi_5: -0.6958 (var=0.0145)
+- pi_6: -0.7150 (var=0.0209)
+- pi_7: -0.6675 (var=0.0201)
+- pi_8: -0.7300 (var=0.0175)
+- pi_9: -0.7383 (var=0.0103)
+
+### Experiment 5
+**Design**
+  A=[1, 1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 1, 0, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 1, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 1, 1, 0, 0]
+  A=[1, 1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 1, 1, 1, 0]
+  A=[1, 1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 1, 1, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 1, 0, 0, 0, 0, 0, 0]  B=[1, 1, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 1, 1, 0, 0, 0, 0, 0]  B=[1, 1, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 1, 1, 1, 0, 0, 0, 0]  B=[1, 1, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 1, 1, 1, 1, 0, 0, 0]  B=[1, 1, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 1, 1, 1, 1, 1, 0, 0]  B=[1, 1, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 1, 1, 1, 1, 1, 1, 0]  B=[1, 1, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 1, 1, 1, 1, 1, 1, 1]  B=[1, 1, 0, 0, 0, 0, 0, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    total = 0.0
+    n = 0
+    for _, row in data.iterrows():
+        a = row['option_a_ratings']
+        b = row['option_b_ratings']
+        a_low = int(a[0]) + int(a[1])
+        b_low = int(b[0]) + int(b[1])
+        if a_low == b_low:
+            continue
+        low_side = 'A' if a_low > b_low else 'B'
+        opposing = b if low_side == 'A' else a
+        k = sum(1 for j in range(2, 9) if int(opposing[j]) == 1)
+        if 3 <= k <= 6:
+            chose_low = ((low_side == 'A' and int(row['response']) == 0) or
+                         (low_side == 'B' and int(row['response']) == 1))
+            total += float(chose_low)
+            n += 1
+    if n == 0:
+        return 0.5
+    return total / float(n)
+```
+
+**Observed (real) value:** 0.8275 (var=0.0166)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.8971 (var=0.0022) (Δ vs real +0.0696)
+  - iter 2: 0.8971 (var=0.0020) (Δ vs real +0.0696)
+  - iter 3: 0.8992 (var=0.0026) (Δ vs real +0.0717)
+  - iter 4: 0.8287 (var=0.0026) (Δ vs real +0.0012)
+  - iter 5: 0.8246 (var=0.0022) (Δ vs real -0.0029)
+  - iter 6: 0.8213 (var=0.0038) (Δ vs real -0.0062)
+  - iter 7: 0.8246 (var=0.0029) (Δ vs real -0.0029)
+  - iter 8: 0.8675 (var=0.0030) (Δ vs real +0.0400)
+  - iter 9: 0.8733 (var=0.0022) (Δ vs real +0.0458)
+  - iter 10 (current): 0.8104 (var=0.0039) (Δ vs real -0.0171)
+**Other theories' values on this metric (for reference):**
+- pi_4: 0.8642 (var=0.0036)
+- pi_2: 0.1492 (var=0.0089)
+- pi_1: 0.1346 (var=0.0111)
+- pi_3: 0.0708 (var=0.0019)
+- pi_5: 0.8250 (var=0.0030)
+- pi_6: 0.7621 (var=0.0044)
+- pi_7: 0.8321 (var=0.0036)
+- pi_8: 0.8754 (var=0.0037)
+- pi_9: 0.8846 (var=0.0017)
+
+### Experiment 6
+**Design**
+  A=[1, 1, 1, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 1, 1, 1]
+  A=[0, 1, 1, 0, 0, 1, 0, 0]  B=[1, 0, 0, 0, 0, 0, 1, 1]
+  A=[0, 0, 1, 0, 0, 1, 1, 0]  B=[1, 1, 0, 0, 0, 0, 0, 1]
+  A=[0, 0, 0, 0, 0, 1, 1, 1]  B=[1, 1, 1, 0, 0, 0, 0, 0]
+  A=[0, 1, 1, 1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 1, 1, 1]
+  A=[0, 0, 1, 1, 0, 1, 0, 0]  B=[0, 1, 0, 0, 0, 0, 1, 1]
+  A=[0, 0, 0, 1, 0, 1, 1, 0]  B=[0, 1, 1, 0, 0, 0, 0, 1]
+  A=[0, 0, 0, 0, 0, 1, 1, 1]  B=[0, 1, 1, 1, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 0, 0, 0]  B=[0, 0, 0, 0, 0, 1, 1, 1]
+  A=[1, 1, 1, 1, 0, 1, 0, 0]  B=[0, 0, 0, 0, 1, 0, 1, 1]
+  A=[0, 1, 1, 1, 1, 1, 0, 0]  B=[1, 0, 0, 0, 0, 0, 1, 1]
+  A=[0, 1, 1, 1, 0, 0, 1, 1]  B=[1, 0, 0, 0, 1, 1, 0, 0]
+  A=[0, 0, 1, 1, 0, 1, 1, 1]  B=[1, 1, 0, 0, 1, 0, 0, 0]
+  A=[0, 0, 0, 1, 1, 1, 1, 1]  B=[1, 1, 1, 0, 0, 0, 0, 0]
+  A=[0, 0, 1, 0, 1, 1, 1, 1]  B=[1, 1, 0, 1, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 1, 1, 1, 1]  B=[0, 1, 1, 1, 0, 0, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    pos1 = {
+        ((1, 1, 1, 0, 0, 0, 0, 0), (0, 0, 0, 0, 0, 1, 1, 1)),
+        ((0, 1, 1, 0, 0, 1, 0, 0), (1, 0, 0, 0, 0, 0, 1, 1)),
+        ((0, 1, 1, 1, 0, 0, 0, 0), (0, 0, 0, 0, 0, 1, 1, 1)),
+        ((0, 0, 1, 1, 0, 1, 0, 0), (0, 1, 0, 0, 0, 0, 1, 1)),
+    }
+    neg1 = {
+        ((0, 0, 1, 0, 0, 1, 1, 0), (1, 1, 0, 0, 0, 0, 0, 1)),
+        ((0, 0, 0, 0, 0, 1, 1, 1), (1, 1, 1, 0, 0, 0, 0, 0)),
+        ((0, 0, 0, 1, 0, 1, 1, 0), (0, 1, 1, 0, 0, 0, 0, 1)),
+        ((0, 0, 0, 0, 0, 1, 1, 1), (0, 1, 1, 1, 0, 0, 0, 0)),
+    }
+    early2 = {
+        ((1, 1, 1, 1, 1, 0, 0, 0), (0, 0, 0, 0, 0, 1, 1, 1)),
+        ((1, 1, 1, 1, 0, 1, 0, 0), (0, 0, 0, 0, 1, 0, 1, 1)),
+        ((0, 1, 1, 1, 1, 1, 0, 0), (1, 0, 0, 0, 0, 0, 1, 1)),
+        ((0, 1, 1, 1, 0, 0, 1, 1), (1, 0, 0, 0, 1, 1, 0, 0)),
+    }
+    late2 = {
+        ((0, 0, 1, 1, 0, 1, 1, 1), (1, 1, 0, 0, 1, 0, 0, 0)),
+        ((0, 0, 0, 1, 1, 1, 1, 1), (1, 1, 1, 0, 0, 0, 0, 0)),
+        ((0, 0, 1, 0, 1, 1, 1, 1), (1, 1, 0, 1, 0, 0, 0, 0)),
+        ((1, 0, 0, 0, 1, 1, 1, 1), (0, 1, 1, 1, 0, 0, 0, 0)),
+    }
+    akey = data['option_a_ratings'].apply(lambda x: tuple([int(v) for v in x]))
+    bkey = data['option_b_ratings'].apply(lambda x: tuple([int(v) for v in x]))
+    pairs = list(zip(akey, bkey))
+    p_a = 1.0 - data['response'].to_numpy(dtype=float)
+    p_pos1 = p_a[[k in pos1 for k in pairs]].mean()
+    p_neg1 = p_a[[k in neg1 for k in pairs]].mean()
+    p_early2 = p_a[[k in early2 for k in pairs]].mean()
+    p_late2 = p_a[[k in late2 for k in pairs]].mean()
+    block1_contrast = p_pos1 - p_neg1
+    block2_contrast = p_early2 - p_late2
+    return float(0.5 * (block1_contrast + block2_contrast))
+```
+
+**Observed (real) value:** 0.1525 (var=0.0118)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.4571 (var=0.0081) (Δ vs real +0.3046)
+  - iter 2: 0.4629 (var=0.0084) (Δ vs real +0.3104)
+  - iter 3: 0.4821 (var=0.0091) (Δ vs real +0.3296)
+  - iter 4: 0.3821 (var=0.0104) (Δ vs real +0.2296)
+  - iter 5: 0.3733 (var=0.0107) (Δ vs real +0.2208)
+  - iter 6: 0.3738 (var=0.0102) (Δ vs real +0.2213)
+  - iter 7: 0.3833 (var=0.0089) (Δ vs real +0.2308)
+  - iter 8: 0.4213 (var=0.0091) (Δ vs real +0.2687)
+  - iter 9: 0.4675 (var=0.0052) (Δ vs real +0.3150)
+  - iter 10 (current): 0.4025 (var=0.0075) (Δ vs real +0.2500)
+**Other theories' values on this metric (for reference):**
+- pi_2: 0.0092 (var=0.0068)
+- pi_4: 0.6663 (var=0.0054)
+- pi_1: -0.4425 (var=0.0114)
+- pi_3: -0.6067 (var=0.0096)
+- pi_5: 0.3704 (var=0.0099)
+- pi_6: 0.3529 (var=0.0067)
+- pi_7: 0.4271 (var=0.0084)
+- pi_8: 0.4717 (var=0.0121)
+- pi_9: 0.4829 (var=0.0072)
+
+### Experiment 7
+**Design**
+  A=[1, 1, 1, 1, 1, 1, 0, 1, 1]  B=[0, 0, 0, 0, 0, 0, 1, 0, 0]
+  A=[1, 1, 0, 1, 1, 1, 0, 1, 1]  B=[0, 0, 1, 0, 0, 0, 1, 0, 0]
+  A=[0, 1, 1, 1, 1, 0, 0, 1, 1]  B=[1, 0, 0, 0, 0, 1, 1, 0, 0]
+  A=[1, 1, 1, 1, 0, 0, 0, 1, 1]  B=[0, 0, 0, 0, 1, 1, 1, 0, 0]
+  A=[0, 1, 1, 1, 0, 0, 0, 1, 1]  B=[1, 0, 0, 0, 1, 1, 1, 0, 0]
+  A=[0, 0, 1, 1, 0, 0, 0, 1, 1]  B=[1, 1, 0, 0, 1, 1, 1, 0, 0]
+  A=[1, 1, 0, 0, 0, 0, 0, 1, 1]  B=[0, 0, 1, 1, 1, 1, 1, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 1, 1]  B=[1, 1, 1, 1, 1, 1, 1, 0, 0]
+  A=[1, 1, 1, 1, 1, 1, 1, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 1, 1]
+  A=[1, 1, 0, 1, 1, 1, 1, 0, 0]  B=[0, 0, 1, 0, 0, 0, 0, 1, 1]
+  A=[0, 1, 1, 1, 1, 0, 1, 0, 0]  B=[1, 0, 0, 0, 0, 1, 0, 1, 1]
+  A=[1, 1, 1, 1, 0, 0, 1, 0, 0]  B=[0, 0, 0, 0, 1, 1, 0, 1, 1]
+  A=[0, 1, 1, 1, 0, 0, 1, 0, 0]  B=[1, 0, 0, 0, 1, 1, 0, 1, 1]
+  A=[0, 0, 1, 1, 0, 0, 1, 0, 0]  B=[1, 1, 0, 0, 1, 1, 0, 1, 1]
+  A=[1, 1, 0, 0, 0, 0, 1, 0, 0]  B=[0, 0, 1, 1, 1, 1, 0, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 1, 0, 0]  B=[1, 1, 1, 1, 1, 1, 0, 1, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+    # High-validity experts are the first six rating positions.
+    # Low-validity experts are positions 6,7,8; their split identifies the block.
+    blocks = {}
+    for row in data.itertuples(index=False):
+        a = np.asarray(row.option_a_ratings, dtype=float)
+        b = np.asarray(row.option_b_ratings, dtype=float)
+        high_diff = a[:6] - b[:6]
+        h = float(np.sum(high_diff))
+        key = tuple(int(x) for x in high_diff)
+        low_sign = int((a[6] - b[6]) + (a[7] - b[7]) + (a[8] - b[8]))
+        yA = 1.0 if int(row.response) == 0 else 0.0
+        d = blocks.setdefault(low_sign, {})
+        entry = d.setdefault(key, [0.0, 0, h])
+        entry[0] += yA
+        entry[1] += 1
+    vals = []
+    for d in blocks.values():
+        if len(d) < 2:
+            continue
+        entries = list(d.values())
+        hs = np.array([e[2] for e in entries], dtype=float)
+        ps = np.array([e[0] / e[1] if e[1] > 0 else 0.5 for e in entries], dtype=float)
+        z = hs - hs.mean()
+        denom = float(np.sqrt(np.mean(z * z)))
+        if denom <= 0.0:
+            continue
+        vals.append(float(np.mean((z / denom) * ps)))
+    return float(np.mean(vals)) if vals else 0.0
+```
+
+**Observed (real) value:** -0.0103 (var=0.0009)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.0024 (var=0.0015) (Δ vs real +0.0126)
+  - iter 2: 0.0216 (var=0.0015) (Δ vs real +0.0319)
+  - iter 3: 0.0164 (var=0.0020) (Δ vs real +0.0266)
+  - iter 4: 0.0171 (var=0.0026) (Δ vs real +0.0273)
+  - iter 5: -0.0045 (var=0.0025) (Δ vs real +0.0058)
+  - iter 6: 0.0164 (var=0.0030) (Δ vs real +0.0267)
+  - iter 7: -0.0015 (var=0.0027) (Δ vs real +0.0088)
+  - iter 8: 0.0101 (var=0.0019) (Δ vs real +0.0204)
+  - iter 9: 0.0169 (var=0.0015) (Δ vs real +0.0272)
+  - iter 10 (current): 0.0123 (var=0.0022) (Δ vs real +0.0226)
+**Other theories' values on this metric (for reference):**
+- pi_4: 0.2803 (var=0.0012)
+- pi_5: 0.0068 (var=0.0020)
+- pi_1: 0.1888 (var=0.0043)
+- pi_2: 0.2909 (var=0.0059)
+- pi_3: 0.3502 (var=0.0022)
+- pi_6: 0.0282 (var=0.0018)
+- pi_7: 0.0224 (var=0.0016)
+- pi_8: 0.0207 (var=0.0025)
+- pi_9: 0.0194 (var=0.0024)
+
+### Experiment 8
+**Design**
+  A=[1, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[1, 0, 1, 0, 0, 0, 0, 0, 0]  B=[0, 1, 0, 1, 1, 1, 1, 1, 1]
+  A=[1, 0, 1, 1, 0, 0, 0, 0, 0]  B=[0, 1, 0, 0, 1, 1, 1, 1, 1]
+  A=[1, 0, 1, 1, 1, 0, 0, 0, 0]  B=[0, 1, 0, 0, 0, 1, 1, 1, 1]
+  A=[1, 0, 1, 1, 1, 1, 0, 0, 0]  B=[0, 1, 0, 0, 0, 0, 1, 1, 1]
+  A=[1, 0, 1, 1, 1, 1, 1, 0, 0]  B=[0, 1, 0, 0, 0, 0, 0, 1, 1]
+  A=[1, 0, 1, 1, 1, 1, 1, 1, 0]  B=[0, 1, 0, 0, 0, 0, 0, 0, 1]
+  A=[1, 0, 1, 1, 1, 1, 1, 1, 1]  B=[0, 1, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 1, 1, 1, 1]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 1, 1, 1, 1, 1, 1]
+  A=[1, 1, 1, 1, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1, 1, 1, 1, 1]
+  A=[1, 1, 1, 1, 1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 1, 1, 1, 1]
+  A=[1, 1, 1, 1, 1, 1, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1, 1]
+  A=[1, 1, 1, 1, 1, 1, 1, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 1, 1]
+  A=[1, 1, 1, 1, 1, 1, 1, 1, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 1]
+  A=[1, 1, 1, 1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+**Metric**
+```python
+import numpy as np
+
+def metric(data):
+    chose_a = (data['response'].to_numpy(dtype=float) == 0).astype(float)
+    a_high = np.array([sum(r[2:]) for r in data['option_a_ratings']], dtype=float)
+    b_high = np.array([sum(r[2:]) for r in data['option_b_ratings']], dtype=float)
+    high_evidence = a_high - b_high
+    if float(high_evidence.std()) < 1e-12 or float(chose_a.std()) < 1e-12:
+        return 0.0
+    return float(np.corrcoef(high_evidence, chose_a)[0, 1])
+```
+
+**Observed (real) value:** 0.0472 (var=0.0067)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.0056 (var=0.0112) (Δ vs real -0.0416)
+  - iter 2: 0.0109 (var=0.0090) (Δ vs real -0.0362)
+  - iter 3: 0.0042 (var=0.0105) (Δ vs real -0.0430)
+  - iter 4: -0.0017 (var=0.0082) (Δ vs real -0.0489)
+  - iter 5: 0.0021 (var=0.0080) (Δ vs real -0.0451)
+  - iter 6: 0.0174 (var=0.0091) (Δ vs real -0.0298)
+  - iter 7: 0.0069 (var=0.0067) (Δ vs real -0.0403)
+  - iter 8: 0.0082 (var=0.0096) (Δ vs real -0.0389)
+  - iter 9: -0.0034 (var=0.0093) (Δ vs real -0.0506)
+  - iter 10 (current): -0.0067 (var=0.0098) (Δ vs real -0.0539)
+**Other theories' values on this metric (for reference):**
+- pi_5: -0.0010 (var=0.0097)
+- pi_4: 0.6671 (var=0.0037)
+- pi_1: 0.3105 (var=0.0223)
+- pi_2: 0.6061 (var=0.0242)
+- pi_3: 0.7504 (var=0.0068)
+- pi_6: 0.0794 (var=0.0104)
+- pi_7: 0.0680 (var=0.0084)
+- pi_8: -0.0014 (var=0.0073)
+- pi_9: 0.0032 (var=0.0066)
+
+### Experiment 9
+**Design**
+  A=[1, 1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 1, 1, 1, 1]
+  A=[1, 1, 0, 0, 1, 0, 0, 0, 0]  B=[0, 0, 1, 1, 0, 1, 1, 1, 1]
+  A=[1, 1, 0, 0, 1, 1, 0, 0, 0]  B=[0, 0, 1, 1, 0, 0, 1, 1, 1]
+  A=[1, 1, 0, 0, 1, 1, 1, 0, 0]  B=[0, 0, 1, 1, 0, 0, 0, 1, 1]
+  A=[1, 1, 0, 0, 1, 1, 1, 1, 0]  B=[0, 0, 1, 1, 0, 0, 0, 0, 1]
+  A=[1, 1, 0, 0, 1, 1, 1, 1, 1]  B=[0, 0, 1, 1, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 1, 1, 1, 1, 1, 1]
+  A=[1, 1, 1, 0, 1, 0, 0, 0, 0]  B=[0, 0, 0, 1, 0, 1, 1, 1, 1]
+  A=[1, 1, 1, 0, 1, 1, 0, 0, 0]  B=[0, 0, 0, 1, 0, 0, 1, 1, 1]
+  A=[1, 1, 1, 0, 1, 1, 1, 0, 0]  B=[0, 0, 0, 1, 0, 0, 0, 1, 1]
+  A=[1, 1, 1, 0, 1, 1, 1, 1, 0]  B=[0, 0, 0, 1, 0, 0, 0, 0, 1]
+  A=[1, 1, 1, 0, 1, 1, 1, 1, 1]  B=[0, 0, 0, 1, 0, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[1, 0, 0, 0, 1, 1, 0, 0, 0]  B=[0, 1, 1, 1, 0, 0, 1, 1, 1]
+  A=[1, 0, 0, 0, 1, 1, 1, 1, 0]  B=[0, 1, 1, 1, 0, 0, 0, 0, 1]
+  A=[1, 0, 0, 0, 1, 1, 1, 1, 1]  B=[0, 1, 1, 1, 0, 0, 0, 0, 0]
+
+**Metric**
+```python
+import numpy as np
+import pandas as pd
+
+
+def metric(data: pd.DataFrame) -> float:
+    df = data.copy()
+    df['y'] = (df['response'] == 0).astype(float)
+    df['low_a'] = df['option_a_ratings'].apply(lambda r: int(np.sum(np.asarray(r)[:4])))
+    df['high_a'] = df['option_a_ratings'].apply(lambda r: int(np.sum(np.asarray(r)[4:9])))
+    df['low_tie'] = (df['low_a'] == 2).astype(float)
+    df['a_maj'] = (df['low_a'] == 3).astype(float)
+
+    slopes = []
+    for subj_id, sub in df.groupby('subject_id', sort=False):
+        X = np.column_stack((
+            np.ones(len(sub)),
+            sub['low_tie'].to_numpy(dtype=float),
+            sub['a_maj'].to_numpy(dtype=float),
+            sub['high_a'].to_numpy(dtype=float)
+        ))
+        y = sub['y'].to_numpy(dtype=float)
+        beta = np.linalg.lstsq(X, y, rcond=None)[0]
+        slopes.append(float(beta[3]))
+
+    return float(np.mean(slopes))
+```
+
+**Observed (real) value:** 0.0032 (var=0.0007)
+**Candidate trajectory (this loop):**
+  - iter 1: -0.0012 (var=0.0005) (Δ vs real -0.0044)
+  - iter 2: 0.0036 (var=0.0008) (Δ vs real +0.0004)
+  - iter 3: 0.0032 (var=0.0007) (Δ vs real +0.0001)
+  - iter 4: 0.0104 (var=0.0009) (Δ vs real +0.0072)
+  - iter 5: -0.0004 (var=0.0007) (Δ vs real -0.0036)
+  - iter 6: 0.0012 (var=0.0007) (Δ vs real -0.0020)
+  - iter 7: 0.0018 (var=0.0008) (Δ vs real -0.0014)
+  - iter 8: 0.0033 (var=0.0009) (Δ vs real +0.0001)
+  - iter 9: 0.0033 (var=0.0007) (Δ vs real +0.0001)
+  - iter 10 (current): 0.0009 (var=0.0008) (Δ vs real -0.0023)
+**Other theories' values on this metric (for reference):**
+- pi_6: 0.0500 (var=0.0010)
+- pi_5: 0.0003 (var=0.0008)
+- pi_1: 0.1056 (var=0.0010)
+- pi_2: 0.1807 (var=0.0017)
+- pi_3: 0.2205 (var=0.0005)
+- pi_4: 0.1640 (var=0.0005)
+- pi_7: 0.0023 (var=0.0005)
+- pi_8: -0.0043 (var=0.0007)
+- pi_9: 0.0048 (var=0.0012)
+
+### Experiment 10
+**Design**
+  A=[0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1]  B=[0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1]  B=[0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1]
+  A=[0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1]  B=[0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1]  B=[0, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1]
+  A=[0, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1]  B=[0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1]  B=[0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1]
+  A=[0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1]
+  A=[1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1]  B=[0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1]  B=[0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1]
+  A=[1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1]  B=[0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1]  B=[0, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1]
+  A=[1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1]  B=[0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1]  B=[0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1]
+  A=[1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1]
+
+**Metric**
+```python
+import numpy as np
+
+def metric(data):
+    validities = np.array([0.5, 0.84, 0.843, 0.846, 0.849, 0.852, 0.855, 0.858, 0.861, 0.864, 0.867])
+    order = np.argsort(validities)
+    ranks = np.empty(len(validities), dtype=float)
+    ranks[order] = np.arange(1, len(validities) + 1, dtype=float)
+    u = (ranks - 1.0) / (len(validities) - 1.0)
+    alpha = 4.75
+    raw = np.power(1.0 - u, alpha)
+    weights = raw / raw.sum()
+
+    A = np.stack([np.asarray(v, dtype=float) for v in data['option_a_ratings']])
+    B = np.stack([np.asarray(v, dtype=float) for v in data['option_b_ratings']])
+    signed_evidence = (A - B) @ weights
+    chose_a = 1.0 - np.asarray(data['response'], dtype=float)
+    return float(np.mean(signed_evidence * chose_a))
+```
+
+**Observed (real) value:** 0.2001 (var=0.0006)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.1986 (var=0.0002) (Δ vs real -0.0015)
+  - iter 2: 0.1942 (var=0.0003) (Δ vs real -0.0059)
+  - iter 3: 0.1969 (var=0.0003) (Δ vs real -0.0032)
+  - iter 4: 0.1857 (var=0.0003) (Δ vs real -0.0145)
+  - iter 5: 0.1865 (var=0.0003) (Δ vs real -0.0136)
+  - iter 6: 0.1814 (var=0.0003) (Δ vs real -0.0187)
+  - iter 7: 0.1817 (var=0.0005) (Δ vs real -0.0184)
+  - iter 8: 0.1914 (var=0.0003) (Δ vs real -0.0087)
+  - iter 9: 0.1934 (var=0.0002) (Δ vs real -0.0068)
+  - iter 10 (current): 0.1802 (var=0.0004) (Δ vs real -0.0199)
+**Other theories' values on this metric (for reference):**
+- pi_5: 0.1290 (var=0.0004)
+- pi_6: 0.1905 (var=0.0004)
+- pi_1: 0.1377 (var=0.0003)
+- pi_2: 0.2228 (var=0.0005)
+- pi_3: 0.2121 (var=0.0003)
+- pi_4: 0.2385 (var=0.0002)
+- pi_7: 0.2038 (var=0.0002)
+- pi_8: 0.2034 (var=0.0002)
+- pi_9: 0.1985 (var=0.0003)
+
+### Experiment 11
+**Design**
+  A=[1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1, 1, 1, 1]
+  A=[1, 1, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 1, 1, 1]
+  A=[1, 1, 1, 0, 0, 0, 0, 0]  B=[0, 0, 0, 1, 1, 1, 1, 1]
+  A=[1, 1, 1, 1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1, 1, 1, 1]
+  A=[1, 1, 1, 1, 1, 0, 0, 0]  B=[0, 0, 0, 0, 0, 1, 1, 1]
+  A=[1, 1, 1, 1, 1, 1, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1]
+  A=[1, 1, 1, 1, 1, 1, 1, 0]  B=[0, 0, 0, 0, 0, 0, 0, 1]
+  A=[1, 1, 1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1, 1, 1]
+  A=[0, 1, 0, 0, 0, 0, 0, 0]  B=[1, 0, 1, 1, 1, 1, 1, 1]
+  A=[0, 1, 1, 0, 0, 0, 0, 0]  B=[1, 0, 0, 1, 1, 1, 1, 1]
+  A=[0, 1, 1, 1, 0, 0, 0, 0]  B=[1, 0, 0, 0, 1, 1, 1, 1]
+  A=[0, 1, 1, 1, 1, 0, 0, 0]  B=[1, 0, 0, 0, 0, 1, 1, 1]
+  A=[0, 1, 1, 1, 1, 1, 0, 0]  B=[1, 0, 0, 0, 0, 0, 1, 1]
+  A=[0, 1, 1, 1, 1, 1, 1, 0]  B=[1, 0, 0, 0, 0, 0, 0, 1]
+  A=[0, 1, 1, 1, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0, 0, 0, 0]
+
+**Metric**
+```python
+import numpy as np
+import pandas as pd
+
+
+def metric(data: pd.DataFrame) -> float:
+    response = np.asarray(data['response'], dtype=float)
+    choice_a = (response == 0).astype(float)
+
+    a = np.asarray(data['option_a_ratings'].tolist(), dtype=float)
+    b = np.asarray(data['option_b_ratings'].tolist(), dtype=float)
+    diff = a - b
+
+    low_favors_a = diff[:, 0] > 0.5
+    high_a_count = np.sum(diff[:, 1:], axis=1)
+
+    la_k0 = low_favors_a & (high_a_count == 0)
+    la_k7 = low_favors_a & (high_a_count == 7)
+    lb_k0 = (~low_favors_a) & (high_a_count == 0)
+    lb_k7 = (~low_favors_a) & (high_a_count == 7)
+
+    def prop_a(mask):
+        n = int(np.sum(mask))
+        if n == 0:
+            return 0.0
+        return float(np.sum(choice_a[mask]) / n)
+
+    la_contrast = prop_a(la_k7) - prop_a(la_k0)
+    lb_contrast = prop_a(lb_k7) - prop_a(lb_k0)
+    return 0.5 * (la_contrast + lb_contrast)
+
+```
+
+**Observed (real) value:** 0.4833 (var=0.0144)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.4933 (var=0.0072) (Δ vs real +0.0100)
+  - iter 2: 0.5050 (var=0.0071) (Δ vs real +0.0217)
+  - iter 3: 0.4950 (var=0.0076) (Δ vs real +0.0117)
+  - iter 4: 0.5017 (var=0.0115) (Δ vs real +0.0183)
+  - iter 5: 0.5000 (var=0.0111) (Δ vs real +0.0167)
+  - iter 6: 0.5067 (var=0.0108) (Δ vs real +0.0233)
+  - iter 7: 0.5300 (var=0.0110) (Δ vs real +0.0467)
+  - iter 8: 0.5033 (var=0.0122) (Δ vs real +0.0200)
+  - iter 9: 0.5083 (var=0.0078) (Δ vs real +0.0250)
+  - iter 10 (current): 0.5033 (var=0.0108) (Δ vs real +0.0200)
+**Other theories' values on this metric (for reference):**
+- pi_7: 0.7900 (var=0.0109)
+- pi_5: 0.4950 (var=0.0193)
+- pi_1: 0.8517 (var=0.0151)
+- pi_2: 0.8650 (var=0.0147)
+- pi_3: 0.9367 (var=0.0079)
+- pi_4: 0.9033 (var=0.0065)
+- pi_6: 0.6117 (var=0.0132)
+- pi_8: 0.5033 (var=0.0080)
+- pi_9: 0.4800 (var=0.0077)
+
+### Experiment 12
+**Design**
+  A=[1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1]  B=[0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1]  B=[0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1]
+  A=[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1]  B=[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[0, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1]  B=[1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[0, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1]  B=[1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[0, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1]  B=[1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1]
+  A=[0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1]
+
+**Metric**
+```python
+import numpy as np
+import pandas as pd
+
+
+def metric(data: pd.DataFrame) -> float:
+    a = data['option_a_ratings']
+    b = data['option_b_ratings']
+
+    # Feature index 0 is the 0.50-validity cue.
+    # Feature indices 1..5 are the five 0.80-validity cues.
+    f1 = a.apply(lambda x: float(x[0])) - b.apply(lambda x: float(x[0]))
+    grp = a.apply(lambda x: float(sum(x[1:6]))) - b.apply(lambda x: float(sum(x[1:6])))
+
+    # High-conflict trials: the lone 0.50 cue points opposite the 0.80 bloc,
+    # and the 0.80 bloc has a net majority of at least 3 (i.e. +/-3 or +/-5).
+    conflict = ((f1 * grp) < 0) & (grp.abs() >= 3)
+
+    if int(conflict.sum()) == 0:
+        return 0.5
+
+    # Follow the lone 0.50 cue: choose A when it favors A, choose B when it favors B.
+    follow_lone = ((f1 > 0) & (data['response'] == 0)) | ((f1 < 0) & (data['response'] == 1))
+
+    return float(follow_lone[conflict].mean())
+
+```
+
+**Observed (real) value:** 0.8375 (var=0.0133)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.7631 (var=0.0057) (Δ vs real -0.0744)
+  - iter 2: 0.7500 (var=0.0071) (Δ vs real -0.0875)
+  - iter 3: 0.7412 (var=0.0066) (Δ vs real -0.0963)
+  - iter 4: 0.8169 (var=0.0047) (Δ vs real -0.0206)
+  - iter 5: 0.8287 (var=0.0056) (Δ vs real -0.0088)
+  - iter 6: 0.8306 (var=0.0046) (Δ vs real -0.0069)
+  - iter 7: 0.8287 (var=0.0045) (Δ vs real -0.0088)
+  - iter 8: 0.8612 (var=0.0034) (Δ vs real +0.0237)
+  - iter 9: 0.8669 (var=0.0035) (Δ vs real +0.0294)
+  - iter 10 (current): 0.8206 (var=0.0058) (Δ vs real -0.0169)
+**Other theories' values on this metric (for reference):**
+- pi_5: 0.6706 (var=0.0116)
+- pi_7: 0.3594 (var=0.0070)
+- pi_1: 0.3181 (var=0.0072)
+- pi_2: 0.1288 (var=0.0070)
+- pi_3: 0.0569 (var=0.0024)
+- pi_4: 0.1156 (var=0.0048)
+- pi_6: 0.5475 (var=0.0085)
+- pi_8: 0.8650 (var=0.0050)
+- pi_9: 0.7462 (var=0.0067)
+
+### Experiment 13
+**Design**
+  A=[0, 0, 0, 1, 0, 0, 0, 0]  B=[1, 1, 1, 0, 1, 1, 1, 1]
+  A=[0, 0, 0, 1, 1, 0, 0, 0]  B=[1, 1, 1, 0, 0, 1, 1, 1]
+  A=[0, 0, 0, 1, 1, 1, 0, 0]  B=[1, 1, 1, 0, 0, 0, 1, 1]
+  A=[0, 0, 0, 1, 1, 1, 1, 0]  B=[1, 1, 1, 0, 0, 0, 0, 1]
+  A=[1, 0, 0, 1, 0, 0, 0, 0]  B=[0, 1, 1, 0, 1, 1, 1, 1]
+  A=[1, 0, 0, 1, 1, 0, 0, 0]  B=[0, 1, 1, 0, 0, 1, 1, 1]
+  A=[1, 0, 0, 1, 1, 1, 0, 0]  B=[0, 1, 1, 0, 0, 0, 1, 1]
+  A=[1, 0, 0, 1, 1, 1, 1, 0]  B=[0, 1, 1, 0, 0, 0, 0, 1]
+  A=[1, 1, 0, 1, 0, 0, 0, 0]  B=[0, 0, 1, 0, 1, 1, 1, 1]
+  A=[1, 1, 0, 1, 1, 0, 0, 0]  B=[0, 0, 1, 0, 0, 1, 1, 1]
+  A=[1, 1, 0, 1, 1, 1, 0, 0]  B=[0, 0, 1, 0, 0, 0, 1, 1]
+  A=[1, 1, 0, 1, 1, 1, 1, 0]  B=[0, 0, 1, 0, 0, 0, 0, 1]
+  A=[1, 1, 1, 1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1, 1, 1, 1]
+  A=[1, 1, 1, 1, 1, 0, 0, 0]  B=[0, 0, 0, 0, 0, 1, 1, 1]
+  A=[1, 1, 1, 1, 1, 1, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1]
+  A=[1, 1, 1, 1, 1, 1, 1, 0]  B=[0, 0, 0, 0, 0, 0, 0, 1]
+
+**Metric**
+```python
+import numpy as np
+import pandas as pd
+
+
+def metric(data: pd.DataFrame) -> float:
+    a_low = data['option_a_ratings'].apply(lambda v: int(v[0]) + int(v[1]) + int(v[2]))
+    b_low = data['option_b_ratings'].apply(lambda v: int(v[0]) + int(v[1]) + int(v[2]))
+    d = (a_low - b_low).to_numpy(dtype=float)
+    resp = data['response'].to_numpy(dtype=float)
+
+    follow = np.where(d > 0, 1.0 - resp, resp)
+    mask = np.abs(d) >= 1.0
+    d = d[mask]
+    resp = resp[mask]
+    follow = follow[mask]
+
+    unan = np.abs(d) == 3.0
+    split = np.abs(d) == 1.0
+    n_u = int(unan.sum())
+    n_s = int(split.sum())
+    if n_u < 5 or n_s < 5:
+        return 0.0
+
+    p_u = float(np.clip(follow[unan].mean(), 0.001, 0.999))
+    p_s = float(np.clip(follow[split].mean(), 0.001, 0.999))
+
+    def logit(p):
+        p = float(p)
+        return float(np.log(p / (1.0 - p)))
+
+    emax = min(0.45, 2.0 * (1.0 - p_u) - 1e-3, 2.0 * (1.0 - p_s) - 1e-3)
+    if emax <= 0.0:
+        return 0.0
+
+    best_e = 0.0
+    best_loss = 1e12
+    for j in range(401):
+        e = emax * float(j) / 400.0
+        denom = 1.0 - e
+        if denom <= 0.0:
+            continue
+        q_u = (p_u - 0.5 * e) / denom
+        q_s = (p_s - 0.5 * e) / denom
+        if q_u <= 0.0 or q_u >= 1.0 or q_s <= 0.0 or q_s >= 1.0:
+            continue
+        loss = abs(logit(q_u) - 3.0 * logit(q_s))
+        if loss < best_loss:
+            best_loss = loss
+            best_e = e
+    return float(best_e)
+```
+
+**Observed (real) value:** 0.0000 (var=0.0000)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.0537 (var=0.0137) (Δ vs real +0.0537)
+  - iter 2: 0.0000 (var=0.0100) (Δ vs real +0.0000)
+  - iter 3: 0.0000 (var=0.0102) (Δ vs real +0.0000)
+  - iter 4: 0.0000 (var=0.0233) (Δ vs real +0.0000)
+  - iter 5: 0.0000 (var=0.0306) (Δ vs real +0.0000)
+  - iter 6: 0.0000 (var=0.0214) (Δ vs real +0.0000)
+  - iter 7: 0.0000 (var=0.0208) (Δ vs real +0.0000)
+  - iter 8: 0.0000 (var=0.0161) (Δ vs real +0.0000)
+  - iter 9: 0.1323 (var=0.0180) (Δ vs real +0.1323)
+  - iter 10 (current): 0.0000 (var=0.0202) (Δ vs real +0.0000)
+**Other theories' values on this metric (for reference):**
+- pi_8: 0.0342 (var=0.0105)
+- pi_5: 0.1512 (var=0.0183)
+- pi_1: 0.0000 (var=0.0000)
+- pi_2: 0.0000 (var=0.0103)
+- pi_3: 0.0000 (var=0.0039)
+- pi_4: 0.0080 (var=0.0088)
+- pi_6: 0.0000 (var=0.0233)
+- pi_7: 0.0585 (var=0.0121)
+- pi_9: 0.0530 (var=0.0135)
+
+### Experiment 14
+**Design**
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1]
+  A=[0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0]  B=[0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1]
+  A=[0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1]
+  A=[0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0]  B=[0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1]
+  A=[0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0]  B=[0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1]
+  A=[0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0]  B=[0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1]
+  A=[0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1]  B=[0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0]
+  A=[0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0]
+  A=[0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0]
+  A=[0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0]
+
+**Metric**
+```python
+def metric(data):
+    import numpy as np
+
+    ratings = np.array(data['option_a_ratings'].tolist(), dtype=float)
+    responses = np.asarray(data['response'].tolist(), dtype=int)
+    subjects = np.asarray(data['subject_id'].tolist())
+    choose_a = (responses == 0).astype(float)
+
+    rel_idx = np.arange(1, 16)
+    tallies = ratings[:, rel_idx].sum(axis=1)
+
+    low = tallies <= 4
+    high = tallies >= 8
+
+    vals = []
+    for sid in np.unique(subjects):
+        idx = subjects == sid
+        low_idx = idx & low
+        high_idx = idx & high
+        if np.count_nonzero(low_idx) == 0 or np.count_nonzero(high_idx) == 0:
+            continue
+        vals.append(float(np.mean(choose_a[high_idx]) - np.mean(choose_a[low_idx])))
+
+    if not vals:
+        return 0.0
+    return float(np.mean(vals))
+```
+
+**Observed (real) value:** 0.0278 (var=0.0063)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.4189 (var=0.0089) (Δ vs real +0.3911)
+  - iter 2: 0.1967 (var=0.0265) (Δ vs real +0.1689)
+  - iter 3: 0.0117 (var=0.0112) (Δ vs real -0.0161)
+  - iter 4: 0.0100 (var=0.0120) (Δ vs real -0.0178)
+  - iter 5: 0.0122 (var=0.0133) (Δ vs real -0.0156)
+  - iter 6: 0.0217 (var=0.0109) (Δ vs real -0.0061)
+  - iter 7: 0.0006 (var=0.0141) (Δ vs real -0.0272)
+  - iter 8: 0.0244 (var=0.0155) (Δ vs real -0.0033)
+  - iter 9: -0.0067 (var=0.0106) (Δ vs real -0.0344)
+  - iter 10 (current): -0.0228 (var=0.0125) (Δ vs real -0.0506)
+**Other theories' values on this metric (for reference):**
+- pi_5: 0.2411 (var=0.0134)
+- pi_8: 0.0667 (var=0.0215)
+- pi_1: 0.3689 (var=0.0171)
+- pi_2: 0.6983 (var=0.0351)
+- pi_3: 0.8700 (var=0.0083)
+- pi_4: 0.7717 (var=0.0078)
+- pi_6: 0.3933 (var=0.0108)
+- pi_7: 0.3833 (var=0.0125)
+- pi_9: 0.0706 (var=0.0146)
+
+### Experiment 15
+**Design**
+  A=[1, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[1, 1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 1, 1, 1, 1]
+  A=[1, 1, 1, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 1, 1, 1, 1, 1, 1]
+  A=[1, 1, 1, 1, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1, 1, 1, 1, 1]
+  A=[1, 1, 1, 1, 1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 1, 1, 1, 1]
+  A=[1, 1, 1, 1, 1, 1, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 1, 1, 1]
+  A=[1, 1, 1, 1, 1, 1, 1, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 1, 1]
+  A=[1, 1, 1, 1, 1, 1, 1, 1, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 1]
+  A=[1, 1, 1, 1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1, 1, 1, 1]
+  A=[0, 1, 0, 0, 0, 0, 0, 0, 0]  B=[1, 0, 1, 1, 1, 1, 1, 1, 1]
+  A=[0, 1, 1, 0, 0, 0, 0, 0, 0]  B=[1, 0, 0, 1, 1, 1, 1, 1, 1]
+  A=[0, 1, 1, 1, 0, 0, 0, 0, 0]  B=[1, 0, 0, 0, 1, 1, 1, 1, 1]
+  A=[0, 1, 1, 1, 1, 0, 0, 0, 0]  B=[1, 0, 0, 0, 0, 1, 1, 1, 1]
+  A=[0, 1, 1, 1, 1, 1, 0, 0, 0]  B=[1, 0, 0, 0, 0, 0, 1, 1, 1]
+  A=[0, 1, 1, 1, 1, 1, 1, 0, 0]  B=[1, 0, 0, 0, 0, 0, 0, 1, 1]
+  A=[0, 1, 1, 1, 1, 1, 1, 1, 0]  B=[1, 0, 0, 0, 0, 0, 0, 0, 1]
+  A=[0, 1, 1, 1, 1, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0, 0, 0, 0, 0]
+
+**Metric**
+```python
+import numpy as np
+
+
+def metric(data):
+    a0 = data['option_a_ratings'].apply(lambda x: int(x[0]))
+    b0 = data['option_b_ratings'].apply(lambda x: int(x[0]))
+    low_a = (a0 == 1) & (b0 == 0)
+    low_b = (a0 == 0) & (b0 == 1)
+    resp = data['response'].astype(float)
+    ra = resp[low_a].mean()
+    rb = resp[low_b].mean()
+    if np.isnan(ra) or np.isnan(rb):
+        return 0.0
+    return float(rb - ra)
+
+```
+
+**Observed (real) value:** 0.7742 (var=0.0352)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.4636 (var=0.0271) (Δ vs real -0.3107)
+  - iter 2: 0.7973 (var=0.0065) (Δ vs real +0.0231)
+  - iter 3: 0.7720 (var=0.0076) (Δ vs real -0.0022)
+  - iter 4: 0.6818 (var=0.0061) (Δ vs real -0.0924)
+  - iter 5: 0.6498 (var=0.0063) (Δ vs real -0.1244)
+  - iter 6: 0.6622 (var=0.0075) (Δ vs real -0.1120)
+  - iter 7: 0.6422 (var=0.0082) (Δ vs real -0.1320)
+  - iter 8: 0.7276 (var=0.0058) (Δ vs real -0.0467)
+  - iter 9: 0.7533 (var=0.0062) (Δ vs real -0.0209)
+  - iter 10 (current): 0.6489 (var=0.0040) (Δ vs real -0.1253)
+**Other theories' values on this metric (for reference):**
+- pi_8: 0.1440 (var=0.0168)
+- pi_9: 0.7493 (var=0.0087)
+- pi_1: -0.0071 (var=0.0075)
+- pi_2: 0.0831 (var=0.0046)
+- pi_3: 0.0964 (var=0.0021)
+- pi_4: 0.0831 (var=0.0052)
+- pi_5: 0.3538 (var=0.0183)
+- pi_6: 0.4036 (var=0.0073)
+- pi_7: 0.2671 (var=0.0058)
+
+### Experiment 16
+**Design**
+  A=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1]
+  A=[1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1]
+  A=[1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+  A=[1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0]  B=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0]  B=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1]
+  A=[1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1]
+  A=[1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+  A=[1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0]  B=[1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0]  B=[1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+  A=[0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1]  B=[1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+**Metric**
+```python
+import numpy as np
+
+
+def metric(data: pd.DataFrame) -> float:
+    low_a = np.asarray([x[0] for x in data['option_a_ratings']], dtype=float)
+    resp = np.asarray(data['response'], dtype=float)
+    follow_low = ((low_a == 1.0) & (resp == 0.0)) | ((low_a == 0.0) & (resp == 1.0))
+    return float(np.mean(follow_low))
+```
+
+**Observed (real) value:** 0.8392 (var=0.0101)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.5683 (var=0.0027) (Δ vs real -0.2708)
+  - iter 2: 0.7535 (var=0.0037) (Δ vs real -0.0856)
+  - iter 3: 0.8796 (var=0.0019) (Δ vs real +0.0404)
+  - iter 4: 0.8163 (var=0.0016) (Δ vs real -0.0229)
+  - iter 5: 0.8223 (var=0.0017) (Δ vs real -0.0169)
+  - iter 6: 0.8165 (var=0.0013) (Δ vs real -0.0227)
+  - iter 7: 0.8133 (var=0.0017) (Δ vs real -0.0258)
+  - iter 8: 0.8544 (var=0.0012) (Δ vs real +0.0152)
+  - iter 9: 0.8585 (var=0.0014) (Δ vs real +0.0194)
+  - iter 10 (current): 0.8194 (var=0.0021) (Δ vs real -0.0198)
+**Other theories' values on this metric (for reference):**
+- pi_9: 0.8350 (var=0.0017)
+- pi_8: 0.5506 (var=0.0025)
+- pi_1: 0.5008 (var=0.0009)
+- pi_2: 0.5677 (var=0.0017)
+- pi_3: 0.5329 (var=0.0011)
+- pi_4: 0.6112 (var=0.0009)
+- pi_5: 0.6748 (var=0.0043)
+- pi_6: 0.7431 (var=0.0023)
+- pi_7: 0.6675 (var=0.0024)
+
+## YOUR PRIOR CRITIQUES (for this propose-loop)
+Each block is one of YOUR previous critique iterations: the verdict you returned, the interpretation and rationale you wrote, and an **Outcome of your advice** line that says whether the candidate the proposer produced AFTER following your advice was ACCEPTED (your advice helped — its loss strictly beat the running-best) or REJECTED (your advice didn't help — the gate discarded the candidate). Use this self-history to (a) reinforce advice that was ACCEPTED, (b) avoid repeating advice that was REJECTED, and (c) detect your own oscillation across iterations.
+
+### Iteration 1
+Verdict: regenerate
+Interpretation: The GVC candidate gets many of the core low-cue patterns right. Exp2, Exp7, Exp8, Exp9, Exp10, Exp11, and Exp12 are all in the right qualitative range, with Exp10 and Exp11 excellent, and Exp7 and Exp9 near zero as observed. However the candidate fails badly on three experiments. Exp14 is the worst: observed 0.0278, candidate 0.4189. In Exp14 the low-cue configuration appears never to be diagnostic, yet GVC initializes the high-cue gate at 1.0 and leaves it fully open, so the validity-gap bonus applies without any low-cue licensing. Humans show essentially no high-cue contrast there. Exp15 and Exp16 show the opposite failure: observed lone-low following of 0.7742 and 0.8392, candidate only 0.4636 and 0.5683. The lone diagnostic low cue is too easily diluted by the many at-or-above-median cues, likely because w_hi0 remains nonzero and accumulates across many high features, and the lone_floor gate is not close enough to zero. Exp6 is also clearly over-predicted: observed 0.1525, candidate 0.4571, indicating the homogeneous below-median bloc boost reopens high-cue compensation too strongly. There are also moderate overshoots in Exp3, Exp4, and Exp5, though those are less decisive than Exp14 through Exp16.
+Rationale: Keep the GVC family and fixed-temperature softmax, but repair the gate and high-cue baseline. First, the gate should not default to 1.0. Add a small gate_base parameter, roughly 0.00 to 0.10, and make the homogeneous below-median bloc boost additive rather than multiplicative on a tiny base, so that no-active-low trials like Exp14 produce almost no high-cue influence while Exp4, Exp6, and Exp13 can still retrieve their required high-cue effects. Second, for the lone-low failures in Exp15 and Exp16, set w_hi0 to zero or near 1e-5 and shrink lone_floor to roughly 0.00 to 0.03, so many at-or-above-median cues cannot collectively dilute one diagnostic low cue. A modest increase in lambda may help but should be monitored against Exp1. Third, reduce the homogeneity boost b_boost from 1.5 to 2.8 down to roughly 0.4 to 1.0, or tighten H_spread and conflict damping K, to bring Exp6 down toward the observed 0.1525. These are in-family gate and parameter repairs, not a replacement of the prescribed GVC mechanism.
+
+**Outcome of your advice:** iter 1 candidate loss=0.1932 -> iter 2 candidate loss=0.1021 -> the gate marked it ACCEPTED.
+
+### Iteration 2
+Verdict: regenerate
+Interpretation: GVC-d is a substantial improvement over the previous iteration. Exp13 matches exactly, Exp9 is nearly exact, Exp10 and Exp11 are strong, Exp15 has been repaired to within about 0.02 of observed, and Exp8 stays near zero. The prior gate repair clearly helped Exp14, Exp15, and Exp16. However the candidate is not yet experiment-invariant. The largest remaining failures are Exp6, where the homogeneous below-median bloc still opens the high-cue gate far too strongly, producing 0.4629 against an observed 0.1525, and Exp14, where no-active-low trials still receive a residual high-cue bonus through gate_base, producing 0.1967 against 0.0278. Lone-low following is also still too weak in Exp12 and Exp16: 0.7500 and 0.7535 against observed 0.8375 and 0.8392. This suggests the nonzero gate_base, multiplied by lone_floor, leaves enough high-cue weight to dilute a single diagnostic low cue. There are also moderate overshoots in Exp5, Exp3, and Exp4, with errors of roughly 0.07 to 0.15. Exp2 remains underweighted on the high-validity side, and the previous b_boost reduction did not move Exp6, so a sharper homogeneity trigger rather than another broad b_boost shrink is needed.
+Rationale: Stay within the prescribed GVC family and keep the fixed-temperature softmax with no lapse. Make targeted in-family repairs. First, set gate_base to 0 or at most 0.005; since w_hi0 is already zero, this removes the unlicensed high-cue bonus on no-active-low trials like Exp14 and should also remove residual high-cue dilution on lone-low trials in Exp12 and Exp16. If Exp2 loses directional contrast because of this, compensate by increasing rho to about 0.04 to 0.08 or raising beta, not by reopening gate_base. Second, tighten the bloc license for Exp6: lower b_boost to roughly 0.10 to 0.35 and sharpen H_spread to about 0.05 to 0.15, or increase the homogeneity exponent, so only very homogeneous three-plus below-median blocs can open the gate; recheck Exp4 and Exp13 to ensure their high-cue contributions remain. Third, strengthen count-dependent attenuation for multiple active low cues by raising phi to about 0.40 to 0.60, which should pull Exp5 from 0.897 toward 0.827, while monitoring Exp10. Fourth, if Exp12 and Exp16 remain below about 0.80 after gate_base is zeroed, raise lambda to about 2.8 to 3.2 with sigma near 0.15 to 0.25 rather than restoring w_hi0 or any high-cue baseline.
+
+**Outcome of your advice:** iter 2 candidate loss=0.1021 -> iter 3 candidate loss=0.0786 -> the gate marked it ACCEPTED.
+
+### Iteration 3
+Verdict: regenerate
+Interpretation: The current GVC-z candidate is a major improvement over the previous iterations and remains faithful to the prescribed gated validity-gap compensation family. Several experiments now match almost exactly: Exp9 is essentially exact, Exp13 remains exactly 0.0, Exp14 has been repaired from 0.4189 to 0.0117 against an observed 0.0278, Exp15 is near perfect at 0.7720 against 0.7742, and Exp10/Exp11 continue to fit well. The hard-zero gate default and the removal of the high-cue baseline clearly worked. However the candidate is still not experiment-invariant. The worst remaining failure is Exp6, where the homogeneous below-median bloc gate still opens too strongly: candidate 0.4821 against observed 0.1525, an error of +0.3296. The prior b_boost and H_spread changes did not fix it, which suggests the problem is that the homogeneity boost is still licensed independently of how diagnostic the low-cue bloc actually is. Exp3 is also substantially over-predicted (-0.5365 against -0.3485), as is Exp4 (-0.7783 against -0.6533). These suggest that multiple low cues still accumulate too much choice pressure, partly because the fixed-temperature softmax is saturating under high beta. Exp5 remains too high (0.8992 against 0.8275) for the same reason. On the high-cue side, Exp2 is still under-predicted (-0.7440 against -0.8592), so licensed validity-gap compensation may be too weak. Lone-low behavior is still asymmetric: Exp12 is too weak (0.7412 against 0.8375) while Exp16 is too strong (0.8796 against 0.8392), indicating the lone amplification term lacks the contextual opposition sensitivity needed to separate these cases.
+Rationale: Regenerate with targeted in-family repairs. First, fix Exp6 by making the homogeneous low-bloc license more stringent and diagnosis-sensitive. The homogeneous boost should not be a bare additive gate += b_boost * hom for any spread below H_spread. Raise the homogeneity exponent to roughly 6-10 or narrow H_spread to about 0.01-0.04, and additionally scale b_boost by a low-cue activation factor such as tanh(mean(dev[active_below]) / D_boost) with D_boost around 1.0-2.0. This keeps a strong license for genuinely diagnostic homogeneous blocs in Exp4 and Exp13, while suppressing the near-median homogeneous blocs that likely drive the Exp6 over-prediction. Second, after tightening that gate, increase the licensed high-cue response to recover Exp2: raise rho to roughly 0.08-0.14 or loosen conflict damping by raising K to about 0.6-1.0, while keeping gate_base and w_hi0 at zero. Third, reduce overall saturation in multi-low-cue configurations: lower beta to about 1.4-1.8 and slightly strengthen phi to about 0.55-0.75, which should pull Exp3, Exp4, and Exp5 toward their observed values. To avoid losing lone-low following, pair this with stronger lone amplification, with lambda around 3.4-4.2 and sigma near 0.10-0.18. Fourth, make lone amplification opposition-sensitive: multiply the lone amplification term by 1 + nu * min(n_opposing_at_or_above, cap), with nu around 0.05-0.15 and cap around 3-5. This should raise Exp12, where a lone below-median cue faces several opposing above-median cues, without further inflating Exp16, where lone-cue following is already too strong. Keep the fixed-temperature softmax with no lapse and the hard-zero high-cue default; these are parameter-level and gating repairs within the prescribed GVC family.
+
+**Outcome of your advice:** iter 3 candidate loss=0.0786 -> iter 4 candidate loss=0.0631 -> the gate marked it ACCEPTED.
+
+### Iteration 4
+Verdict: regenerate
+Interpretation: The current GVC-focal candidate is the best iteration so far and remains within the prescribed gated validity-gap family. Several experiments are now near exact or close, including Exp5 (0.8287 vs 0.8275), Exp4 (-0.6408 vs -0.6533), Exp13 (exact 0.0000), Exp1, Exp9, Exp11, Exp12, Exp14, and Exp16, all within roughly 0.02-0.03 of observed. However the candidate is not yet experiment-invariant. The largest remaining failure is Exp6, where the candidate gives 0.3821 against an observed 0.1525, an over-prediction of about 0.23. Exp2 also moved in the wrong direction: the candidate gives -0.6431 against -0.8592, an error of about 0.216, after the previous iteration had -0.7440. Exp15 regressed from 0.7720 to 0.6818 against observed 0.7742, an error of -0.092. Exp3 remains somewhat too negative at -0.4294 vs -0.3485. These failures share a common diagnosis: the high-cue validity-gap bonus is still too readily licensed and insufficiently suppressed when low and high evidence conflict. The conflict damping term uses K in 0.70-1.00, which is too permissive, and the homogeneous low-bloc boost, though tightened, still reopens the high-cue gate too much in Exp6 and in conflict-heavy configurations. The low-cue side is otherwise well calibrated after the beta and phi changes.
+Rationale: Keep the GVC family, fixed-temperature softmax, no lapse floor, and hard-zero high-cue default. First, tighten the conflict gate substantially by lowering K from 0.70-1.00 to an intermediate range around 0.30-0.50. This should close the validity-gap bonus under opposed low-high evidence, pushing Exp2 toward -0.86, reducing the Exp6 overshoot, and recovering much of the lost Exp15 lone-low following without a global beta increase. This partly reverses the previous relaxation of K, but the current data show that move overshot; use an intermediate value rather than returning to the old strong setting. Second, make the homogeneous low-bloc license still more stringent: lower b_boost to about 0.02-0.08, steepen the activation by lowering D_boost to about 0.6-1.2, and/or narrow H_spread to about 0.005-0.02 with an exponent of 10-12. Third, do not raise beta globally, because the current values have fixed Exp3, Exp4, and Exp5; if Exp15 and Exp10 remain slightly under-following after conflict tightening, strengthen lone-cue amplification instead by raising lambda toward 4.5-5.5 and increasing nu toward 0.15-0.25 with opp_cap 5. Recheck Exp4 and Exp13 after tightening the conflict and homogeneity gate to ensure their high-cue contributions are not lost. These are all parameter-level and gating repairs within the prescribed mechanism, not a family change.
+
+**Outcome of your advice:** iter 4 candidate loss=0.0631 -> iter 5 candidate loss=0.0580 -> the gate marked it ACCEPTED.
+
+### Iteration 5
+Verdict: regenerate
+Interpretation: The GVC-strict candidate is a further improvement and was correctly accepted, but it is not yet experiment-invariant. Many experiments are now near exact or well within noise: Exp1 (-0.0981 vs -0.0959), Exp4 (-0.6775 vs -0.6533), Exp5 (0.8246 vs 0.8275), Exp7 (-0.0045 vs -0.0103), Exp9 (-0.0004 vs 0.0032), Exp10 (0.1865 vs 0.2001), Exp11 (0.5000 vs 0.4833), Exp12 (0.8287 vs 0.8375), Exp13 exact, Exp14 (0.0122 vs 0.0278), and Exp16 (0.8223 vs 0.8392). The remaining failures are concentrated and diagnostic. Exp2 is still substantially under-weighted on the high-validity side (-0.6440 vs -0.8592), and notably the previous K tightening did not move it at all, which suggests the conflict-damping term is not the binding constraint there. Exp6 remains over-predicted (0.3733 vs 0.1525), indicating the homogeneous low-bloc license still reopens high-cue influence too easily in near-median configurations. Exp15 regressed further (0.6498 vs 0.7742), which is likely residual gate leakage on lone-low trials because lone_floor is still allowed to be nonzero. Exp3 remains moderately too negative (-0.4469 vs -0.3485).
+Rationale: Keep the GVC family, the fixed-temperature softmax, no lapse floor, hard-zero high-cue default, and the accepted K and homogeneity repairs, but make three targeted in-family repairs. First, for Exp2 the homogeneous low-bloc bonus is being nearly annihilated by the global one-over-one-plus-(dmax/D_half)^2 suppression that applies even when n_active >= 3 and the below-median cues form a perfectly homogeneous bloc. Exempt a sufficiently deviant homogeneous bloc from the global dmax suppression, or apply that suppression only to lone and non-bloc low configurations, and modestly raise b_boost into roughly 0.10 to 0.25 while keeping H_spread tight and D_boost low. This should restore the licensed validity-gap compensation needed in Exp2 without broadly reopening the gate. Second, for Exp6 make the bloc license require both homogeneity and sufficiently large deviance from median, for example by gating on the minimum or median active below-median deviance rather than only the mean, so near-median homogeneous blocs fail the threshold while strict low-validity blocs in Exp2 pass. Third, set lone_floor exactly 0.0 so a single diagnostic below-median cue receives no high-cue bonus at all; the current range allows nonzero draws that dilute lone-cue weight and likely produce the Exp15 shortfall. Recheck Exp12 and Exp16 after this change, since they should improve slightly but not overshoot. Avoid global beta or rho increases because the current values are protecting Exp3 through Exp5 and Exp8. These are parameter-level and gating repairs within the prescribed GVC mechanism, not a change of family.
+
+**Outcome of your advice:** iter 5 candidate loss=0.0580 -> iter 6 candidate loss=0.0632 -> the gate marked it REJECTED.
+
+### Iteration 6
+Verdict: regenerate
+Interpretation: The iter 6 candidate was rejected by the accept gate (loss 0.0632 vs running best 0.0580), so the loop will revert to the accepted iter 5 base. The candidate made three main changes relative to iter 5: it exempted licensed homogeneous low blocs from the global dmax suppression, added a median-deviance threshold for bloc licensing, and forced lone_floor to exactly 0.0. These changes produced visible improvements in Exp14 (0.0122 -> 0.0217), Exp15 (0.6498 -> 0.6622), Exp8 (0.0021 -> 0.0174), Exp9 (-0.0004 -> 0.0012), Exp3 (-0.4469 -> -0.4320), and Exp4 (-0.6775 -> -0.6583). However they also produced regressions in Exp2 (-0.6440 -> -0.6239), Exp7 (-0.0045 -> 0.0164), Exp10 (0.1865 -> 0.1814), Exp11 (0.5000 -> 0.5067), Exp16 (0.8223 -> 0.8165), and Exp1 (-0.0981 -> -0.1001). Most importantly, the two largest errors under the accepted base were not meaningfully repaired: Exp2 moved in the wrong direction, and Exp6 was essentially unchanged (0.3733 -> 0.3738). The aggregate loss therefore increased. The rejected changes did not address the binding bottleneck: in multiple-active-low-cue trials, the below-median raw weights still dominate the at-or-above-median validity-gap bonus, so the high-cue side remains too weak in Exp2 and the low-cue side remains too strong in Exp6. The lone_floor and bloc-license modifications were secondary to this low-cue weight imbalance.
+Rationale: Regenerate with the accepted iter 5 base, but do not repeat the rejected iter 6 changes. The new direction should be a low-cue weight recalibration rather than further gate/license surgery. First, reduce kappa from the current 1.9-2.3 to roughly 1.0-1.4 and/or increase gamma from 1.25-1.45 to 1.55-1.80. This lowers the decision weight of below-median cues whose median/MAD deviance score is below 1, which is exactly the regime in Exp2 (low validity 0.6 vs median 0.65) and likely in Exp6. Because the weights are normalized, this change leaves lone-low and zero-high-gate trials essentially unchanged, so it should not damage Exp15, Exp16, Exp12, Exp14, or Exp5. Reducing the low-cue dominance should pull Exp2 toward the observed -0.8592, pull Exp6 down from 0.3733 toward 0.1525, and also bring Exp3 closer to -0.3485. Second, keep gate_base=0, w_hi0=0, the fixed-temperature softmax, and no lapse floor. If Exp2 remains too weak after the kappa/gamma change, compensate with a modest increase in rho (0.14-0.22) or b_boost, but only after verifying Exp6 does not reopen. Third, for the remaining Exp15 shortfall, do not continue to rely on lone_floor=0.0. Instead, lower focal_ratio from 3.0-4.0 to 2.0-2.5 and/or increase lambda to 5.5-6.5 with nu around 0.25-0.35, so the most deviant low cue is amplified even when other below-median cues oppose it. Monitor Exp16 to ensure lone-low following does not exceed 0.85. These are all parameter-level and gating repairs within the prescribed GVC family.
+
+**Outcome of your advice:** iter 6 candidate loss=0.0632 -> iter 7 candidate loss=0.0678 -> the gate marked it REJECTED.
+
+### Iteration 7
+Verdict: regenerate
+Interpretation: The current iter 7 candidate was rejected by the accept gate (loss 0.0678 vs accepted iter 5 loss 0.0580). Its main regressions are concentrated in exactly the experiments that were already the accepted base's weakest points: Exp2 moved from -0.6440 to -0.6271 against real -0.8592, Exp6 moved from 0.3733 to 0.3833 against real 0.1525, and Exp15 moved from 0.6498 to 0.6422 against real 0.7742. The candidate also slightly worsened Exp16, Exp10, and especially Exp11 (0.5300 vs real 0.4833). The improvements it did achieve, mostly in Exp3, Exp4, Exp8, and Exp9, are real but too small to compensate. This confirms the prior diagnosis that the aggressive low-cue weight recalibration (low kappa, high gamma) is not the binding knob: it did not fix the homogeneous low-bloc gate problem in Exp6, did not restore the strong margin-driven choice in Exp2, and further weakened lone-low following in Exp15. The candidate remains within the prescribed GVC family, so the problem is parameter/gating calibration rather than mechanism choice.
+Rationale: Regenerate on top of the unchanged accepted iter 5 base, but do not repeat the rejected kappa/gamma recalibration in its aggressive form. A smaller intermediate step is preferable: kappa near 1.5-1.7 and gamma near 1.40-1.55, i.e. between the accepted base's high low-cue weights and the rejected candidate's suppressed low-cue weights. This should recover much of the lone-low strength lost in Exp15, Exp16, and Exp10 without reproducing the over-dominance that previously hurt Exp2 and Exp6. The binding remaining problem for Exp2 and Exp6 is the high-cue validity-gap gate: it is still opening too much for moderately deviant homogeneous below-median blocs. Tighten that gate specifically by (a) increasing D_half from 0.35-0.55 to roughly 0.60-0.90 and/or increasing q_dev from 2 to 3, so the dmax suppression more strongly closes the gate in the deviance regime around 0.8; (b) increasing D_boost from 0.6-1.2 to roughly 1.2-2.0 so the homogeneity boost activation is smaller for moderate mean deviance; and (c) keeping b_boost small, around 0.005-0.03, while retaining tight H_spread. These gate changes should pull Exp6 down toward 0.15 and make Exp2 more margin-dominated (more negative) without destroying the high-cue contribution needed in Exp4 and Exp13. For the residual Exp15 lone-low shortfall, rather than further low-cue amplification, nudge the fixed-temperature softmax beta upward modestly from 1.4-1.8 to about 1.7-2.0. This increases single-cue decisiveness where the low cue is diagnostic; it must be paired with the tighter gate above so Exp6 does not over-saturate. Keep gate_base=0, w_hi0=0, no lapse floor, and the prescribed GVC structure. These are parameter-level and gating repairs within the arbiter's mechanism family, not a switch of mechanism.
+
+**Outcome of your advice:** iter 7 candidate loss=0.0678 -> iter 8 candidate loss=0.0625 -> the gate marked it REJECTED.
+
+### Iteration 8
+Verdict: regenerate
+Interpretation: The iter 8 candidate is a mixed recalibration of the accepted iter 5 base and the accept gate is right to reject it: its aggregate loss 0.0625 is worse than the accepted 0.0580, because it fixed a few weak experiments by regressing the ones the base already fitted. Compared with the accepted base, the candidate improves Exp15 (0.6498 to 0.7276, still short of the real 0.7742), Exp14 (0.0122 to 0.0244, real 0.0278), and Exp2 (-0.6440 to -0.7064, real -0.8592), and keeps Exp9 essentially exact. But it regresses Exp5 from 0.8246 to 0.8675 (real 0.8275), Exp1 from -0.0981 to -0.1123 (real -0.0959), Exp3 from -0.4469 to -0.4943 (real -0.3485), and Exp7 from -0.0045 to 0.0101 (real -0.0103). Most importantly, the extra gate tightening did not touch the Exp6 bottleneck and instead made it worse: 0.3733 at the base to 0.4213 now, against the real 0.1525. This confirms my iter 7 advice misfired: D_half, q_dev, D_boost and b_boost surgery does not control the Exp6 block contrast, and the kappa cut plus beta raise damaged the near-perfect Exp1 and Exp5. The persistent failures are therefore not gate thresholds but the shape of the below-median deviance weighting (too convex in dev, so cue position matters too much) and the shape of the above-median gap bonus (alpha above 1 concentrates too much weight on the single most extreme above-median cue). The candidate remains firmly within the prescribed GVC family, with gate_base 0, w_hi0 0, fixed-temperature softmax, and no lapse, so the remedy is parameter-shape and threshold recalibration, not a mechanism change.
+Rationale: Regenerate on top of the unchanged accepted iter 5 base, but do not repeat any of the last three rejected directions (bloc exemption and b_boost raise, aggressive low-cue recalibration, and the iter 7 compound of intermediate kappa with D_half tightening and a beta raise). Pivot to the untested shape knobs. First, restore the accepted base's proven values: kappa 1.9-2.3, beta 1.40-1.80, D_half 0.35-0.55, q_dev 2, D_boost 0.6-1.2, b_boost 0.02-0.08; keep the iter 8 piece that demonstrably helped lone-low trials, namely lone_floor exactly 0.0. Second, attack Exp2 by lowering the gap exponent alpha from 1.1-1.8 to about 0.85-1.15, keeping rho unchanged. With alpha near 1 the validity-gap bonus spreads from the single top cue onto the 0.8 and 0.7 above-median cues, and in Exp2 the disagreement rows (direction from the top cue, margin from the block) will flip E_high_pre onto the margin side, removing the conflict flag and letting the high-cue side reinforce the margin instead of the top cue. This targets the remaining +0.15 error in Exp2 without reopening gate_base or b_boost. Third, attack Exp6 by flattening positional sensitivity instead of closing the gate: lower gamma from 1.25-1.45 to roughly 1.05-1.25 (the opposite of the rejected 1.55-1.80 raise), which compresses the below-median deviance weights toward each other and shrinks the block contrast driven by which positions carry the low cues, while leaving the total low-cue mass forExp5 and Exp10 essentially unchanged. Pair this with a focal_ratio raise from 3.0-4.0 to about 5.0-7.0 (the opposite of the rejected lowering to 2.0-2.5), so the extreme-cue exemption triggers less often and multi-active-low trials receive the uniform count attenuation that Exp6, Exp3 and Exp5 prefer. Fourth, handle the residual Exp15 shortfall only after these base-restoring changes: if lone-low following is still under 0.75, raise beta in a smaller band 1.80-2.00 and compensate the Exp5 overshoot risk with phi 0.65-0.85 rather than reopening any gate, since Exp15's metric is pinned by the softmax temperature once all other weights are zero. After lowering alpha, re-check Exp4 and Exp13 to confirm their licensed high-cue effects survive; if they weaken, use a modest rho nudge to 0.10-0.16, not b_boost. All of these are parameter-shape and threshold adjustments within the arbiter's prescribed GVC mechanism; keep the hard-zero high-cue default, no-lapse fixed-temperature softmax, and conflict gating intact.
+
+**Outcome of your advice:** iter 8 candidate loss=0.0625 -> iter 9 candidate loss=0.1249 -> the gate marked it REJECTED.
+
+### Iteration 9 (most recent)
+Verdict: regenerate
+Interpretation: The current FD-GVC candidate is a clear fail. Its aggregate loss is 0.1249, more than double the accepted iter-5 loss of 0.0580, and the gate correctly rejected it. The failure is broad rather than local. Relative to the accepted base, Exp6 worsened from 0.3733 to 0.4675 against real 0.1525, Exp13 went from exact 0.0000 to 0.1323 against real 0.0000, Exp4 worsened from -0.6775 to -0.7608 against real -0.6533, Exp3 worsened from -0.4469 to -0.4859 against real -0.3485, Exp1 worsened from -0.0981 to -0.1114 against real -0.0959, Exp7 moved from -0.0045 to 0.0169 against real -0.0103, and Exp14 moved from 0.0122 to -0.0067 against real 0.0278. Exp5 also moved in the wrong direction, from 0.8246 to 0.8733 against real 0.8275, and Exp12 and Exp16 overshoot by about 0.03 and 0.02. The only meaningful gains over the accepted base are Exp15 and a small Exp2 movement, but those gains were purchased by breaking many previously good fits. The main mechanisms behind the regression are: flattening gamma into 1.05-1.25 increased the effective weight of the below-median cues whenever their deviance score is above 1, which amplified the low-cue block contrast driving the Exp6 overshoot; raising focal_ratio to 5-7 altered the unanimous-versus-split low-bloc behavior in Exp13, destroying its exact match; raising beta to 1.80-2.00 saturated choices in Exp5, Exp11, Exp12, and Exp16; and linearizing the high-cue gap exponent did not solve Exp2 because the licensed high-cue raw contribution remains far smaller than the aggregated low-cue raw weight. The candidate is still inside the prescribed GVC family, so this is a parameter-shape and gating calibration failure, not a mechanism-family failure.
+Rationale: Regenerate on top of the unchanged accepted iter-5 base. First, revert the recent changes that produced this collapse: restore gamma to 1.25-1.45, kappa to 1.9-2.3, beta to 1.40-1.80, focal_ratio to 3.0-4.0, alpha to 1.1-1.8, and the accepted phi range. lone_floor may remain exactly 0.0 because it helped Exp15, but it should not again be combined with a broad rebalancing of the low and high sides. Do not repeat the rejected gate-threshold or b_boost surgery, the broad kappa/gamma recalibration, or the gamma-flatten plus focal-ratio-raise plus beta-raise direction that led to this candidate. The next untested in-family knob should be homogeneity-dependent attenuation of the low-cue side rather than further high-gate surgery: when n_active >= 3 and the active below-median validities form a near-identical bloc, strengthen the count attenuation via phi_eff = phi * (1 + eta_hom_low * hom_bloc), where hom_bloc is the existing steep homogeneity factor and eta_hom_low starts small, around 0.3-0.8. This should directly reduce the low-cue dominance that keeps Exp2 near -0.69 instead of -0.86 and that inflates Exp6 toward 0.47 instead of 0.15, while leaving lone-low Exp15 and Exp16, two-low Exp5, and no-active-low Exp14 mostly protected. After applying this, recheck Exp4 and Exp13 before any other change. If Exp2 is still under about -0.80, nudge rho upward only modestly, around 0.15-0.25, rather than reopening gate_base or increasing b_boost.
+
+**Outcome of your advice:** iter 9 candidate loss=0.1249 -> CURRENT candidate loss=0.0740 -> the gate marked it REJECTED.
+
+## RESPONSE FORMAT
+
+Return a JSON object with the following fields:
+- interpretation: Freeform analysis of the model simulation results on existing experiments and how they do or do not support the proposed model/theory.
+- verdict: Either 'regenerate' (regenerate a new model/theory) or 'continue' (keep the current model/theory).
+- rationale: If verdict='regenerate', why the current predict / policy / parameter-ranges should be revised. If verdict='continue', a sketch of why the current theory should be kept.
+
+
+## Response
+
+```json
+{
+  "interpretation": "The current iter 10 candidate is worse than the accepted iter 5 base and the gate correctly rejected it. The only new mechanism, homogeneity-dependent attenuation of near-identical below-median blocs, produced regressions in the very experiments it was meant to fix: Exp2 moved from -0.6440 to -0.5856 against real -0.8592, and Exp6 moved from 0.3733 to 0.4025 against real 0.1525. It also degraded previously good fits such as Exp5, Exp7, Exp8, Exp10, and Exp14. Exp15 is essentially unchanged at 0.6489 against real 0.7742. The diagnosis is now clear: multiplying raw low-cue weights by a count/homogeneity attenuation factor does not alter choice probabilities enough because the softmax input is computed from weights normalized to sum to one. In configurations where the high-cue gate is zero or very small, the normalized evidence is still plus or minus one, so the decision probability remains fixed by beta alone. This is why low-cue attenuation has repeatedly failed to control Exp6 and Exp2.",
+  "verdict": "regenerate",
+  "rationale": "Regenerate on top of the unchanged accepted iter 5 base. First, drop the rejected eta_hom_low homogeneity attenuation entirely; the gate showed it is harmful. Second, the remaining Exp15 shortfall is a softmax slope problem: with normalized evidence, lone-low following is determined only by beta, and the current beta range gives roughly 0.82 following in Exp15, Exp12, and Exp16. Nudge beta into a narrow range around 1.8 to 2.0, using Exp15 as the calibration target. To avoid saturating Exp5 and the other multi-cue experiments, do not apply that beta increase globally without compensation: add a small count-conditional high-cue floor only for n_active equal 2, around 0.005 to 0.02, while keeping the gate exactly zero for n_active 0 and lone n_active 1 so Exp14, Exp15, Exp12, and Exp16 are not reopened. Keep gate_base, w_hi0, and the no-lapse fixed-temperature softmax otherwise as in the accepted iter 5 base, and avoid further low-cue attenuation surgery. This count-conditional high-cue floor is an in-family gating calibration, not a change of mechanism family."
+}
+```
+
+## Usage
+
+```json
+{
+  "input_tokens": 41655,
+  "output_tokens": 32363,
+  "reasoning_tokens": 31841,
+  "provider": "Baidu"
+}
+```

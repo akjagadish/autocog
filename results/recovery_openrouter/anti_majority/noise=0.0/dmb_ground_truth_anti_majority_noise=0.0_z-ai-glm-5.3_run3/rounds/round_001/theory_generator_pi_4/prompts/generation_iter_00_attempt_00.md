@@ -1,0 +1,729 @@
+# generation_iter_00_attempt_00
+
+## System Prompt
+
+You are a renowned cognitive scientist and an expert Python programmer.
+
+Your job is to propose a new theory and its model instantiation in the Decision Making (Binary Features) domain based on the feedback provided by an arbiter. The feedback contains diagnoses of mechanistic failures of the previous theory along with suggestions for a new theory family that overcomes those failures. The newly proposed theory and model should display human-like behavior when simulated on experiment(s). 
+The goal of the theory generation process is to SURFACE theories that are EXPERIMENT-INVARIANT: that is,theories that explain data across the majority of experiments. 
+You will see a list of theories that have been proposed in the past but you should only use them as inspiration and not to choose from them. Propose a new theory that is different. 
+If they fail to do so, you will receive feedback on their performance on the same experiment(s) and you will have to propose another new theory and model that meet the requirements, iterating until you succeed.
+
+If you think the failure to capture human behavior is due to arbiter feedback that is inaccurate or unhelpful, you can propose a new theory and model that ignore the feedback, but you must provide rationale for why you are ignoring it and how your proposal overcomes the identified mechanistic failures.
+
+## ACCEPT GATE & LOSS TRAJECTORY — HOW THE LOOP HANDLES YOUR EDITS
+This propose-loop has a programmatic accept gate: after every iteration the candidate's `aggregate_loss` is compared against the running-best loss; strict improvement -> ACCEPTED (the candidate becomes the new running-best base); otherwise -> REJECTED (the candidate is discarded and the base is unchanged). You do NOT need to manually "revert" a regressed edit — the gate already does that for you.
+
+The block rendered below as `## PREVIOUS CANDIDATE (this loop)` is ALWAYS the running-best (last ACCEPTED) candidate, NEVER your most recent attempt if it was rejected. So:
+  * Treat `## PREVIOUS CANDIDATE` as a known-good base. Build on it.
+  * The `## LOSS TRAJECTORY` block tags every iteration ACCEPTED or REJECTED. Use this as ground truth on which past critic advice actually moved the loop forward and which didn't.
+  * The `## PRIOR FEEDBACK ITERATIONS` block annotates each prior critique with the same ACCEPTED/REJECTED tag of the candidate it elicited. Down-weight critic advice whose previous candidates were REJECTED, and reinforce / extend advice whose candidates were ACCEPTED.
+  * Treat the best ACCEPTED iteration's loss as a soft floor — the next edit should plausibly land at-or-below it, otherwise the gate will reject your attempt and the base stays put.
+
+Each metric value below is shown as `point_estimate (var=X)`, where `point_estimate` is `metric(data)` evaluated on the full pooled dataset and `var` is the population (between-subject) variance of the same metric re-applied per `subject_id`. The point estimate is the canonical scalar; `var` reports how consistent that estimate is across subjects (lower = more consistent). `var=n/a` means the metric could not be applied to a single-subject slice.
+
+## PARAMETER NOTATION
+`parameters` is a JSON object mapping each parameter name (snake_case string) to a *string* value that specifies its domain. Every value MUST be a string — never a bare list, number, tuple, or expression. Use exactly one of these notations per parameter:
+
+1. Continuous interval — square brackets, two numeric bounds:
+   "[min, max]"
+   Examples: "[0, 1]", "[1.0, 10.0]", "[10, 1000]"
+
+2. Discrete set — curly braces, comma-separated values:
+   "{v1, v2, ...}"
+   Example: "{1, 2}"
+
+3. Vector of intervals whose length is set by the experiment — a bracketed tuple repeated by a symbolic length variable:
+   "[(min, max)] * length_var"
+   Example: "[(0, 1)] * n_features"
+
+4. Symbolic reference — a bare variable name (no brackets, no angle brackets), used when the parameter takes its value from an experiment-defined constant rather than a range:
+   "variable_name"
+   Example: "n_features"
+
+Rules:
+- Do not use parentheses for intervals; square brackets only. Tuples `(a, b)` are reserved for the vector-of-intervals notation in (3).
+- Do not mix notations within a single value (e.g., no "[0, 1] or {2, 3}").
+- Do not quote numbers inside the notation (write "[0, 1]", not "['0', '1']").
+- Every parameter referenced by `predict` or `policy` must appear as a key in `parameters`, and vice versa.
+- Notations 3 and 4 may ONLY reference the experiment-defined symbolic identifiers listed under "ALLOWED SYMBOLIC IDENTIFIERS" below. Do not invent new identifier names. If a parameter's shape doesn't fit any of those variables, fall back to a literal interval (notation 1) or discrete set (notation 2). Use these names so the model adapts to any experiment in this domain instead of hardcoding shapes.
+
+## ALLOWED SYMBOLIC IDENTIFIERS (for notations 3 and 4 above)
+- n_features: Number of expert ratings per option (LLM-proposed via `validities` length).
+- validities: Per-expert validities (LLM-proposed; each in [0.5, 1.0]); fixed across all trials.
+
+## AVAILABLE IMPORTS inside `predict` and `policy`
+- numpy as np
+- pandas as pd
+- scipy and its submodules
+- torch and torch.nn.functional as F
+- sklearn and its submodules
+- math, random, and other standard Python libraries
+
+## RUNTIME CONTRACT (function signatures and argument shapes)
+`predict(parameters, state, history) -> np.ndarray`:
+- `parameters`: dict[str, value]. One sample drawn from your declared `parameters` ranges, applied for the entire subject run.
+- `state`: the per-trial input delivered by the experiment (shape is domain-specific — see the experiment description above and the `history` key list below, which mirrors the per-trial variables carried in `state`). Convert to an array with `np.asarray(state)` if you need array ops.
+- `history`: dict-of-lists for past trials in this subject's run, NOT a list-of-dicts. The per-trial keys are:
+  Each value below is a Python list in trial order; entry `i` is the value for trial `i`. On the first trial all lists are empty.
+  - `"option_a_ratings"`: List of n_features binary expert ratings (each 0 or 1) for option A on this trial.
+  - `"option_b_ratings"`: List of n_features binary expert ratings (each 0 or 1) for option B on this trial.
+  - `"response"`: 0 if subject chose A, 1 if subject chose B.
+Iterating `for x in history:` iterates the dict KEYS (strings); to walk trials index the lists in lock-step, e.g. `for i in range(len(next(iter(history.values())))): ...`.
+- Returns: 1-D `np.ndarray` of choice probabilities over the experiment's discrete action set, summing to 1.
+
+`policy(probs) -> int`:
+- Receives the probability vector produced by `predict`.
+- Returns: integer index in `[0, len(probs))` identifying the chosen action. If you sample with `np.random.choice(..., p=probs)`, normalise first (`probs = np.asarray(probs, dtype=np.float64); probs /= probs.sum()`) to avoid the "probabilities do not sum to 1" ValueError from float drift.
+
+
+## User Prompt
+
+## EXPERIMENTAL DOMAIN
+Subjects repeatedly choose between two fictitious products, A and B. Each option is described by a vector of binary expert ratings (each 0 or 1). Every experiment fixes its own feature count (via `validities` length) and per-expert validities; both are LLM-proposed. The validities are communicated to the subject in the instructions. Subjects pick whichever product they believe is of higher quality. There is no trial-by-trial correctness feedback.
+
+Each subject completes ~96 trials in a single block, with order randomized independently per subject. On every trial the subject sees two options A and B, each described by `n_features` binary expert ratings (each 0 or 1). The per-feature validities and n_features are fixed per experiment (design-time choices). Validities are communicated to the subject in the instructions. Both `n_features` and `validities` are exposed to your `predict` via the `parameters` dict. The subject chooses A or B; no correctness feedback is provided after the choice.
+
+## ARBITER GUIDE
+The arbiter labelled this round's two theories in its recommendation as follows:
+- THEORY 1 = `pi_1`
+- THEORY 2 = `pi_3`
+- The recommendation below acts on THEORY 2 (= `pi_3`).
+
+Replace pi_3 with a new theory: **Sparse-Option Preference / Polarity-Inverted Evidence Integration (SPI)**. Core claim: subjects in this task systematically treat a cue value of 1 as evidence AGAINST an option (equivalently, they prefer the option with more 0s / fewer expert endorsements — e.g., mis-mapped cue polarity, a 'fewer red flags' reading, or a rarity-implies-quality inference), integrating ALL cues with near-uniform weights. Formal sketch: for options with cue vectors a, b, define evidence for A over B as E = sum_j w_j * (b_j - a_j), where w_j = v_j^gamma with gamma in [0, 2] (near-tallying; validity plays at most a mild role — this is what makes the behavior look TTB-like on Exp 3/4 conflict trials where the top-cue option happens to be sparse, but anti-TTB on loaded unanimous trials). Choice is a softmax over [E, -E] with inverse temperature beta in [0.5, 20], plus an independent lapse epsilon in [0.05, 0.35] to uniform. Optionally allow per-subject heterogeneity: a polarity mixing weight or a small subpopulation of validity-ordered one-reason subjects, which explains why Exp 3's observed value (0.158) is attenuated relative to the pure sparse-preference prediction (~0.35). Predicted signatures: Exp 1 metric ≈ -0.7 to -1.0 (vs observed -0.717); Exp 2 slope ≈ -0.5 to -0.7 (vs observed -0.523); Exp 4 tally-winner proportion ≈ 0.15-0.25 (vs observed 0.181); Exp 3 ≈ 0.1-0.35 (vs observed 0.158). This theory is sharply distinguished from both incumbents: unlike TTB it uses all cues and inverts the evidence sign (TTB's Exp 1 metric is pinned at 0 for all parameters), and unlike PWEI it places humans at the FLAT end of the weighting ladder with inverted polarity, predicting the negative slopes that PWEI's steep-gamma box cannot produce at any parameter setting. It should be proposed as a direct competitor to the surviving incumbent pi_1 (TTB), which it beats on Experiments 1 and 2 while matching it on Experiments 3 and 4.
+
+## THEORY LEADERBOARD
+A small set of prior picked theories shown for reference. Overall score is in `[0, 1]`, higher = better, computed as `1 - L2_norm(normalized_per_experiment_distances) / max_L2_norm`. 1.0 means closest to the real value on every experiment+metric pair; 0.0 means farthest. Each entry below carries the same depth of detail as the PREVIOUS MODEL INSTANCE above so you can borrow concrete mechanisms when useful.
+
+### `pi_1` (overall score: 0.852)
+
+**Description**
+People compare two options by consulting cues one at a time in order of validity, stopping at the first cue that discriminates between the two options. That cue alone determines the choice: the option with the higher value on the discriminating cue wins, and no other cue is consulted. Cues with lower validity are never reached when a higher-validity cue already discriminates, so Take The Best is a "one-reason" decision rule — only a single feature is ever used on any given choice. Because only the sign of the comparison on the top discriminating cue matters, TTB ignores both the magnitude of that difference and all information on lower-validity cues, making it maximally frugal in the use of evidence. Cue validities are subjective and can be learned, inferred from instructions, or fixed by task structure. When no cue discriminates (all feature-wise comparisons tie) the learner has no basis for preference and must guess. Response noise enters through a softmax over the binary TTB score (winner = 1, loser = 0) with inverse temperature beta, plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.
+
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, stimulus, history):
+    # Paper-faithful Take The Best (Gigerenzer & Goldstein 1996).
+    # Stimulus is the pair of option feature vectors for the current
+    # trial: array-like of shape (2, n_features), row 0 = option A,
+    # row 1 = option B. Cue cascade: features are consulted in order
+    # of descending validity; the first discriminating cue (strict
+    # inequality) determines the winner; if no cue discriminates,
+    # the model guesses uniformly. History is ignored.
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(
+            f"TTB expects a (2, n_features) stimulus; got shape {stim.shape}."
+        )
+    n_features = stim.shape[1]
+
+    val = np.asarray(parameters["validities"], dtype=float)
+    if val.shape[0] != n_features:
+        raise ValueError(
+            f"validities length {val.shape[0]} != n_features {n_features}."
+        )
+    # Descending validity; argsort is stable so validity ties break
+    # toward the earlier feature index.
+    cue_order = np.argsort(-val, kind="stable").tolist()
+
+    a, b = stim[0], stim[1]
+    winner = None
+    for j in cue_order:
+        if a[j] > b[j]:
+            winner = 0
+            break
+        if b[j] > a[j]:
+            winner = 1
+            break
+
+    if winner is None:
+        # No discriminating cue — pure guess.
+        return np.ones(2) / 2.0
+
+    scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])
+
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+
+    # Softmax with max-subtraction for numerical stability. For the
+    # binary TTB score this collapses to sigmoid(beta) for the winner,
+    # giving a direct mapping from beta onto the paper's flip-noise
+    # levels (beta=0 ↔ 50/50; beta ≫ 1 ↔ deterministic).
+    z = beta * (scores - scores.max())
+    e = np.exp(z)
+    p_core = e / e.sum()
+
+    n_opts = p_core.shape[0]
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+
+
+`policy(probs) -> int`:
+def policy(probabilities):
+    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.
+    return np.random.choice(len(probabilities), p=probabilities)
+
+
+`parameters`:
+- beta: [0.1, 20.0]
+- epsilon: [0.0, 0.5]
+- validities: validities
+
+**Per-experiment fit (real vs this theory's metric value):**
+- Experiment 1: real=0.1580 (var=0.0120) vs this=0.3480 (var=0.0087)
+- Experiment 2: real=0.1814 (var=0.0118) vs this=0.1536 (var=0.0134)
+- Experiment 3: real=-0.7167 (var=0.0939) vs this=0.0033 (var=0.0461)
+- Experiment 4: real=-0.5230 (var=0.0540) vs this=0.0081 (var=0.0061)
+
+
+---
+
+### `pi_3` (overall score: 0.261)
+
+**Description**
+Power-Weighted Evidence Integration (PWEI), calibrated operating regime. When choosing between two options described by binary cues, people integrate ALL cues additively, but each cue's vote is weighted by a power transform of its stated validity, w_j proportional to v_j^gamma. The net evidence for option A is D = sum_j w_j * sign(a_j - b_j), and choice is a softmax over [D, -D] with inverse temperature beta, plus an independent lapse epsilon to uniform choice. The psychologically critical regime is a STEEP one: gamma around 40 makes the top cue's weight dominate a tightly-packed validity ladder (e.g. a 0.95 cue overriding a 0.90-led five-cue block, as in Experiment 2), producing near-TTB choices there, while the ~0.2 lapse keeps overall confidence graded and attenuated (as in Experiment 1). The steepness parameter gamma spans Tallying (gamma=0) to Take-The-Best (gamma -> infinity); the fitted human regime sits far toward the TTB end but retains graded, evidence-margin-dependent confidence on near-tie weighted conflicts, which is exactly what constant-confidence pure heuristics cannot produce.
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, state, history):
+    # Power-Weighted Evidence Integration.
+    # Stimulus: array-like of shape (2, n_features); row 0 = option A,
+    # row 1 = option B; entries are 0/1 cue values. History is ignored
+    # (no feedback in this task).
+    stim = np.asarray(state, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(
+            f"PWEI expects a (2, n_features) stimulus; got shape {stim.shape}."
+        )
+    n_features = stim.shape[1]
+
+    val = np.asarray(parameters["validities"], dtype=float)
+    if val.shape[0] != n_features:
+        raise ValueError(
+            f"validities length {val.shape[0]} != n_features {n_features}."
+        )
+
+    gamma = float(parameters["gamma"])
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+
+    # Power-transformed validity weights, normalized by their sum.
+    # Normalization is a per-experiment constant rescale (validities are
+    # fixed), so it is absorbed by beta; it keeps the evidence scale
+    # O(1) for any gamma and any n_features.
+    w = np.power(val, gamma)
+    w_sum = w.sum()
+    if w_sum > 0:
+        w = w / w_sum
+    else:
+        w = np.full(n_features, 1.0 / n_features)
+
+    a, b = stim[0], stim[1]
+    # Weighted evidence difference: each cue votes +/-w_j, ties vote 0.
+    D = float(np.sum(w * np.sign(a - b)))
+    scores = np.array([D, -D])
+
+    # Numerically stable softmax over the weighted evidence.
+    z = beta * (scores - scores.max())
+    e = np.exp(z)
+    p_core = e / e.sum()
+
+    # Independent lapse to uniform choice.
+    n_opts = p_core.shape[0]
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+
+`policy(probs) -> int`:
+def policy(probs):
+    probs = np.asarray(probs, dtype=np.float64)
+    probs = probs / probs.sum()  # Guard against float drift.
+    return np.random.choice(len(probs), p=probs)
+
+`parameters`:
+- gamma: [35, 50]
+- beta: [7, 10]
+- epsilon: [0.17, 0.23]
+- validities: validities
+
+**Per-experiment fit (real vs this theory's metric value):**
+- Experiment 1: real=0.1580 (var=0.0120) vs this=0.2473 (var=0.0026)
+- Experiment 2: real=0.1814 (var=0.0118) vs this=0.2557 (var=0.0053)
+- Experiment 3: real=-0.7167 (var=0.0939) vs this=1.0483 (var=0.0759)
+- Experiment 4: real=-0.5230 (var=0.0540) vs this=0.5548 (var=0.0148)
+
+
+---
+
+### `pi_2` (overall score: 0.000)
+
+**Description**
+People compare two options by counting, across all features, how often one option has a higher value than the other. The option that wins on more features is chosen. Tallying discards cardinal magnitudes — only the sign of each feature-wise comparison matters — so the heuristic is robust to monotone rescaling of individual features and cannot be swayed by a single large feature difference in the way Equal-Weight can. Ties on an individual feature contribute nothing to either count: that cue is simply treated as uninformative for the pair. No feature is privileged, in contrast to Take The Best; every cue contributes equally to the tally. When the two counts are equal the heuristic has no basis for preference and the learner must guess. Response noise enters through a softmax over the two tallies with inverse temperature beta (interpolating between fully deterministic choice at large beta and uniform guessing at beta = 0), plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.
+
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, stimulus, history):
+    # Paper-faithful Tallying heuristic (Dawes 1979; Gigerenzer &
+    # Goldstein 1999). Stimulus is the pair of option feature vectors
+    # for the current trial: array-like of shape (2, n_features),
+    # with row 0 = option A, row 1 = option B. History is ignored.
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(
+            f"Tallying expects a (2, n_features) stimulus; got shape {stim.shape}."
+        )
+
+    a, b = stim[0], stim[1]
+    # Count strict feature-wise wins; ties contribute to neither option.
+    a_wins = float(np.sum(a > b))
+    b_wins = float(np.sum(b > a))
+    scores = np.array([a_wins, b_wins])
+
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+
+    # Softmax with max-subtraction for numerical stability. When
+    # a_wins == b_wins the softmax is exactly uniform regardless of
+    # beta, which is the correct behavior for an undiscriminating
+    # tally.
+    z = beta * (scores - scores.max())
+    e = np.exp(z)
+    p_core = e / e.sum()
+
+    n_opts = p_core.shape[0]
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+
+
+`policy(probs) -> int`:
+def policy(probabilities):
+    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.
+    return np.random.choice(len(probabilities), p=probabilities)
+
+
+`parameters`:
+- beta: [0.1, 20.0]
+- epsilon: [0.0, 0.5]
+
+**Per-experiment fit (real vs this theory's metric value):**
+- Experiment 1: real=0.1580 (var=0.0120) vs this=-0.2963 (var=0.0068)
+- Experiment 2: real=0.1814 (var=0.0118) vs this=0.8664 (var=0.0110)
+- Experiment 3: real=-0.7167 (var=0.0939) vs this=0.7083 (var=0.0512)
+- Experiment 4: real=-0.5230 (var=0.0540) vs this=0.5897 (var=0.0315)
+
+
+## EXPERIMENTAL RESULTS
+### Experiment 1
+**Design**
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1]
+  A=[0, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 0, 0]
+  A=[0, 1, 1, 0, 0]  B=[1, 0, 0, 0, 0]
+  A=[0, 1, 0, 0, 0]  B=[0, 0, 1, 1, 1]
+  A=[0, 0, 1, 1, 1]  B=[0, 1, 0, 0, 0]
+  A=[1, 1, 0, 0, 0]  B=[0, 0, 1, 1, 0]
+  A=[0, 0, 1, 1, 0]  B=[1, 1, 0, 0, 0]
+  A=[1, 1, 1, 1, 0]  B=[0, 0, 0, 0, 1]
+  A=[0, 0, 0, 0, 1]  B=[1, 1, 1, 1, 0]
+  A=[1, 0, 1, 0, 1]  B=[0, 1, 0, 1, 0]
+  A=[0, 1, 0, 1, 0]  B=[1, 0, 1, 0, 1]
+  A=[0, 0, 1, 0, 0]  B=[0, 0, 0, 1, 1]
+  A=[0, 0, 0, 1, 1]  B=[0, 0, 1, 0, 0]
+  A=[1, 0, 0, 1, 1]  B=[0, 1, 1, 0, 0]
+  A=[0, 1, 1, 0, 0]  B=[1, 0, 0, 1, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    # Dissociation score: on trials where Take-The-Best (top-validity
+    # cascade) and Tallying (cue-count majority) make DIFFERENT modal
+    # predictions, how often does the subject side with the TTB option?
+    # TTB predicts > 0.5 on every such trial (constant sigmoid(beta)
+    # confidence, including on tally-tie trials 7/8 where Tallying must
+    # guess at exactly 50%). Tallying predicts < 0.5 on conflict trials
+    # (majority option wins) and exactly 0.5 on tally ties. So the metric
+    # is positive under TTB and negative under Tallying.
+    V = np.array([0.95, 0.85, 0.65, 0.60, 0.50])
+    order = np.argsort(-V, kind="stable")
+
+    a_col = data["option_a_ratings"].tolist()
+    b_col = data["option_b_ratings"].tolist()
+    resp = data["response"].to_numpy()
+
+    matches = []
+    for i in range(len(a_col)):
+        a = np.asarray(a_col[i], dtype=float)
+        b = np.asarray(b_col[i], dtype=float)
+
+        # TTB winner: first discriminating cue in validity order.
+        ttb = -1
+        for j in order:
+            if a[j] > b[j]:
+                ttb = 0
+                break
+            if b[j] > a[j]:
+                ttb = 1
+                break
+        if ttb == -1:
+            continue  # TTB guesses; not diagnostic
+
+        # Tallying winner: strict cue-count majority.
+        a_wins = int(np.sum(a > b))
+        b_wins = int(np.sum(b > a))
+        if a_wins > b_wins:
+            tal = 0
+        elif b_wins > a_wins:
+            tal = 1
+        else:
+            tal = -1  # tally tie -> Tallying guesses
+
+        # Keep only dissociation trials: the two theories' modal
+        # predictions differ (tally tie, or tally majority against TTB).
+        if tal == ttb:
+            continue
+
+        matches.append(1.0 if resp[i] == ttb else 0.0)
+
+    if len(matches) == 0:
+        return 0.0
+    # Center at 0.5: positive => TTB-like, negative => Tallying-like.
+    return float(np.mean(matches)) - 0.5
+```
+
+**Observed (real) value:** 0.1580 (var=0.0120)
+**Other theories' values on this metric (for reference):**
+- pi_1: 0.3480 (var=0.0087)
+- pi_2: -0.2963 (var=0.0068)
+- pi_3: 0.2473 (var=0.0026)
+
+### Experiment 2
+**Design**
+  A=[0, 1, 1, 1, 1, 1, 0, 0]  B=[1, 0, 0, 0, 0, 0, 1, 1]
+  A=[0, 1, 1, 1, 1, 0, 0, 0]  B=[1, 0, 0, 0, 0, 1, 1, 1]
+  A=[0, 1, 1, 1, 0, 0, 0, 0]  B=[1, 0, 0, 0, 1, 1, 1, 1]
+  A=[1, 1, 0, 1, 1, 1, 1, 0]  B=[1, 1, 1, 0, 0, 0, 0, 1]
+  A=[0, 0, 0, 1, 1, 1, 0, 0]  B=[0, 0, 1, 0, 0, 0, 1, 1]
+  A=[1, 1, 0, 1, 1, 0, 0, 0]  B=[1, 1, 1, 0, 0, 1, 1, 1]
+  A=[1, 0, 0, 1, 0, 1, 1, 1]  B=[1, 0, 0, 1, 1, 0, 0, 0]
+  A=[0, 1, 1, 0, 0, 1, 1, 0]  B=[0, 1, 1, 0, 1, 0, 0, 1]
+  A=[1, 1, 0, 0, 0, 1, 0, 0]  B=[1, 1, 0, 0, 1, 0, 1, 1]
+  A=[1, 0, 0, 0, 0, 0, 1, 1]  B=[0, 1, 1, 1, 1, 1, 0, 0]
+  A=[1, 0, 0, 0, 0, 1, 1, 1]  B=[0, 1, 1, 1, 1, 0, 0, 0]
+  A=[1, 0, 0, 0, 1, 1, 1, 1]  B=[0, 1, 1, 1, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0, 0, 1]  B=[1, 1, 0, 1, 1, 1, 1, 0]
+  A=[0, 0, 1, 0, 0, 0, 1, 1]  B=[0, 0, 0, 1, 1, 1, 0, 0]
+  A=[1, 1, 1, 0, 0, 1, 1, 1]  B=[1, 1, 0, 1, 1, 0, 0, 0]
+  A=[0, 1, 1, 0, 1, 0, 0, 1]  B=[1, 0, 0, 1, 0, 1, 1, 1]
+  A=[1, 1, 0, 0, 1, 0, 1, 1]  B=[0, 1, 1, 0, 0, 1, 1, 0]
+  A=[1, 1, 1, 1, 1, 1, 1, 1]  B=[1, 1, 0, 0, 0, 1, 0, 0]
+  A=[0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1, 1, 1]
+  A=[0, 1, 1, 1, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1, 1, 1, 1]
+  A=[0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 0, 1, 0, 1, 0, 1, 0]  B=[1, 0, 1, 0, 1, 0, 1, 0]
+  A=[1, 0, 1, 0, 1, 0, 1, 0]  B=[0, 1, 0, 1, 0, 1, 0, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    """P(choose the TALLY winner | Tallying and Take-The-Best disagree).
+
+    On every trial we compute (a) the tally winner (option winning more
+    strict feature-wise comparisons) and (b) the TTB winner (winner on
+    the first discriminating cue in descending-validity order, cues here
+    are already ordered by validity). We keep only CONFLICT trials where
+    both heuristics have a definite winner and they point to opposite
+    options, and return the proportion of choices falling on the tally
+    winner's side.
+
+    Under Tallying this proportion is high (sigmoid(2*beta) on the
+    margin-2 grid conflicts, sigmoid(6*beta) on the extreme-conflict
+    trials where one option wins 7 of 8 cues); under TTB it is low
+    (1 - sigmoid(beta)). Works on the pooled DataFrame and on any
+    single subject's slice (each subject has 7 unique conflict trials
+    x 4 reps = 28 conflict observations).
+    """
+    validities = np.array([0.95, 0.90, 0.85, 0.80, 0.75, 0.70, 0.65, 0.60])
+    cue_order = np.argsort(-validities, kind="stable")
+
+    hits = []
+    for _, row in data.iterrows():
+        a = np.asarray(row["option_a_ratings"], dtype=float)
+        b = np.asarray(row["option_b_ratings"], dtype=float)
+        if a.shape != b.shape:
+            continue
+
+        a_wins = float(np.sum(a > b))
+        b_wins = float(np.sum(b > a))
+
+        # Tallying needs a strict majority; skip tied tallies.
+        if a_wins == b_wins:
+            continue
+        tally_winner = 0 if a_wins > b_wins else 1
+
+        # Take-The-Best winner: first discriminating cue in validity order.
+        ttb_winner = None
+        for j in cue_order:
+            if a[j] > b[j]:
+                ttb_winner = 0
+                break
+            if b[j] > a[j]:
+                ttb_winner = 1
+                break
+        if ttb_winner is None:
+            continue
+
+        # Keep only genuine conflicts between the two heuristics.
+        if ttb_winner == tally_winner:
+            continue
+
+        resp = int(row["response"])
+        hits.append(1.0 if resp == tally_winner else 0.0)
+
+    if len(hits) == 0:
+        return 0.5
+    return float(np.mean(hits))
+
+```
+
+**Observed (real) value:** 0.1814 (var=0.0118)
+**Other theories' values on this metric (for reference):**
+- pi_2: 0.8664 (var=0.0110)
+- pi_1: 0.1536 (var=0.0134)
+- pi_3: 0.2557 (var=0.0053)
+
+### Experiment 3
+**Design**
+  A=[1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1]
+  A=[1, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 0, 0]
+  A=[0, 1, 1, 1, 0, 0]  B=[1, 0, 0, 0, 0, 0]
+  A=[1, 0, 0, 1, 0, 0]  B=[0, 1, 1, 0, 0, 0]
+  A=[0, 1, 1, 0, 0, 0]  B=[1, 0, 0, 1, 0, 0]
+  A=[1, 0, 1, 1, 0, 0]  B=[0, 1, 1, 1, 0, 0]
+  A=[0, 1, 1, 1, 0, 0]  B=[1, 0, 1, 1, 0, 0]
+  A=[1, 1, 1, 1, 0, 0]  B=[0, 1, 1, 1, 0, 0]
+  A=[0, 1, 1, 1, 0, 0]  B=[1, 1, 1, 1, 0, 0]
+  A=[1, 1, 1, 1, 1, 0]  B=[1, 1, 1, 1, 0, 0]
+  A=[1, 1, 1, 1, 0, 0]  B=[1, 1, 1, 1, 1, 0]
+  A=[1, 0, 1, 1, 0, 0]  B=[1, 1, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0]  B=[1, 0, 1, 1, 0, 0]
+  A=[1, 0, 1, 1, 0, 0]  B=[1, 1, 1, 1, 0, 0]
+  A=[1, 0, 1, 1, 0, 0]  B=[1, 0, 1, 1, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    """Depth/conflict invariance contrast for TTB vs PWEI.
+
+    Three structurally identified trial classes (validity order is fixed:
+    [0.90, 0.89, 0.88, 0.87, 0.70, 0.60]):
+
+    HIGH  - the top cue (0.90) discriminates and every other discriminating
+            cue agrees with it (design trials 1, 2, 9, 10; 24 obs/subject).
+            PWEI evidence margin |D| is maximal (~1 or w_top).
+    DEPTH5- cues 1-4 all tie; only the 0.70-validity cue discriminates
+            (design trials 11, 12; 12 obs/subject). PWEI's weight for
+            0.70^gamma is ~1e-5 of total, so PWEI predicts ~50% choices.
+    REV   - the top cue discriminates one way, the three sub-top cues
+            (0.89, 0.88, 0.87) discriminate the other way, tail cues tie
+            (design trials 3, 4; 12 obs/subject). In PWEI's steep-gamma
+            regime the sub-top block outweighs the top cue, so PWEI
+            chooses AGAINST the TTB winner.
+
+    For each class compute p = P(choose the TTB winner). TTB's structural
+    invariant is a single constant confidence p* on every discriminating
+    trial, so 2*p_HIGH - p_DEPTH5 - p_REV = 0 exactly, at ANY (beta, eps).
+    PWEI predicts p_HIGH ~ 0.9, p_DEPTH5 ~ 0.5, p_REV ~ 0.1-0.37, giving a
+    value ~0.9-1.2 across its entire parameter box.
+    """
+    VALS = np.array([0.90, 0.89, 0.88, 0.87, 0.70, 0.60])
+    order = np.argsort(-VALS, kind="stable")  # validity-descending cue indices
+
+    n_high, k_high = 0, 0
+    n_d5, k_d5 = 0, 0
+    n_rev, k_rev = 0, 0
+
+    a_col = data["option_a_ratings"]
+    b_col = data["option_b_ratings"]
+    r_col = data["response"]
+
+    for a_cell, b_cell, resp in zip(a_col, b_col, r_col):
+        a = np.asarray(a_cell, dtype=float)
+        b = np.asarray(b_cell, dtype=float)
+        s = np.sign(a - b)  # +1 favors A, -1 favors B, 0 tie, per cue
+
+        # First discriminating cue in validity order (TTB's search).
+        first = None
+        for j in order:
+            if s[j] != 0.0:
+                first = j
+                break
+        if first is None:
+            continue  # identical options: both theories say 50%
+
+        ttb_winner_is_a = s[first] > 0
+        chose_ttb = (int(resp) == 0) == ttb_winner_is_a
+
+        if first == 4:
+            # DEPTH5: only the 0.70-validity cue discriminates.
+            n_d5 += 1
+            k_d5 += int(chose_ttb)
+        elif first == 0 and s[1] == -s[0] and s[2] == -s[0] and s[3] == -s[0] \
+                and s[4] == 0.0 and s[5] == 0.0:
+            # REV: top cue vs the three sub-top cues, tail ties.
+            n_rev += 1
+            k_rev += int(chose_ttb)
+        elif first == 0:
+            # HIGH candidate: all other discriminating cues agree with top.
+            others = [s[j] for j in range(1, 6) if s[j] != 0.0]
+            if all(o == s[0] for o in others):
+                n_high += 1
+                k_high += int(chose_ttb)
+        # All other trial types (mixed conflicts, cue-2-led trials, ties)
+        # are deliberately excluded to keep the classes pure.
+
+    p_high = k_high / n_high if n_high > 0 else 0.5
+    p_d5 = k_d5 / n_d5 if n_d5 > 0 else 0.5
+    p_rev = k_rev / n_rev if n_rev > 0 else 0.5
+
+    return 2.0 * p_high - p_d5 - p_rev
+```
+
+**Observed (real) value:** -0.7167 (var=0.0939)
+**Other theories' values on this metric (for reference):**
+- pi_1: 0.0033 (var=0.0461)
+- pi_3: 1.0483 (var=0.0759)
+- pi_2: 0.7083 (var=0.0512)
+
+### Experiment 4
+**Design**
+  A=[1, 1, 1, 1, 1, 1]  B=[0, 1, 1, 1, 1, 1]
+  A=[0, 1, 1, 1, 1, 1]  B=[1, 1, 1, 1, 1, 1]
+  A=[1, 1, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 1]
+  A=[0, 0, 1, 1, 1, 1]  B=[1, 1, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1]  B=[0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1]
+  A=[1, 1, 1, 1, 1, 1]  B=[1, 0, 1, 1, 1, 1]
+  A=[1, 0, 1, 1, 1, 1]  B=[1, 1, 1, 1, 1, 1]
+  A=[1, 1, 0, 1, 1, 1]  B=[1, 0, 1, 1, 1, 1]
+  A=[1, 0, 1, 1, 1, 1]  B=[1, 1, 0, 1, 1, 1]
+  A=[1, 1, 0, 0, 1, 1]  B=[1, 0, 1, 1, 1, 1]
+  A=[1, 0, 1, 1, 1, 1]  B=[1, 1, 0, 0, 1, 1]
+  A=[1, 1, 0, 0, 0, 1]  B=[1, 0, 1, 1, 1, 1]
+  A=[1, 0, 1, 1, 1, 1]  B=[1, 1, 0, 0, 0, 1]
+  A=[1, 1, 0, 0, 0, 0]  B=[1, 0, 1, 1, 1, 1]
+  A=[1, 0, 1, 1, 1, 1]  B=[1, 1, 0, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0]  B=[1, 1, 1, 1, 1, 1]
+  A=[1, 1, 1, 0, 0, 0]  B=[1, 1, 0, 1, 1, 1]
+  A=[1, 1, 0, 1, 1, 1]  B=[1, 1, 1, 0, 0, 0]
+  A=[1, 1, 1, 1, 1, 1]  B=[1, 1, 0, 1, 1, 1]
+  A=[1, 1, 0, 1, 1, 1]  B=[1, 1, 1, 1, 1, 1]
+  A=[1, 0, 1, 0, 1, 0]  B=[1, 0, 1, 0, 1, 0]
+  A=[0, 1, 0, 1, 0, 1]  B=[0, 1, 0, 1, 0, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    # OLS slope of "chose the TTB (first-discriminating-cue) winner" on the
+    # PWEI power-weighted evidence margin measured TOWARD that winner.
+    # TTB: choice prob is one constant p* on every discriminating trial
+    #      (any beta, eps)  =>  slope exactly 0.
+    # PWEI: prob is a psychometric function of the weighted margin D
+    #      =>  strongly positive slope (~0.5 over the design's margin range).
+    val = np.array([0.95, 0.92, 0.91, 0.90, 0.89, 0.88], dtype=float)
+    gamma = 40.0  # mid of PWEI's calibrated regime [35, 50]
+    w = np.power(val, gamma)
+    w = w / w.sum()
+    cue_order = np.argsort(-val, kind="stable")
+
+    xs = []
+    ys = []
+    for a_cell, b_cell, r in zip(
+        data["option_a_ratings"], data["option_b_ratings"], data["response"]
+    ):
+        a = np.asarray(a_cell, dtype=float)
+        b = np.asarray(b_cell, dtype=float)
+        s = np.sign(a - b)
+        if not np.any(s != 0):
+            # Identical options: pure guessing for both theories; excluded.
+            continue
+        # TTB winner: first discriminating cue in descending-validity order.
+        winner = None
+        for j in cue_order:
+            if s[j] != 0:
+                winner = 0 if s[j] > 0 else 1
+                break
+        if winner is None:
+            continue
+        # Power-weighted evidence for option A.
+        D = float(np.sum(w * s))
+        # Margin re-signed so that positive = evidence favors the TTB winner.
+        x = D if winner == 0 else -D
+        y = 1.0 if int(r) == winner else 0.0
+        xs.append(x)
+        ys.append(y)
+
+    xs = np.asarray(xs, dtype=float)
+    ys = np.asarray(ys, dtype=float)
+    if xs.size < 3:
+        return 0.0
+    sxx = float(np.sum((xs - xs.mean()) ** 2))
+    if sxx <= 1e-12:
+        return 0.0
+    sxy = float(np.sum((xs - xs.mean()) * (ys - ys.mean())))
+    return float(sxy / sxx)
+```
+
+**Observed (real) value:** -0.5230 (var=0.0540)
+**Other theories' values on this metric (for reference):**
+- pi_3: 0.5548 (var=0.0148)
+- pi_1: 0.0081 (var=0.0061)
+- pi_2: 0.5897 (var=0.0315)
+
+
+## IMPLEMENTATION GUARDRAILS
+- The parameters should be within the specified ranges.
+- The model's predictions should be valid probability distributions (non-negative and sum to 1).
+- When converting logits to probabilities via softmax, always use the numerically stable form: subtract the max before exponentiating (`x = x - np.max(x); p = np.exp(x); p /= p.sum()`). A naive `np.exp(x) / np.sum(np.exp(x))` overflows to Inf/NaN for large logits. Alternatively, use `scipy.special.softmax`.
+
+
+## PROPOSAL
+Propose a novel theory from scratch based on all the information available, faithfully implementing the mechanism family the arbiter prescribed above. Do NOT simply reuse anything generated in past rounds.
+
+## RESPONSE FORMAT
+Return a JSON object with the following fields:
+- theory: The theoretical claim this theory makes about cognition.
+- predict: Python source defining def predict(parameters, state, history) -> np.ndarray.
+- policy: Python source defining def policy(probs) -> int.
+- parameters: Parameter ranges (e.g. "[1.0, 10.0]") or choices (e.g. "{1, 2}"), sampled per subject.
+- rationale: Reasoning behind this theory design; used to explain why this theory is better then the previous ones.
+
+
+## Response
+
+```json
+```json
+{
+  "theory": "Sparse-Option Preference / Polarity-Inverted Evidence Integration (SPI). When choosing between two options described by binary expert ratings, a substantial share of subjects systematically mis-map cue polarity: an endorsement (rating = 1) is treated as evidence AGAINST an option, so the option with FEWER 1s (the sparser option) is perceived as higher quality — consistent with a 'fewer red flags' reading of the display or a rarity-implies-quality inference. Subjects integrate ALL cues additively with near-uniform weights: the evidence for option A over B is E = sum_j w_j * (b_j - a_j), where w_j = v_j^gamma with gamma small (validity plays at most a mild role). Choice is a softmax over [E, -E] with inverse temperature beta, plus an independent lapse epsilon to uniform. A per-subject polarity-mixing weight rho captures heterogeneity: with probability 1-rho the subject responds according to the inverted (sparse-preferring) polarity, with probability rho according to the conventional polarity. This mixture attenuates the extreme pure-sparse predictions toward the moderately negative values observed. The theory is sharply distinguished from both incumbents: unlike Take-The-Best it uses all cues and inverts the evidence sign (so it is not pinned at ~0 on the depth/conflict-invariance and margin-slope metrics where TTB is structurally stuck), and unlike power-weighted integration it places humans at the FLAT end of the weighting ladder with inverted polarity, producing the negative signatures that steep-gamma PWEI cannot generate at any parameter setting.",
+  "predict": "def predict(parameters, state, history):\n    # Sparse-option Preference / Polarity-Inverted Evidence Integration (SPI).\n    # Stimulus: array-like of shape (2, n_features); row 0 = option A,\n    # row 1 = option B; entries are 0/1 cue values. History is ignored\n    # (no feedback in this task).\n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            f\"SPI expects a (2, n_features) stimulus; got shape {stim.shape}.\"\n        )\n    n_features = stim.shape[1]\n\n    val = np.asarray(parameters[\"validities\"], dtype=float)\n    if val.shape[0] != n_features:\n        raise ValueError(\n            f\"validities length {val.shape[0]} != n_features {n_features}.\"\n        )\n\n    gamma = float(parameters[\"gamma\"])\n    beta = float(parameters[\"beta\"])\n    epsilon = float(parameters[\"epsilon\"])\n    rho = float(parameters[\"rho\"])\n\n    # Near-uniform validity weighting: w_j = v_j^gamma, gamma in [0, 2].\n    # Normalization is a per-experiment constant rescale (validities are\n    # fixed), absorbed by beta; it keeps the evidence scale O(1) for any\n    # gamma and any n_features.\n    w = np.power(val, gamma)\n    w_sum = w.sum()\n    if w_sum > 0:\n        w = w / w_sum\n    else:\n        w = np.full(n_features, 1.0 / n_features)\n\n    a, b = stim[0], stim[1]\n    # Polarity-INVERTED evidence for A over B: each cue where B carries\n    # the endorsement (1) counts FOR A; each cue where A carries the\n    # endorsement counts AGAINST A. Sparse options accumulate evidence.\n    E = float(np.sum(w * (b - a)))\n\n    # Softmax over [E, -E] with max-subtraction for numerical stability.\n    # Inverted polarity: positive E favors A (the sparser option).\n    scores_inv = np.array([E, -E])\n    z = beta * (scores_inv - scores_inv.max())\n    e = np.exp(z)\n    p_inv = e / e.sum()\n\n    # Conventional polarity (endorsement favors the option carrying it):\n    # mirror of the inverted distribution.\n    scores_norm = -scores_inv\n    z2 = beta * (scores_norm - scores_norm.max())\n    e2 = np.exp(z2)\n    p_norm = e2 / e2.sum()\n\n    # Per-subject polarity mixture: (1 - rho) inverted, rho conventional.\n    p_core = (1.0 - rho) * p_inv + rho * p_norm\n\n    # Independent lapse to uniform choice.\n    n_opts = p_core.shape[0]\n    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)",
+  "policy": "def policy(probs):\n    probs = np.asarray(probs, dtype=np.float64)\n    probs = probs / probs.sum()  # Guard against float drift.\n    return np.random.choice(len(probs), p=probs)",
+  "parameters": {
+    "gamma": "[0, 2]",
+    "beta": "[0.5, 20]",
+    "epsilon": "[0.05, 0.35]",
+    "rho": "[0, 0.35]",
+    "validities": "validities"
+  },
+  "rationation": "",
+  "rationale": "The arbiter diagnosed the mechanistic failure precisely: TTB (pi_1) is structurally pinned near 0 on Experiments 3 and 4 (its constant-confidence invariant forces 2*p_HIGH - p_DEPTH5 - p_REV = 0 and slope = 0 exactly), while the observed values are strongly NEGATIVE (-0.717, -0.523). PWEI (pi_3) with steep gamma produces strongly POSITIVE values on those same metrics (1.05, 0.55) and cannot go negative at any parameter setting, because its evidence sign always favors the denser, top-cue-supported option. The only mechanism family that generates the observed negative signatures while still matching the mildly TTB-positive values on Experiments 1 (+0.158) and 2 (0.181 = P(tally winner), i.e. siding AGAINST the tally majority) is a polarity inversion with near-flat weighting: prefer the option with FEWER endorsements, integrating all cues. I implemented exactly the prescribed SPI: E = sum_j v_j^gamma * (b_j - a_j), gamma in [0,2] (near-tallying), softmax with beta, lapse epsilon, plus the suggested per-subject polarity mixing weight rho. Hand-verification at a representative parameter point (gamma=1, beta=10, epsilon=0.2, rho=0.1): Experiment 1 dissociation metric ≈ +0.17 (observed 0.158) — on conflict trials the sparse option usually coincides with the TTB winner because its single endorsement sits on the top cue, while tally-tie trials 7/8 slightly reverse; Experiment 2 P(tally winner on conflicts) ≈ 0.21 (observed 0.1814) — SPI sides with the TTB/sparser option against the majority; Experiment 3 invariance contrast ≈ -0.75 (observed -0.717) — p_HIGH is pushed to the lapse floor (subjects pick the all-zeros option against TTB), while p_DEPTH5 and p_REV stay above 0.5 (the sparse option happens to be the TTB winner there); Experiment 4 slope of choosing the TTB winner on the PWEI margin ≈ -0.56 (observed -0.523) — larger weighted margins toward the dense TTB winner map to LOWER choice probability. All four predictions land near the observed values simultaneously, which no incumbent can do: TTB is stuck at (0.35, 0.15, 0.00, 0.01) and PWEI at (0.25, 0.26, 1.05, 0.55). The rho mixture is essential rather than cosmetic: pure inverted polarity overshoots (e.g., Exp 3 near -0.9 to -1.6 at high beta), and the 5-35% conventional-polarity minority attenuates the pooled statistics into the observed band, exactly the attenuation the arbiter noted (pure prediction ~0.35 vs observed 0.158 on the dissociation metric). The theory remains experiment-invariant: it has one mechanism (inverted all-cue integration) whose signatures — negative margin slopes, negative invariance contrasts, anti-tally conflict choices — are exactly the pattern present in every experiment's data."
+}
+```
+```
+
+## Usage
+
+```json
+{
+  "input_tokens": 12275,
+  "output_tokens": 23460,
+  "reasoning_tokens": 10960,
+  "provider": "AkashML"
+}
+```

@@ -1,0 +1,628 @@
+# feedback_iter_05
+
+## System Prompt
+
+You are a renowned cognitive scientist critiquing a freshly proposed candidate theory and model in the Decision Making (Binary Features) domain.
+
+The candidate has been simulated on every previously run experiment. For each experiment you are shown the design, the metric, the value the metric takes on real data, and the value it takes on the candidate's simulated data.
+
+Each metric value below is shown as `point_estimate (var=X)`, where `point_estimate` is `metric(data)` evaluated on the full pooled dataset and `var` is the population (between-subject) variance of the same metric re-applied per `subject_id`. The point estimate is the canonical scalar; `var` reports how consistent that estimate is across subjects (lower = more consistent). `var=n/a` means the metric could not be applied to a single-subject slice.
+
+The goal of the feedback is to SURFACE theories that are EXPERIMENT-INVARIANT: that is,theories that explain data across multiple experiments. 
+Your task is to determine whether the candidate captures the human/real behavior well enough across these experiments. Return a verdict:
+  * "continue"   — the candidate is good enough; carry on.
+  * "regenerate" — the candidate fails to capture the empirical pattern; the proposing agent must produce a new candidate, taking your rationale into account.
+
+Justify the verdict with a concrete diagnosis (which experiments fail, in what direction, what mechanism is likely missing or miscalibrated).
+
+## SCOPE OF YOUR CRITIQUE — STAY INSIDE THE ARBITER'S MECHANISM FAMILY
+When an "## ARBITER RECOMMENDATION" block is present below, the proposer was explicitly instructed to implement the mechanism family the arbiter prescribed. Your job is to grade FIT QUALITY *within that prescribed family*, not to relitigate which family should be used — that is the arbiter's call, made one level above this loop.
+
+Concretely:
+  * If the candidate misses the data, you may push for MINOR ADJUSTMENTS that keep the prescribed mechanism intact: tightening / widening parameter ranges, adding a temperature, swapping a normalization scheme, fixing a softmax / distance metric, re-balancing attention weights, fixing a learning-rate sign, correcting a bug in the gating or recurrence, etc.
+  * You MUST NOT recommend switching to a different mechanism family. Such a switch is the arbiter's prerogative; recommending it here will mislead the proposer into oscillating between families across iterations.
+  * Also grade FAITHFULNESS to the recommendation explicitly: if the candidate has clearly drifted into a different family than the one prescribed, say so in the rationale and ask for a return to the prescribed family — again, with minor adjustments, not a re-design.
+
+## ACCEPT GATE — HOW THE LOOP DECIDES WHAT TO BUILD ON NEXT
+This propose-loop has a programmatic accept gate. After every iteration the candidate's `aggregate_loss` is compared against the running-best loss (`accepted_loss`):
+  * `loss < accepted_loss` → ACCEPTED. The candidate becomes the new running-best base; the next iteration's proposer will build on THIS candidate.
+  * `loss >= accepted_loss` → REJECTED. The base is unchanged; the next iteration's proposer will build on the SAME `accepted` candidate again, with your new feedback on top. Rejected candidates are discarded — the loop guarantees the base never regresses, so you do NOT need to ask the proposer to "revert" anything; that already happens for free.
+
+Two consequences for your verdict:
+  * If the candidate you are grading was REJECTED by the gate, returning `"continue"` is silently downgraded to `"regenerate"` (returning a worse candidate would defeat the gate). Spend your rationale on a NEW direction the proposer should try on top of the unchanged accepted base, not on defending the rejected attempt.
+  * If the candidate was ACCEPTED, you can return `"continue"` to stop the loop and ship this candidate, or `"regenerate"` to keep tuning further.
+
+## LEARN FROM YOUR OWN PAST ADVICE
+When a "## YOUR PRIOR CRITIQUES" block is present below, each prior iteration ends with an "Outcome of your advice" line that says whether the next candidate the proposer produced was ACCEPTED (your advice helped — its loss strictly beat the running best) or REJECTED (your advice didn't help — the proposer discarded the result and reset to the previous accepted base). This is the loop's ground-truth signal on whether *your own previous critique was good*. Use it explicitly:
+  * If a previous piece of advice was ACCEPTED, it is OK to repeat / extend it. Reinforce in the same direction.
+  * If a previous piece of advice was REJECTED, do NOT repeat the same recommendation; in your new rationale, briefly acknowledge that the previous push in that direction was rejected by the gate and try a different in-family knob (or a smaller step in the same direction) instead.
+  * If you find yourself oscillating (e.g. iter 1 said "increase α", iter 2 said "decrease α", iter 3 about to say "increase α" again), STOP and recommend a value between the two flanking iterations instead.
+  * The "## LOSS TRAJECTORY" block at the top of the user prompt summarises the same information at the loop level — consult it before issuing a new regenerate-with-direction recommendation.
+
+
+## User Prompt
+
+## EXPERIMENTAL DOMAIN
+Subjects repeatedly choose between two fictitious products, A and B. Each option is described by a vector of binary expert ratings (each 0 or 1). Every experiment fixes its own feature count (via `validities` length) and per-expert validities; both are LLM-proposed. The validities are communicated to the subject in the instructions. Subjects pick whichever product they believe is of higher quality. There is no trial-by-trial correctness feedback.
+
+## ARBITER RECOMMENDATION (mechanism family the proposer was told to implement)
+The arbiter labelled this round's two theories in its recommendation as follows:
+- THEORY 1 = `pi_3`
+- THEORY 2 = `pi_4`
+- The recommendation below acts on THEORY 1 (= `pi_3`).
+
+Replace pi_3 with a stochastic bounded-sampling evidence-accumulation theory. The new theory should not use a hard stop at the first displayed discriminator. Instead, discriminating cues should be sampled stochastically, with sampling probability determined by both serial position and stated validity. Serial position should produce only a moderate primacy gradient on short lists and a weak or partially flattened gradient on long lists, rather than the extreme exponential gradient that pi_4 currently uses. Stated validity should remain influential on all list lengths, but with a compressive rather than all-or-none effect, so a 0.90 validity cue can compete with opposing tally evidence and produce near-zero direction effects as in Experiment 2. A bounded capacity function such as f(n) = 1 / (1 + kappa * (n - 5)) or f(n) = (5 / n)^gamma with small gamma around 0.3 to 1.0 should be used, so longer lists flatten attention only partially, never to a pure equal-weight tally. Decision noise should be nontrivial: inverse temperature around 1 to 3 and lapse epsilon around 0.1 to 0.2, matching the modest first-cue consistency of 0.62 in Experiment 5 and the moderate validity effects in Experiments 3 and 4. The new theory also needs to allow subject-level heterogeneity in cue weights, because Experiment 2 shows high between-subject variance (var=0.197). This theory differs from pi_3 by abandoning deterministic first-discriminator commitment, and differs from pi_4 by making cue weighting stochastic and bounded, with validity effects that do not disappear on long lists.
+
+
+## CANDIDATE THEORY
+People make binary choices by stochastically sampling a bounded, capacity-scaled subset of discriminating cues and accumulating signed evidence. Cue sampling is jointly governed by a moderate serial-position primacy gradient that flattens further on long lists, and by stated cue validity. Stated validity influences evidence weighting compressively rather than all-or-none. Accumulated evidence passes through a noisy softmax with lapse, avoiding deterministic first-discriminator commitment while preserving short-list primacy and allowing substantial between-subject heterogeneity.
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, state, history):
+    import numpy as np
+
+    if isinstance(state, dict):
+        a = np.asarray(state['option_a_ratings'], dtype=float)
+        b = np.asarray(state['option_b_ratings'], dtype=float)
+        stim = np.vstack([a, b])
+    else:
+        stim = np.asarray(state, dtype=float)
+
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(
+            f'Bounded-sampling accumulator expects a (2, n_features) stimulus; got shape {stim.shape}.'
+        )
+
+    a = stim[0]
+    b = stim[1]
+    n_features = stim.shape[1]
+
+    validities = parameters.get('validities')
+    if validities is None:
+        validities = np.full(n_features, 0.75, dtype=float)
+    else:
+        validities = np.asarray(validities, dtype=float)
+        if validities.shape[0] != n_features:
+            validities = np.full(n_features, 0.75, dtype=float)
+
+    jitter = parameters.get('evidence_jitter')
+    if jitter is None:
+        jitter = np.ones(n_features, dtype=float)
+    else:
+        jitter = np.asarray(jitter, dtype=float)
+        if jitter.ndim != 1 or jitter.shape[0] != n_features:
+            jitter = np.ones(n_features, dtype=float)
+        else:
+            if n_features > 5:
+                jitter = np.clip(jitter, -2.0, 1.0)
+            else:
+                jitter = np.clip(jitter, 0.20, 3.0)
+
+    capacity_gamma = float(parameters['capacity_gamma'])
+    position_decay = float(parameters['position_decay'])
+    att_validity_intercept = float(parameters['att_validity_intercept'])
+    att_validity_slope = float(parameters['att_validity_slope'])
+    evidence_intercept = float(parameters['evidence_intercept'])
+    evidence_slope = float(parameters['evidence_slope'])
+    first_cue_bonus = float(parameters['first_cue_bonus'])
+    first_cue_validity_power = float(parameters['first_cue_validity_power'])
+    first_cue_capacity_power = float(parameters['first_cue_capacity_power'])
+    subject_scale = float(parameters['subject_scale'])
+    subject_bias = float(parameters['subject_bias'])
+    beta = float(parameters['beta'])
+    epsilon = float(parameters['epsilon'])
+    sampling_validity_power = float(parameters['sampling_validity_power'])
+
+    capacity = (5.0 / n_features) ** capacity_gamma
+
+    positions = np.arange(n_features, dtype=float)
+    att_validity = np.clip(
+        att_validity_intercept + att_validity_slope * (validities - 0.5), 0.05, 1.0
+    )
+
+    sampling_weights = (
+        capacity
+        * np.exp(-position_decay * positions * (capacity ** 2))
+        * (att_validity ** sampling_validity_power)
+    )
+
+    diff = a - b
+    discrim = diff != 0
+    signs = np.where(discrim, np.sign(diff), 0.0)
+    discrim_idx = np.flatnonzero(discrim)
+
+    if discrim_idx.size == 0:
+        return np.full(2, 0.5, dtype=float)
+
+    sample_size = max(2, int(np.ceil(capacity * discrim_idx.size)))
+
+    if discrim_idx.size <= sample_size:
+        sampled = discrim_idx.copy()
+    else:
+        w = sampling_weights[discrim_idx].astype(float)
+        if w.sum() <= 0.0:
+            w = np.ones(discrim_idx.size, dtype=float)
+        w = w / w.sum()
+        sampled = np.random.choice(
+            discrim_idx, size=sample_size, replace=False, p=w
+        )
+
+    first_disc = int(np.argmax(discrim))
+
+    max_validity = float(np.max(validities))
+    first_bonus = (
+        first_cue_bonus
+        * (validities[first_disc] / max_validity) ** first_cue_validity_power
+        * np.exp(-first_cue_capacity_power * max(0.0, n_features - 5.0))
+    )
+
+    evidence_base = subject_scale * np.clip(
+        evidence_intercept + evidence_slope * (validities - 0.5), 0.1, 1.2
+    )
+    evidence = evidence_base * jitter
+
+    score = 0.0
+    for j in sampled:
+        j = int(j)
+        score += signs[j] * evidence[j]
+        if j == first_disc:
+            score += signs[j] * first_bonus
+
+    logits = np.array([beta * score + subject_bias, 0.0], dtype=float)
+    logits = logits - np.max(logits)
+    exponentials = np.exp(logits)
+    core_probs = exponentials / np.sum(exponentials)
+
+    probs = (1.0 - epsilon) * core_probs + epsilon * np.full(2, 0.5, dtype=float)
+    return probs
+
+`policy(probs) -> int`:
+def policy(probs):
+    import numpy as np
+    probs = np.asarray(probs, dtype=float)
+    probs = probs / np.sum(probs)
+    return int(np.random.choice(len(probs), p=probs))
+
+`parameters`:
+- capacity_gamma: [0.45, 0.55]
+- position_decay: [0.20, 0.40]
+- att_validity_intercept: [0.48, 0.52]
+- att_validity_slope: [0.75, 0.90]
+- evidence_intercept: [0.50, 0.54]
+- evidence_slope: [0.68, 0.78]
+- first_cue_bonus: [1.45, 1.75]
+- first_cue_validity_power: [0.45, 0.75]
+- first_cue_capacity_power: [1.50, 2.50]
+- subject_scale: [0.40, 1.60]
+- subject_bias: [-0.30, 0.30]
+- beta: [1.10, 2.30]
+- epsilon: [0.12, 0.18]
+- sampling_validity_power: [1.0, 1.3]
+- validities: validities
+- evidence_jitter: [(-2.5, 2.0)] * n_features
+
+`rationale`:
+This is a minimal-diff edit of the accepted iter-4 base, applying moderated versions of the changes whose full-strength form was rejected in iter 5. The short-list jitter floor moves only to 0.20 rather than 0.40, restoring the low-weight heterogeneity needed to keep Experiment 1 near -0.44 and avoid the iter-5 overshoot. Long-list jitter is clipped to [-2.0, 1.0] from a narrower raw support [-2.5, 2.0], shifting the long-list weighting mean negative enough for the Experiment 4 sign while avoiding the variance inflation caused by the previous wide interval. A mild sampling_validity_power of 1.0-1.3 is added, much weaker than the rejected 1.5-2.5, and only affects long-list cue sampling because five-item lists sample all discriminators. I deliberately leave short-list validity slopes and the first-cue bonus unchanged: the iter-5 Exp1/Exp3 damage came from over-clipped jitter, and jointly retuning those terms would recreate the same trade-off.
+
+## LOSS TRAJECTORY (this propose-loop)
+Aggregate loss across iterations of THIS propose-loop (lower = better, 0 = perfect, `+inf` = unscorable). The ACCEPTED / REJECTED tag is the loop's programmatic accept-gate decision: `loss < accepted_loss` -> ACCEPTED (becomes new base), else REJECTED (base unchanged). Use this together with the per-experiment values below to grade fit-quality AND your own past advice (see `## YOUR PRIOR CRITIQUES` below).
+
+- iter 1: loss=0.2227 -> ACCEPTED
+- iter 2: loss=0.1719 -> ACCEPTED
+- iter 3: loss=0.1110 -> ACCEPTED
+- iter 4: loss=0.0869 -> ACCEPTED
+- iter 5: loss=0.1138 -> REJECTED
+- iter 6 (current candidate you are grading): loss=0.1267 -> REJECTED
+Running-best (last accepted) base: iter 4 at loss=0.0869.
+
+## EXPERIMENTAL RESULTS (candidate vs real, per experiment)
+### Experiment 1
+**Design**
+  A=[0, 0, 1, 0, 0]  B=[1, 1, 0, 1, 1]
+  A=[0, 0, 1, 0, 0]  B=[1, 1, 0, 1, 0]
+  A=[0, 0, 1, 0, 0]  B=[1, 0, 0, 1, 0]
+  A=[0, 0, 1, 0, 0]  B=[0, 1, 0, 0, 0]
+  A=[1, 1, 0, 1, 1]  B=[0, 0, 1, 0, 0]
+  A=[1, 1, 0, 1, 0]  B=[0, 0, 1, 0, 0]
+  A=[1, 0, 0, 1, 0]  B=[0, 0, 1, 0, 0]
+  A=[0, 1, 0, 0, 0]  B=[0, 0, 1, 0, 0]
+
+**Metric**
+```python
+import numpy as np
+import pandas as pd
+
+
+def metric(data: pd.DataFrame) -> float:
+    if data.empty:
+        return 0.0
+
+    a = np.asarray(data['option_a_ratings'].tolist(), dtype=int)
+    b = np.asarray(data['option_b_ratings'].tolist(), dtype=int)
+    r = data['response'].to_numpy(dtype=float)
+
+    a_wins = np.sum(a > b, axis=1)
+    b_wins = np.sum(b > a, axis=1)
+    tie = a_wins == b_wins
+
+    # Among tally ties, the high-validity cue at index 2 discriminates.
+    cue_favors_b = tie & (b[:, 2] > a[:, 2])
+    cue_favors_a = tie & (a[:, 2] > b[:, 2])
+
+    if not np.any(cue_favors_b) or not np.any(cue_favors_a):
+        return 0.0
+
+    p_b_given_b_cue = float(r[cue_favors_b].mean())
+    p_b_given_a_cue = float(r[cue_favors_a].mean())
+
+    return p_b_given_b_cue - p_b_given_a_cue
+
+```
+
+**Observed (real) value:** -0.4400 (var=0.1503)
+**Candidate trajectory (this loop):**
+  - iter 1: -0.4017 (var=0.0507) (Δ vs real +0.0383)
+  - iter 2: -0.5417 (var=0.0365) (Δ vs real -0.1017)
+  - iter 3: -0.4533 (var=0.0806) (Δ vs real -0.0133)
+  - iter 4: -0.2917 (var=0.2820) (Δ vs real +0.1483)
+  - iter 5: -0.6483 (var=0.0359) (Δ vs real -0.2083)
+  - iter 6 (current): -0.4833 (var=0.0917) (Δ vs real -0.0433)
+**Other theories' values on this metric (for reference):**
+- pi_1: 0.6650 (var=0.0546)
+- pi_2: 0.0383 (var=0.0359)
+- pi_3: -0.6500 (var=0.0231)
+- pi_4: -0.4933 (var=0.0313)
+
+### Experiment 2
+**Design**
+  A=[0, 0, 1, 0, 0]  B=[1, 0, 0, 0, 0]
+  A=[0, 0, 1, 0, 1]  B=[1, 1, 0, 0, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 0, 1, 0, 0]
+  A=[1, 0, 0, 0, 1]  B=[0, 1, 1, 0, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 0, 0, 0]
+  A=[0, 1, 0, 0, 0]  B=[1, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 1]  B=[0, 1, 0, 0, 0]
+  A=[0, 1, 0, 0, 0]  B=[0, 0, 0, 0, 1]
+
+**Metric**
+```python
+import numpy as np
+
+def metric(data: pd.DataFrame) -> float:
+    if data.empty:
+        return 0.0
+
+    validities = np.array([0.78, 0.55, 0.91, 0.50, 0.65], dtype=float)
+    cue_order = np.argsort(-validities, kind='stable')
+
+    a = np.vstack(data['option_a_ratings'].to_numpy()).astype(float)
+    b = np.vstack(data['option_b_ratings'].to_numpy()).astype(float)
+    diff = a - b
+
+    ordered_diff = diff[:, cue_order]
+    nonzeros = ordered_diff != 0
+    has_discriminator = nonzeros.any(axis=1)
+    first_pos = nonzeros.argmax(axis=1)
+    first_values = ordered_diff[np.arange(ordered_diff.shape[0]), first_pos]
+
+    choose_a = (data['response'].to_numpy() == 0).astype(float)
+    first_cue_favors_a = has_discriminator & (first_values > 0)
+    first_cue_favors_b = has_discriminator & (first_values < 0)
+
+    if not (first_cue_favors_a.any() and first_cue_favors_b.any()):
+        return 0.0
+
+    p_a_given_cue_a = choose_a[first_cue_favors_a].mean()
+    p_a_given_cue_b = choose_a[first_cue_favors_b].mean()
+    return float(p_a_given_cue_a - p_a_given_cue_b)
+```
+
+**Observed (real) value:** -0.3750 (var=0.0321)
+**Candidate trajectory (this loop):**
+  - iter 1: -0.1896 (var=0.0094) (Δ vs real +0.1854)
+  - iter 2: -0.2663 (var=0.0111) (Δ vs real +0.1087)
+  - iter 3: -0.2458 (var=0.0171) (Δ vs real +0.1292)
+  - iter 4: -0.2454 (var=0.0622) (Δ vs real +0.1296)
+  - iter 5: -0.3075 (var=0.0108) (Δ vs real +0.0675)
+  - iter 6 (current): -0.3029 (var=0.0193) (Δ vs real +0.0721)
+**Other theories' values on this metric (for reference):**
+- pi_2: -0.0029 (var=0.0086)
+- pi_1: 0.6875 (var=0.0362)
+- pi_3: -0.3296 (var=0.0048)
+- pi_4: -0.3458 (var=0.0038)
+
+### Experiment 3
+**Design**
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1]
+  A=[0, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0]  B=[1, 0, 1, 1, 1]
+  A=[1, 0, 1, 1, 1]  B=[1, 1, 0, 0, 0]
+  A=[1, 1, 1, 0, 0]  B=[1, 1, 0, 1, 1]
+  A=[1, 1, 0, 1, 1]  B=[1, 1, 1, 0, 0]
+  A=[1, 1, 1, 1, 0]  B=[1, 1, 1, 0, 1]
+  A=[1, 1, 1, 0, 1]  B=[1, 1, 1, 1, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 0, 0]
+  A=[0, 1, 1, 0, 0]  B=[1, 0, 0, 0, 0]
+  A=[1, 1, 0, 1, 0]  B=[1, 0, 1, 0, 1]
+  A=[1, 0, 1, 0, 1]  B=[1, 1, 0, 1, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+
+    matches = []
+    for a_ratings, b_ratings, response in zip(data['option_a_ratings'], data['option_b_ratings'], data['response']):
+        winner = None
+        for a_val, b_val in zip(a_ratings, b_ratings):
+            if a_val > b_val:
+                winner = 0
+                break
+            if a_val < b_val:
+                winner = 1
+                break
+        if winner is not None:
+            matches.append(1.0 if response == winner else 0.0)
+    if not matches:
+        return 0.5
+    return float(np.mean(matches))
+```
+
+**Observed (real) value:** 0.6246 (var=0.0093)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.6760 (var=0.0033) (Δ vs real +0.0515)
+  - iter 2: 0.5906 (var=0.0026) (Δ vs real -0.0340)
+  - iter 3: 0.5767 (var=0.0131) (Δ vs real -0.0479)
+  - iter 4: 0.6242 (var=0.0282) (Δ vs real -0.0004)
+  - iter 5: 0.7427 (var=0.0061) (Δ vs real +0.1181)
+  - iter 6 (current): 0.7483 (var=0.0098) (Δ vs real +0.1237)
+**Other theories' values on this metric (for reference):**
+- pi_3: 0.8567 (var=0.0014)
+- pi_2: 0.2706 (var=0.0057)
+- pi_1: 0.6206 (var=0.0018)
+- pi_4: 0.6208 (var=0.0020)
+
+### Experiment 4
+**Design**
+  A=[0, 1, 1, 1, 1, 1, 0, 0]  B=[1, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 1, 1, 1, 0, 0, 0, 0]  B=[1, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 1, 0, 0, 0, 0, 0, 0]  B=[1, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 1, 1, 1, 1, 1, 0]  B=[0, 1, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 1, 1, 1, 0, 0, 0]  B=[0, 1, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 1, 0, 0, 0, 0, 0]  B=[0, 1, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 1, 1, 1, 1, 1]  B=[0, 0, 1, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 1, 1, 1, 0, 0]  B=[0, 0, 1, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 1, 0, 0, 0, 0]  B=[0, 0, 1, 0, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1, 1, 0, 0]
+  A=[1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 1, 0, 0, 0, 0, 0, 0]
+  A=[0, 1, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 1, 1, 0]
+  A=[0, 1, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 0, 0, 0]
+  A=[0, 1, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 0, 0, 0, 0, 0]
+  A=[0, 0, 1, 0, 0, 0, 0, 0]  B=[0, 0, 0, 1, 1, 1, 1, 1]
+  A=[0, 0, 1, 0, 0, 0, 0, 0]  B=[0, 0, 0, 1, 1, 1, 0, 0]
+  A=[0, 0, 1, 0, 0, 0, 0, 0]  B=[0, 0, 0, 1, 0, 0, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    a_vals = np.asarray(data['option_a_ratings'].tolist(), dtype=float)
+    b_vals = np.asarray(data['option_b_ratings'].tolist(), dtype=float)
+
+    a_wins = np.sum(a_vals > b_vals, axis=1)
+    b_wins = np.sum(b_vals > a_vals, axis=1)
+    tally_tie = a_wins == b_wins
+
+    differ = a_vals != b_vals
+    has_disc = differ.any(axis=1)
+    first_disc = np.argmax(differ.astype(int), axis=1)
+
+    row_idx = np.arange(a_vals.shape[0])
+    first_a_wins = a_vals[row_idx, first_disc] > b_vals[row_idx, first_disc]
+
+    response = data['response'].to_numpy(dtype=float)
+
+    selected = tally_tie & has_disc
+    if not np.any(selected):
+        return 0.0
+
+    disc_positions = np.unique(first_disc[selected])
+    per_pos_diff = []
+    for pos in disc_positions:
+        in_pos = selected & (first_disc == pos)
+        b_first = in_pos & ~first_a_wins
+        a_first = in_pos & first_a_wins
+        if np.sum(b_first) == 0 or np.sum(a_first) == 0:
+            continue
+        per_pos_diff.append(
+            float(np.mean(response[b_first]) - np.mean(response[a_first]))
+        )
+
+    if not per_pos_diff:
+        return 0.0
+    return float(np.mean(per_pos_diff))
+```
+
+**Observed (real) value:** -0.1173 (var=0.0257)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.4613 (var=0.0293) (Δ vs real +0.5787)
+  - iter 2: 0.3933 (var=0.0233) (Δ vs real +0.5107)
+  - iter 3: 0.0067 (var=0.0488) (Δ vs real +0.1240)
+  - iter 4: 0.0200 (var=0.0404) (Δ vs real +0.1373)
+  - iter 5: -0.0373 (var=0.0576) (Δ vs real +0.0800)
+  - iter 6 (current): 0.0027 (var=0.0606) (Δ vs real +0.1200)
+**Other theories' values on this metric (for reference):**
+- pi_2: -0.0147 (var=0.0280)
+- pi_3: 0.7160 (var=0.0149)
+- pi_1: 0.2253 (var=0.0167)
+- pi_4: 0.0280 (var=0.0391)
+
+### Experiment 5
+**Design**
+  A=[1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0]  B=[1, 0, 0, 0, 0]
+  A=[0, 1, 0, 0, 0]  B=[0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0]  B=[0, 1, 0, 0, 0]
+  A=[0, 0, 1, 0, 0]  B=[0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0]  B=[0, 0, 1, 0, 0]
+  A=[0, 0, 0, 1, 0]  B=[0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0]  B=[0, 0, 0, 1, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    low = []
+    high = []
+    for row in data.itertuples(index=False):
+        a = np.asarray(row.option_a_ratings, dtype=float)
+        b = np.asarray(row.option_b_ratings, dtype=float)
+        diff = a - b
+        nz = np.flatnonzero(diff)
+        if nz.size == 0:
+            continue
+        pos = int(nz[0])
+        favored = 0 if diff[pos] > 0 else 1
+        consistent = 1.0 if int(row.response) == favored else 0.0
+        if pos == 0:
+            low.append(consistent)
+        elif pos in (1, 2, 3):
+            high.append(consistent)
+    if not low or not high:
+        return float('nan')
+    return float(np.mean(high) - np.mean(low))
+```
+
+**Observed (real) value:** -0.0222 (var=0.0067)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.0333 (var=0.0064) (Δ vs real +0.0556)
+  - iter 2: 0.0139 (var=0.0050) (Δ vs real +0.0361)
+  - iter 3: 0.0528 (var=0.0099) (Δ vs real +0.0750)
+  - iter 4: 0.0244 (var=0.0071) (Δ vs real +0.0467)
+  - iter 5: 0.0286 (var=0.0050) (Δ vs real +0.0508)
+  - iter 6 (current): 0.0347 (var=0.0063) (Δ vs real +0.0569)
+**Other theories' values on this metric (for reference):**
+- pi_3: 0.1878 (var=0.0101)
+- pi_4: -0.2019 (var=0.0042)
+- pi_1: 0.0092 (var=0.0061)
+- pi_2: 0.0058 (var=0.0086)
+
+### Experiment 6
+**Design**
+  A=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0]  B=[0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  A=[0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]  B=[0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    hi_a = []
+    hi_b = []
+    for _, row in data.iterrows():
+        a = np.asarray(row['option_a_ratings'])
+        b = np.asarray(row['option_b_ratings'])
+        diff = a != b
+        if not np.any(diff):
+            continue
+        first_diff = int(np.argmax(diff))
+        if first_diff != 1:
+            continue
+        if a[1] > b[1]:
+            hi_a.append(float(row['response']))
+        else:
+            hi_b.append(float(row['response']))
+    if not hi_a or not hi_b:
+        return 0.0
+    return float(np.mean(hi_a) - np.mean(hi_b))
+```
+
+**Observed (real) value:** -0.0633 (var=0.1971)
+**Candidate trajectory (this loop):**
+  - iter 1: -0.3750 (var=0.0319) (Δ vs real -0.3117)
+  - iter 2: -0.1958 (var=0.0334) (Δ vs real -0.1325)
+  - iter 3: 0.1033 (var=0.0917) (Δ vs real +0.1667)
+  - iter 4: -0.0608 (var=0.2188) (Δ vs real +0.0025)
+  - iter 5: -0.0142 (var=0.3065) (Δ vs real +0.0492)
+  - iter 6 (current): 0.1733 (var=0.2634) (Δ vs real +0.2367)
+**Other theories' values on this metric (for reference):**
+- pi_4: 0.6033 (var=0.0124)
+- pi_3: -0.8958 (var=0.0049)
+- pi_1: -0.6992 (var=0.0453)
+- pi_2: 0.4608 (var=0.0209)
+
+## YOUR PRIOR CRITIQUES (for this propose-loop)
+Each block is one of YOUR previous critique iterations: the verdict you returned, the interpretation and rationale you wrote, and an **Outcome of your advice** line that says whether the candidate the proposer produced AFTER following your advice was ACCEPTED (your advice helped — its loss strictly beat the running-best) or REJECTED (your advice didn't help — the gate discarded the candidate). Use this self-history to (a) reinforce advice that was ACCEPTED, (b) avoid repeating advice that was REJECTED, and (c) detect your own oscillation across iterations.
+
+### Iteration 1
+Verdict: regenerate
+Interpretation: The candidate is faithful to the prescribed stochastic bounded-sampling family and clearly improves on pi_3 by removing deterministic first-discriminator commitment. It matches Experiment 1 well (-0.402 vs -0.440) and is the best reference on the Experiment 6 point estimate, but several patterns remain off. Experiment 4 is the most diagnostic failure: the candidate produces +0.461 where humans show -0.117, a sign reversal. This indicates the first-cue bonus [1.60, 2.10] is still too strong: with sample_size=2, tally-tie trials that contain exactly two discriminators always sample both, and the bonus nearly doubles the first cue, recreating pi_3-like first-cue commitment. Experiment 3 also over-predicts first-cue matching (0.676 vs 0.625). Experiment 2 underestimates the validity-order effect (-0.190 vs -0.375), so stated validity is too weak relative to serial position. Experiment 6 is too negative (-0.375 vs -0.063) and underdispersed (var 0.032 vs 0.197): the fixed sample_size=2 samples too few cues on a 12-feature list, leaving first-cue/tally imbalance, and the subject-level heterogeneity is only global scale/bias rather than cue-weight noise. Experiment 5 is small and near zero but has the wrong sign (+0.033 vs -0.022), suggesting the position/validity balance is still miscalibrated.
+Rationale: Keep the stochastic bounded-sampling architecture but retune within it. (1) Lower first_cue_bonus to roughly [1.0, 1.3], or make it probabilistic/validity-gated, to fix the Exp4 sign reversal and reduce Exp3 over-matching. (2) Replace the fixed sample_size=2 with a capacity-scaled sample size, e.g., max(2, ceil(capacity * n_disc)) or a range [3, 5], so long lists integrate more cues and Exp6 moves toward the observed near-zero first-cue effect. (3) Strengthen stated-validity influence by increasing att_validity_slope and evidence_slope (e.g., evidence_slope [0.55, 0.75], att_validity_slope [0.60, 0.80]) to close the Exp2 gap while keeping the compressive clip. (4) Add subject-level heterogeneity in cue weights, such as per-subject multiplicative noise on evidence weights or subject-specific validity slopes/bonus, to raise between-subject variance in Exp6 (and Exp1/Exp2) toward the observed values. These are in-family parameter adjustments; do not switch to deterministic first-cue commitment or pure equal-weight tallying.
+
+**Outcome of your advice:** iter 1 candidate loss=0.2227 -> iter 2 candidate loss=0.1719 -> the gate marked it ACCEPTED.
+
+### Iteration 2
+Verdict: regenerate
+Interpretation: The candidate is a faithful in-family revision of the stochastic bounded-sampling accumulator, and it improved aggregate fit from 0.2227 to 0.1719. It also moved several metrics in the right direction: Exp3 is now close to the real value (0.591 vs 0.625), Exp6 moved from -0.375 toward -0.196 (real -0.063), and Exp2 improved from -0.190 to -0.266 (real -0.375). Exp5 is near zero and acceptable. However, two diagnostic failures remain. First, Exp4 still has the wrong sign: the candidate yields +0.393 while humans show -0.117. In the tally-tie rows selected by the Exp4 metric, both discriminators are sampled, and the additive first-cue bonus of roughly 1.1 * (5/8)^1.9 to 2.1, near 0.6 to 0.8 evidence units, dominates the opposing cue, effectively recreating first-discriminator commitment on an eight-item list. This is exactly the failure the bounded-sampling theory was meant to eliminate. Second, Exp6 is still too first-cue dominated (-0.196 vs -0.063) and far too homogeneous across subjects (var 0.033 vs 0.197). The per-cue evidence jitter currently supplied by evidence_jitter is too weak relative to the real between-subject variance, and the first-cue bonus plus position gradient are still not sufficiently flattened on the 12-item list. Exp1 is also somewhat too strong in the validity-cue direction (-0.542 vs -0.440), and Exp2 remains too weak (-0.266 vs -0.375), so the validity weighting is not yet perfectly calibrated.
+Rationale: Keep the stochastic bounded-sampling architecture, but retune within it. (1) Severely weaken the first-cue bonus on long lists while keeping it intact on five-item lists. Since capacity equals exactly 1.0 when n_features = 5, raising first_cue_capacity_power to roughly 4 to 6, or restricting the effective bonus so that first_cue_bonus * capacity^first_cue_capacity_power is no more than about 0.2 on eight- and twelve-item lists, will fix the Exp4 sign reversal and push Exp6 toward near zero without changing the short-list Exp3 fit. (2) Flatten the position gradient further on long lists, for example by multiplying position_decay by capacity^2 instead of capacity, or by lowering position_decay to around 0.25 to 0.45, so twelve-item decisions do not retain a first-position advantage. These two changes should drive Exp4 toward the observed near-zero/negative first-cue effect and Exp6 toward -0.063. (3) Strengthen subject-level heterogeneity substantially. Widen evidence_jitter from (0.70, 1.30) to approximately (0.30, 1.70) or (0.20, 2.00), broaden the clip in predict accordingly, and consider wider per-subject ranges for beta and subject_scale. The real Exp6 variance of 0.197 requires much more than the current var of 0.033. (4) After the long-list bonus is neutralized, recheck Exp2. If it remains too weak, modestly increase evidence_slope or att_validity_slope, but temper that against Exp1, which is currently already too validity-driven. Do not switch away from bounded stochastic sampling, and do not reintroduce deterministic first-cue commitment or a pure equal-weight tally.
+
+**Outcome of your advice:** iter 2 candidate loss=0.1719 -> iter 3 candidate loss=0.1110 -> the gate marked it ACCEPTED.
+
+### Iteration 3
+Verdict: regenerate
+Interpretation: The current candidate is a faithful in-family revision and a clear aggregate improvement: aggregate loss fell from 0.1719 to 0.1110, Experiment 1 is now essentially matched (-0.453 vs -0.440), Experiment 4's large sign reversal was fixed (from +0.393 at iter 2 to +0.007, versus -0.117 human), and Experiment 3 is close though slightly low (0.577 vs 0.625). However the candidate still does not capture all experiments invariantly. Experiment 6 has overshot: it moved from -0.196 at iter 2 to +0.103, flipping sign relative to the human -0.063, and its between-subject variance remains too small (0.092 vs 0.197). Experiment 2 is still too weak on validity-ordered first-cue use (-0.246 vs -0.375), so stated validity remains too compressed on five-item multi-cue decisions. Experiment 5 has also worsened and changed sign (+0.053 vs -0.022), suggesting that on one-discriminator trials the model now favors later high-validity positions too much once position priming is reduced. Experiment 4 is much better but is still slightly positive rather than slightly negative (0.007 vs -0.117) and is overdispersed relative to the human variance (0.049 vs 0.026).
+Rationale: Keep the stochastic bounded-sampling architecture but recalibrate within it. First, stop further flattening the long-list position gradient: Experiment 6 already overshot positive, so more damping is the wrong direction. Instead increase subject-level heterogeneity in cue weights by allowing some subjects to have negative or anti-cue weights, for example by widening evidence_jitter to include negative values or allowing subject-specific validity slopes to span below zero. The current positive-only jitter cannot produce the anti-cue subjects implied by the real Experiment 6 variance of 0.197 and should help pull the Experiment 6 mean back toward near zero or slightly negative while also raising its variance and moving Experiment 4 slightly negative. Second, strengthen stated-validity influence modestly for multi-cue decisions, e.g., raise evidence_slope to roughly 0.68 to 0.78 and att_validity_slope to roughly 0.75 to 0.90, but do so while preserving Experiment 1, which is already nearly exact. Third, fix the Experiment 5 sign reversal without relearning long-list primacy: increase the short-list first-cue bonus slightly, e.g., first_cue_bonus around 1.45 to 1.75, and lower first_cue_validity_power somewhat, so a low-validity first discriminator on a five-item list still receives enough bonus to keep single-cue position-0 consistency comparable to later positions. That should also lift Experiment 3 slightly toward the human 0.625. These are all in-family parameter adjustments; do not switch to deterministic first-cue commitment or pure equal-weight tallying.
+
+**Outcome of your advice:** iter 3 candidate loss=0.1110 -> iter 4 candidate loss=0.0869 -> the gate marked it ACCEPTED.
+
+### Iteration 4
+Verdict: regenerate
+Interpretation: The current candidate is a faithful stochastic bounded-sampling accumulator and the aggregate loss improved to 0.0869. It captures Experiment 3 almost exactly (0.624 simulated vs 0.625 human) and Experiment 6 now matches in both mean and dispersion (-0.061 vs -0.063; var 0.219 vs 0.197), which was the previous hardest target. Experiment 5 is small and close in magnitude but still has the wrong sign (+0.024 vs -0.022). The main remaining failures are that Experiment 1 regressed and is too weak (-0.292 vs -0.440, var 0.282 vs 0.150), Experiment 2 remains too shallow (-0.245 vs -0.375), and Experiment 4 still has the wrong sign (+0.020 vs -0.117), indicating a residual slight first-position/primacy bias on eight-item tally-tie decisions. The pattern suggests stated validity is still too compressed in multi-discriminator decisions, and the long-list evidence-weight distribution has a positive mean despite allowing occasional negative jitter.
+Rationale: Keep the bounded-sampling accumulator and make small in-family recalibrations. First, increase validity contrast through the sampling mechanism rather than only another linear slope bump: add or increase a validity exponent on the validity component of sampling_weights, e.g., att_validity^validity_power with validity_power around 1.5 to 2.5, while preserving the compressive clip. This should push Experiment 1 back toward -0.44 and Experiment 2 toward -0.375; if Experiment 2 is still shallow, then raise evidence_slope toward about 0.85 to 1.10, checking that Experiment 3 stays near 0.62. Second, fix the Experiment 4 sign by shifting the long-list evidence_jitter interval downward while keeping its width roughly constant, for example from (-1.5, 3.0) to about (-3.0, 1.5), so the long-list jitter has a negative mean rather than merely occasional negative draws. That should turn the eight-item tally-tie first-cue effect slightly negative while preserving the already accurate Experiment 6 mean and variance. Third, narrow the short-list jitter slightly, moving the lower bound from 0.1 up to around 0.3 to 0.5, to reduce Experiment 1's inflated between-subject variance from 0.282 toward the observed 0.150. Do not flatten the long-list position gradient further and do not reintroduce deterministic first-cue commitment or a pure equal-weight tally.
+
+**Outcome of your advice:** iter 4 candidate loss=0.0869 -> iter 5 candidate loss=0.1138 -> the gate marked it REJECTED.
+
+### Iteration 5 (most recent)
+Verdict: regenerate
+Interpretation: The current candidate remains inside the prescribed stochastic bounded-sampling family, but it over-applied the previous round of adjustments and the gate rejected it: aggregate loss rose from 0.0869 to 0.1138. The main damage is on the short-list experiments. Experiment 1 now overshoots badly (-0.648 vs real -0.440) with much too little between-subject variance (0.036 vs 0.150). Experiment 3 also overshoots (0.743 vs real 0.625), having been almost exact at iter 4 (0.624). Both failures point to the same cause: raising the short-list evidence_jitter lower clip to 0.40 removed too much of the low-weight heterogeneity that kept the short-list tally and first-cue effects at human levels. Experiment 2 moved closer (-0.308 vs real -0.375) but remains slightly too shallow and now too homogeneous (var 0.011 vs 0.032). On the long-list side, the negative jitter shift fixed the Experiment 4 sign (now -0.037 vs real -0.117) and kept Experiment 6 close (-0.014 vs real -0.063), but the long-list jitter interval is too broad, inflating variance beyond the observed values (Exp4 var 0.058 vs 0.026; Exp6 var 0.307 vs 0.197). Experiment 5 remains a small persistent sign error (+0.029 vs -0.022), which is a secondary concern. Overall, the iter-5 implementation traded two previously good fits (Exp1, Exp3) for improvements on Exp4 and Exp6, and the net result was worse.
+Rationale: The prior advice to raise validity_power to 1.50-2.50, shift long-list jitter to (-3.0, 1.5), and lift the short-list jitter lower clip to 0.40 was rejected by the gate, so the next candidate should build on the accepted iter-4 base and apply moderated versions of those changes rather than the full changes. Concretely: (1) lower the short-list jitter floor to about 0.20-0.30, not 0.40, so Exp1 returns toward -0.44 and its variance rises toward 0.15, while Exp3 moves from 0.74 back toward 0.62; (2) shift the long-list jitter only partway, e.g. to roughly (-2.0, 1.0), which preserves a negative mean for the Exp4 sign while reducing the inflated long-list between-subject variances; (3) use a much milder validity exponent, around 1.0 to 1.5 rather than 1.5 to 2.5, to retain validity influence without recreating all-or-none weighting; (4) if Exp2 is still too shallow after softening the short-list jitter, modestly increase evidence_slope or att_validity_slope while slightly lowering first_cue_bonus to keep Exp3 near 0.62. These are all in-family parameter recalibrations and keep the bounded stochastic sampling architecture intact.
+
+**Outcome of your advice:** iter 5 candidate loss=0.1138 -> CURRENT candidate loss=0.1267 -> the gate marked it REJECTED.
+
+## RESPONSE FORMAT
+
+Return a JSON object with the following fields:
+- interpretation: Freeform analysis of the model simulation results on existing experiments and how they do or do not support the proposed model/theory.
+- verdict: Either 'regenerate' (regenerate a new model/theory) or 'continue' (keep the current model/theory).
+- rationale: If verdict='regenerate', why the current predict / policy / parameter-ranges should be revised. If verdict='continue', a sketch of why the current theory should be kept.
+
+
+## Response
+
+```json
+{
+  "interpretation": "The candidate remains inside the prescribed stochastic bounded-sampling family, and its iter-6 aggregate loss is 0.1267, worse than the accepted iter-4 base at 0.0869, so the gate correctly rejected it. Relative to iter-4, the candidate improved Experiment 1 on the point estimate (-0.483 simulated vs -0.440 real, versus iter-4's -0.292) and improved Experiment 2 somewhat (-0.303 simulated vs -0.375 real, versus -0.245), but it overshot Experiment 3 badly (0.748 simulated vs 0.625 real, versus iter-4's 0.624), flipped Experiment 6 from a good near-zero estimate to the wrong sign (0.173 simulated vs -0.063 real, with variance 0.263 vs 0.197), and left Experiment 4 with the wrong sign and inflated variance (0.003 simulated vs -0.117 real, var 0.061 vs 0.026). Experiment 5 remains a small but persistent sign error (0.035 simulated vs -0.022 real). The most diagnostic problem is that on five-item lists capacity equals essentially 1.0, so all discriminating cues are sampled: position_decay and sampling_validity_power are inert there, and all short-list serial-position effects are concentrated in the additive first_cue_bonus of 1.45-1.75. That bonus is roughly the size of several cue weights combined, which recreates the near-deterministic first-discriminator commitment the theory was supposed to abandon, and directly explains the Experiment 3 overshoot and the fragility of the short-list trade-off. On long lists, the candidate tunes first-cue effects through a broad jitter clip of [-2, 1]; this inflates between-subject variance in Experiments 4 and 6 and fails to produce the correct mean direction.",
+  "verdict": "regenerate",
+  "rationale": "Regenerate on top of the unchanged accepted iter-4 base. Do not continue the iter-5/iter-6 direction of raising the short-list jitter floor and applying a broad negative long-list jitter; those changes were rejected by the gate. Instead, move short-list primacy out of the single large additive first_cue_bonus and into a graded serial-position weight on all sampled cue evidence, for example weight(j) = exp(-lambda * j) or 1 + rho / (1 + j) with moderate lambda or rho. Reduce first_cue_bonus to roughly 0.4-0.9 so it merely sharpens primacy rather than dominating opposing evidence; this should lower Experiment 3 toward 0.625 while allowing the position gradient to keep Experiment 1 near -0.44. The position gradient must act on evidence weights after sampling, not only on sampling probabilities, otherwise it has no effect whenever all discriminators are sampled. Strengthen stated-validity influence modestly through evidence_slope, for example 0.80-0.95, or a mild validity weighting on evidence, but avoid the previously rejected 1.5-2.5 sampling validity exponent; this should close the Experiment 2 gap and help the high-validity later cue dominate the pos1-versus-pos2 pairs in Experiment 4. For long lists, narrow the jitter distribution substantially while centering it only slightly negative, for example a clip around [-1.2, 0.6] rather than the broad [-2, 1], to reduce the inflated variances in Experiments 4 and 6 and move the Experiment 4 point estimate toward -0.117 without destabilizing Experiment 6. Finally, return the short-list jitter floor toward 0.1; the raised 0.2 floor was a main cause of the Experiment 3 overshoot and the low between-subject variance in Experiments 1 and 2. All of these are in-family adjustments to the bounded stochastic sampling architecture, and they avoid both deterministic first-discriminator commitment and equal-weight tallying."
+}
+```
+
+## Usage
+
+```json
+{
+  "input_tokens": 14499,
+  "output_tokens": 21304,
+  "reasoning_tokens": 20442,
+  "provider": "Baidu"
+}
+```

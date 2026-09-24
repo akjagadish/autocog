@@ -1,0 +1,99 @@
+{
+  "round_idx": 9,
+  "verdict": "new_theory",
+  "starting_theories": [
+    {
+      "slot": 1,
+      "label": "pi_9",
+      "killed": true,
+      "theory": {
+        "description": "Thresholded validity-weighted anti-validity with a zero-tally dead-zone repair and fragmented-evidence dilution. Each subject forms D = sum_j v_j^{gamma_i} (A_j - B_j). When |D| is below a subject-level ambiguity threshold theta_i, the validity signal is treated as ambiguous. If the unweighted tally is nonzero, choice is driven by that tally through omega_i with a single strong weight, exactly as in the accepted base. If the tally is exactly zero, choice remains graded via a small signed validity-derived anti-validity term psi_i * sign_i * D / (kappa_i + |D|), but this term is now diluted multiplicatively by exp(-rho_disc_i * max(0, n_disc - 2)), where n_disc is the number of discriminating features. This dilution suppresses responding for zero-tally rows with many simultaneously disagreeing features while leaving zero-tally rows with only two discriminating features untouched. When |D| >= theta_i, choice follows the mostly negative anti-validity transform sign_i * lambda_i * D / (tau_i + |D|) + bias_i. Choice probability is p(A) = lapse_i/2 + (1-lapse_i) * sigmoid(beta_i * S_i).",
+        "predict_source": "import numpy as np\n\n\ndef predict(parameters, state, history):\n    \"\"\"Thresholded validity-weighted anti-validity with zero-tally dead-zone repair\n    and fragmented-evidence dilution.\n\n    D = sum_j v_j^gamma * (A_j - B_j)\n    T = sum_j (A_j - B_j)\n    n_disc = count of features where A_j != B_j\n\n    If |D| < theta:\n        if T == 0:\n            dilution = exp(-rho_disc * max(0, n_disc - 2))\n            score = psi * sign * D / (kappa_dead + |D|) * dilution\n        else:\n            score = omega * T\n    Else:\n        score = sign * lam * D / (tau + |D|) + bias\n\n    p(A) = lapse/2 + (1 - lapse) * sigmoid(beta * score)\n\n    history is intentionally ignored because the task provides no trial-by-trial\n    correctness feedback.\n    \"\"\"\n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            \"Thresholded anti-validity model expects a (2, n_features) stimulus; \"\n            f\"got shape {stim.shape}.\"\n        )\n\n    a = stim[0]\n    b = stim[1]\n\n    v = np.asarray(parameters[\"validities\"], dtype=float)\n    if v.size != a.size:\n        raise ValueError(\n            f\"validities length {v.size} does not match n_features {a.size}.\"\n        )\n\n    gamma = float(parameters[\"gamma\"])\n    theta = float(parameters[\"theta\"])\n    tau = float(parameters[\"tau\"])\n    lam = float(parameters[\"lam\"])\n    beta = float(parameters[\"beta\"])\n    bias = float(parameters[\"bias\"])\n    lapse = float(parameters[\"lapse\"])\n    omega_mag = float(parameters[\"omega_mag\"])\n    p_omega_positive = float(parameters[\"p_omega_positive\"])\n    omega_sign_draw = float(parameters[\"omega_sign_draw\"])\n    p_positive = float(parameters[\"p_positive\"])\n    sign_draw = float(parameters[\"sign_draw\"])\n    psi = float(parameters[\"psi\"])\n    kappa_dead = float(parameters[\"kappa_dead\"])\n    rho_disc = float(parameters[\"rho_disc\"])\n\n    # Mostly negative validity-weighting sign; a minority trust the\n    # validity-weighted direction.\n    sign = 1.0 if sign_draw < p_positive else -1.0\n\n    # Subject-level tally weight, mostly positive but allowing a minority of\n    # subjects to use the opposite tally sign.\n    omega = omega_mag if omega_sign_draw < p_omega_positive else -omega_mag\n\n    # Subject-level validity-weighted feature difference.\n    w = np.power(v, gamma)\n    diff = a - b\n    D = float(np.dot(w, diff))\n\n    # Unweighted tally difference used in the dead zone.\n    T = float(np.sum(diff))\n\n    # Number of discriminating features, used only in the zero-tally branch.\n    n_disc = int(np.count_nonzero(diff))\n\n    if abs(D) < theta:\n        # Ambiguous validity signal.\n        if abs(T) < 1e-12:\n            # Zero-tally repair: equal raw counts no longer force p(A)=0.5.\n            # A small signed validity-derived anti-validity term preserves\n            # graded responding when the options differ only in which cue is\n            # present.  This term is diluted by a factor that shrinks\n            # exponentially with the number of discriminating features beyond\n            # two, so multi-feature zero-tally rows stay near chance while\n            # two-feature rows keep the graded contrast.\n            sat_dead = D / (kappa_dead + abs(D))\n            dilution = np.exp(-rho_disc * max(0.0, float(n_disc - 2)))\n            score = psi * sign * sat_dead * dilution\n        else:\n            # Nonzero tally drives the ambiguous-regime choice.\n            score = omega * T\n    else:\n        # Clear validity signal: mostly negative anti-validity response through\n        # a moderately saturating continuous transform.\n        sat = D / (tau + abs(D))\n        score = sign * lam * sat + bias\n\n    z = beta * score\n\n    # Numerically stable sigmoid for p(A | score).\n    if z >= 0.0:\n        p_a_core = 1.0 / (1.0 + np.exp(-z))\n    else:\n        ez = np.exp(z)\n        p_a_core = ez / (1.0 + ez)\n\n    # Uniform lapse mixture over the two options.\n    p_a = (1.0 - lapse) * p_a_core + lapse / 2.0\n    p_a = float(np.clip(p_a, 0.0, 1.0))\n\n    return np.array([p_a, 1.0 - p_a], dtype=float)\n",
+        "policy_source": "import numpy as np\n\n\ndef policy(probs):\n    p = np.asarray(probs, dtype=float)\n    if p.sum() <= 0.0:\n        p = np.ones_like(p) / len(p)\n    else:\n        p = p / p.sum()\n    return int(np.random.choice(len(p), p=p))\n",
+        "parameters": {
+          "gamma": "[1.0, 3.0]",
+          "theta": "[0.15, 0.28]",
+          "tau": "[0.70, 1.30]",
+          "lam": "[1.60, 2.20]",
+          "beta": "[2.10, 2.70]",
+          "bias": "[-0.05, 0.05]",
+          "lapse": "[0.01, 0.04]",
+          "p_positive": "[0.03, 0.10]",
+          "sign_draw": "[0.0, 1.0]",
+          "omega_mag": "[0.45, 0.75]",
+          "p_omega_positive": "[0.85, 0.95]",
+          "omega_sign_draw": "[0.0, 1.0]",
+          "psi": "[0.90, 1.40]",
+          "kappa_dead": "[0.06, 0.16]",
+          "rho_disc": "[0.9, 1.4]",
+          "validities": "validities"
+        },
+        "rationale": "This edit follows the most recent critic feedback exactly. The accepted iter-2 base already solved E16, E13, E14, E9, E4 and E15 with its single strong nonzero-tally fallback and its zero-tally graded term. Every subsequent rejected edit failed because it modified the nonzero-tally arm and destroyed E16 and E13. Here I keep the base's tally arm and every other parameter untouched, and I add only a multiplicative dilution factor to the zero-tally branch: score = psi * sign * D / (kappa_dead + |D|) * exp(-rho_disc * max(0, n_disc - 2)), active only for |D| < theta and T = 0. The dilution is designed to fix the base's one dominant residual, E12, where many zero-tally rows contain four or eight discriminating features and the base was far too decisive (0.616 vs human 0.036). With rho_disc around 0.9-1.4, those high-n_disc zero-tally rows are pushed back toward chance, while n_disc=2 rows (E13 and E14) are completely unaffected because the exponent is zero. E16's rows all have nonzero T and therefore never enter the zero-tally branch, so its row-logit variance remains 3.597. No other parameter is changed, preserving the base's successes on E1, E2, E4, E9, E10, E13, E14 and E15. This is the minimal, targeted repair the gate should accept if E12 falls to roughly 0.03-0.06 without collateral damage."
+      }
+    },
+    {
+      "slot": 2,
+      "label": "pi_10",
+      "killed": false,
+      "theory": {
+        "description": "Gated compressive anti-validity with validity-curvature gain and sign-selectable dead-zone repair. Each subject forms D = sum_j v_j^gamma * (A_j - B_j), passes D through a saturating transform D/(tau + |D|), and mostly applies a negative validity-weighting sign. A subject-level threshold theta defines a mild dead zone around D=0: inside this zone the anti-validity score is attenuated and augmented by a bounded graded repair D/(kappa + |D|) whose sign is anti-validity for most subjects but validity-consistent for a minority; outside the zone the full compressive score plus bias is used. A two-component subject mixture provides moderate bulk responding with stronger validity curvature plus a near-deterministic tail with negative or sub-linear validity exponents. There is no strong unweighted tally switch and no fragmented-evidence dilution; only a small tally leak eta*T is retained.",
+        "predict_source": "import numpy as np\n\n\ndef predict(parameters, state, history):\n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            'GCAV expects a (2, n_features) stimulus; got shape '\n            + str(stim.shape) + '.'\n        )\n\n    a = stim[0]\n    b = stim[1]\n\n    v = np.asarray(parameters['validities'], dtype=float)\n    if v.size != a.size:\n        raise ValueError('validities length does not match n_features.')\n\n    comp_draw = float(parameters['comp_draw'])\n    p_tail = float(parameters['p_tail'])\n\n    if comp_draw < p_tail:\n        gamma = float(parameters['gamma_tail'])\n        theta = float(parameters['theta_tail'])\n        tau = float(parameters['tau_tail'])\n        lam = float(parameters['lambda_tail'])\n        beta = float(parameters['beta_tail'])\n        bias = float(parameters['bias_tail'])\n        rho = float(parameters['rho_tail'])\n        c_repair = float(parameters['c_repair_tail'])\n    else:\n        gamma = float(parameters['gamma_bulk'])\n        theta = float(parameters['theta_bulk'])\n        tau = float(parameters['tau_bulk'])\n        lam = float(parameters['lambda_bulk'])\n        beta = float(parameters['beta_bulk'])\n        bias = float(parameters['bias_bulk'])\n        rho = float(parameters['rho_bulk'])\n        c_repair = float(parameters['c_repair_bulk'])\n\n    lapse = float(parameters['lapse'])\n    eta = float(parameters['eta'])\n    p_positive = float(parameters['p_positive'])\n    sign_draw = float(parameters['sign_draw'])\n\n    p_repair_positive = float(parameters['p_repair_positive'])\n    repair_sign_draw = float(parameters['repair_sign_draw'])\n    c_repair_pos = float(parameters['c_repair_pos'])\n    kappa_repair = float(parameters['kappa_repair'])\n\n    # Mostly negative validity-weighting sign.\n    sign = 1.0 if sign_draw < p_positive else -1.0\n\n    # Dead-zone repair sign is also mostly anti-validity, but a minority\n    # receive a validity-consistent repair inside the dead zone.\n    repair_sign = 1.0 if repair_sign_draw < p_repair_positive else -1.0\n\n    diff = a - b\n    D = float(np.dot(np.power(v, gamma), diff))\n    T = float(np.mean(diff))\n\n    sat = D / (tau + abs(D))\n    core = sign * lam * sat + bias\n\n    if abs(D) < theta:\n        # Bounded graded repair, applied identically for all tallies.\n        repair_sat = D / (kappa_repair + abs(D))\n        if repair_sign > 0:\n            repair = c_repair_pos * repair_sat\n        else:\n            repair = -c_repair * repair_sat\n        score = rho * core + repair + eta * T\n    else:\n        score = core + eta * T\n\n    z = beta * score\n\n    # Numerically stable sigmoid for p(A | score).\n    if z >= 0.0:\n        p_a_core = 1.0 / (1.0 + np.exp(-z))\n    else:\n        ez = np.exp(z)\n        p_a_core = ez / (1.0 + ez)\n\n    # Uniform lapse mixture over the two options.\n    p_a = (1.0 - lapse) * p_a_core + lapse / 2.0\n    p_a = float(np.clip(p_a, 0.0, 1.0))\n\n    return np.array([p_a, 1.0 - p_a], dtype=float)\n",
+        "policy_source": "import numpy as np\n\n\ndef policy(probs):\n    p = np.asarray(probs, dtype=float)\n    if p.sum() <= 0.0:\n        p = np.ones_like(p) / len(p)\n    else:\n        p = p / p.sum()\n    return int(np.random.choice(len(p), p=p))\n",
+        "parameters": {
+          "comp_draw": "[0.0, 1.0]",
+          "p_tail": "[0.12, 0.20]",
+          "gamma_bulk": "[1.30, 1.80]",
+          "theta_bulk": "[0.06, 0.28]",
+          "tau_bulk": "[0.80, 1.80]",
+          "lambda_bulk": "[1.00, 1.80]",
+          "beta_bulk": "[1.20, 2.50]",
+          "bias_bulk": "[-0.05, 0.05]",
+          "rho_bulk": "[0.10, 0.22]",
+          "c_repair_bulk": "[0.03, 0.10]",
+          "gamma_tail": "[-1.80, 0.50]",
+          "theta_tail": "[0.00, 0.08]",
+          "tau_tail": "[0.08, 0.30]",
+          "lambda_tail": "[1.50, 3.00]",
+          "beta_tail": "[4.00, 8.00]",
+          "bias_tail": "[-0.04, 0.04]",
+          "rho_tail": "[0.50, 0.80]",
+          "c_repair_tail": "[0.15, 0.45]",
+          "p_positive": "[0.02, 0.08]",
+          "sign_draw": "[0.0, 1.0]",
+          "lapse": "[0.01, 0.04]",
+          "eta": "[0.0, 0.04]",
+          "p_repair_positive": "[0.12, 0.25]",
+          "repair_sign_draw": "[0.0, 1.0]",
+          "c_repair_pos": "[0.20, 0.60]",
+          "kappa_repair": "[0.03, 0.10]",
+          "validities": "validities"
+        },
+        "rationale": "This is a minimal in-family edit of the accepted gated compressive anti-validity candidate. The core family is preserved: D = sum_j v_j^gamma * (A_j - B_j), saturating transform D/(tau+|D|), mostly negative sign mixture, thresholded dead zone, no n_disc term, and only a small eta tally leak. Four targeted changes are made. (1) Bulk validity curvature is increased to gamma_bulk 1.30-1.80, while lambda_bulk, beta_bulk, and tau_bulk are left unchanged, so top-cue anti-validity contrasts recover in Experiments 1, 2, 4, and 9 without the prior mistake of softening the core. (2) The dead-zone repair is switched from a constant sign(D) term to a bounded graded repair D/(kappa_repair+|D|), which restores low-evidence graded anti-validity contrast in Experiments 13 and 14 while keeping the small-D step in Experiment 12 bounded. (3) An independent repair-sign draw gives a minority of subjects a validity-consistent repair inside the dead zone, providing the threshold-crossing route needed for Experiment 18 without adding a separate full-D positive-sign branch. (4) Theta heterogeneity is widened to allow more varied threshold crossings. The repairs remain small/bounded, no strong tally switch is introduced, and the tail/gamma heterogeneity that generated Experiment 16 row separation is retained."
+      }
+    }
+  ],
+  "replacement": {
+    "label": "pi_11",
+    "slot": 1,
+    "verdict": "new_theory",
+    "theory": {
+      "description": "Evidence-complexity-gated compressive anti-validity integration with a small negative unweighted-tally leak (ECAVI-leak). Subjects form a validity-weighted difference D = sum_j v_j^gamma (A_j - B_j), pass it through a soft-sign transform D/(tau + |D|), and mostly apply an anti-validity sign. The evidence signal is multiplicatively gated by fragmentation, exp(-rho * max(0, n_disc - 2)), so trials with many disagreeing expert cues dilute toward chance, while low-fragmentation trials retain the anti-validity gradient. A small negative unweighted-tally leak keeps some count-based structure on fragmented displays without becoming a strong switch. A minority of subjects remain validity-consistent. Choices are stochastic through a lapse-mixture sigmoid.",
+      "predict_source": "import numpy as np\n\n\ndef predict(parameters, state, history):\n    \"\"\"Evidence-complexity-gated compressive anti-validity integration\n    with a small negative unweighted-tally leak.\n\n    D = sum_j v_j^gamma * (A_j - B_j)\n    psi(D) = D / (tau + abs(D))\n    score = (sign * lambda * psi(D) + bias) * exp(-rho * max(0, n_disc - 2))\n            + eta * mean(A_j - B_j)\n    p(A) = lapse/2 + (1 - lapse) * sigmoid(beta * score)\n\n    Most subjects use sign = -1; a minority draw sign = +1.\n    history is ignored because there is no trial-by-trial feedback.\n    \"\"\"\n    stim = np.asarray(state, dtype=float)\n    if stim.ndim != 2 or stim.shape[0] != 2:\n        raise ValueError(\n            'ECAVI-leak expects a (2, n_features) stimulus; got shape '\n            + str(stim.shape) + '.'\n        )\n\n    a = stim[0]\n    b = stim[1]\n\n    v = np.asarray(parameters['validities'], dtype=float)\n    if v.size != a.size:\n        raise ValueError(\n            f'validities length {v.size} does not match n_features {a.size}.'\n        )\n\n    gamma = float(parameters['gamma'])\n    tau = float(parameters['tau'])\n    lam = float(parameters['lambda'])\n    beta = float(parameters['beta'])\n    rho = float(parameters['rho'])\n    lapse = float(parameters['lapse'])\n    bias = float(parameters['bias'])\n    p_positive = float(parameters['p_positive'])\n    sign_draw = float(parameters['sign_draw'])\n    eta = float(parameters['eta'])\n\n    # Latent sign mixture: most subjects invert validity-weighted evidence;\n    # a minority use validity-consistent responding.\n    sign = 1.0 if sign_draw < p_positive else -1.0\n\n    diff = a - b\n\n    # Validity-weighted feature difference.\n    D = float(np.dot(np.power(v, gamma), diff))\n\n    # Evidence fragmentation gate: number of disagreeing features beyond two.\n    n_disc = int(np.count_nonzero(diff))\n    gain = float(np.exp(-rho * max(0.0, float(n_disc) - 2.0)))\n\n    # Compressive evidence transform.\n    psi = D / (tau + abs(D))\n\n    # Small negative unweighted tally leak; this is not a strong switch.\n    T = float(np.mean(diff))\n\n    score = (sign * lam * psi + bias) * gain + eta * T\n    z = float(beta * score)\n\n    # Numerically stable sigmoid for p(A | score).\n    if z >= 0.0:\n        p_a_core = 1.0 / (1.0 + np.exp(-z))\n    else:\n        ez = np.exp(z)\n        p_a_core = ez / (1.0 + ez)\n\n    # Uniform lapse mixture over the two options.\n    p_a = (1.0 - lapse) * p_a_core + lapse / 2.0\n    p_a = float(np.clip(p_a, 0.0, 1.0))\n\n    return np.array([p_a, 1.0 - p_a], dtype=float)\n",
+      "policy_source": "import numpy as np\n\n\ndef policy(probs):\n    p = np.asarray(probs, dtype=float)\n    if p.sum() <= 0.0 or not np.isfinite(p).all():\n        p = np.ones_like(p) / len(p)\n    else:\n        p = p / p.sum()\n    return int(np.random.choice(len(p), p=p))\n",
+      "parameters": {
+        "gamma": "[1.0, 2.5]",
+        "tau": "[0.20, 0.35]",
+        "lambda": "[1.5, 2.5]",
+        "beta": "[2.5, 3.5]",
+        "rho": "[0.30, 0.60]",
+        "lapse": "[0.00, 0.05]",
+        "p_positive": "[0.00, 0.30]",
+        "sign_draw": "[0.0, 1.0]",
+        "bias": "[-0.04, 0.04]",
+        "eta": "[-0.04, -0.02]",
+        "validities": "validities"
+      },
+      "rationale": "This is a minimal edit of the accepted ECAVI base. It adds a small negative unweighted-tally leak (eta in [-0.04, -0.02]) while keeping |eta| < 0.05, as the most recent feedback requested to recover Exp1 and contribute to Exp16/Exp17. The fragmentation gate is retained exactly as in the base: no gain floor, n_disc0 = 2, exponential decay with rho now 0.30-0.60 so fragmented trials actually dilute toward chance. Response gain is reduced by narrowing lambda to 1.5-2.5, beta to 2.5-3.5, and tau to 0.20-0.35, which should prevent the ceiling effects (Exp3, Exp4, Exp9, Exp11, Exp12, Exp14) that caused the previous over-softened candidate to be rejected. Bias and lapse are tightened for more consistent subject-level behavior. No mechanistic family change is introduced."
+    }
+  }
+}

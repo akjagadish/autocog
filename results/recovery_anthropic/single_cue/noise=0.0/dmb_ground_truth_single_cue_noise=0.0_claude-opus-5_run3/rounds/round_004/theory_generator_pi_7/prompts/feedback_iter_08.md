@@ -1,0 +1,1359 @@
+# feedback_iter_08
+
+## System Prompt
+
+You are a renowned cognitive scientist critiquing a freshly proposed candidate theory and model in the Decision Making (Binary Features) domain.
+
+The candidate has been simulated on every previously run experiment. For each experiment you are shown the design, the metric, the value the metric takes on real data, and the value it takes on the candidate's simulated data.
+
+Each metric value below is shown as `point_estimate (var=X)`, where `point_estimate` is `metric(data)` evaluated on the full pooled dataset and `var` is the population (between-subject) variance of the same metric re-applied per `subject_id`. The point estimate is the canonical scalar; `var` reports how consistent that estimate is across subjects (lower = more consistent). `var=n/a` means the metric could not be applied to a single-subject slice.
+
+The goal of the feedback is to SURFACE theories that are EXPERIMENT-INVARIANT: that is,theories that explain data across multiple experiments. 
+Your task is to determine whether the candidate captures the human/real behavior well enough across these experiments. Return a verdict:
+  * "continue"   — the candidate is good enough; carry on.
+  * "regenerate" — the candidate fails to capture the empirical pattern; the proposing agent must produce a new candidate, taking your rationale into account.
+
+Justify the verdict with a concrete diagnosis (which experiments fail, in what direction, what mechanism is likely missing or miscalibrated).
+
+## SCOPE OF YOUR CRITIQUE — STAY INSIDE THE ARBITER'S MECHANISM FAMILY
+When an "## ARBITER RECOMMENDATION" block is present below, the proposer was explicitly instructed to implement the mechanism family the arbiter prescribed. Your job is to grade FIT QUALITY *within that prescribed family*, not to relitigate which family should be used — that is the arbiter's call, made one level above this loop.
+
+Concretely:
+  * If the candidate misses the data, you may push for MINOR ADJUSTMENTS that keep the prescribed mechanism intact: tightening / widening parameter ranges, adding a temperature, swapping a normalization scheme, fixing a softmax / distance metric, re-balancing attention weights, fixing a learning-rate sign, correcting a bug in the gating or recurrence, etc.
+  * You MUST NOT recommend switching to a different mechanism family. Such a switch is the arbiter's prerogative; recommending it here will mislead the proposer into oscillating between families across iterations.
+  * Also grade FAITHFULNESS to the recommendation explicitly: if the candidate has clearly drifted into a different family than the one prescribed, say so in the rationale and ask for a return to the prescribed family — again, with minor adjustments, not a re-design.
+
+## ACCEPT GATE — HOW THE LOOP DECIDES WHAT TO BUILD ON NEXT
+This propose-loop has a programmatic accept gate. After every iteration the candidate's `aggregate_loss` is compared against the running-best loss (`accepted_loss`):
+  * `loss < accepted_loss` → ACCEPTED. The candidate becomes the new running-best base; the next iteration's proposer will build on THIS candidate.
+  * `loss >= accepted_loss` → REJECTED. The base is unchanged; the next iteration's proposer will build on the SAME `accepted` candidate again, with your new feedback on top. Rejected candidates are discarded — the loop guarantees the base never regresses, so you do NOT need to ask the proposer to "revert" anything; that already happens for free.
+
+Two consequences for your verdict:
+  * If the candidate you are grading was REJECTED by the gate, returning `"continue"` is silently downgraded to `"regenerate"` (returning a worse candidate would defeat the gate). Spend your rationale on a NEW direction the proposer should try on top of the unchanged accepted base, not on defending the rejected attempt.
+  * If the candidate was ACCEPTED, you can return `"continue"` to stop the loop and ship this candidate, or `"regenerate"` to keep tuning further.
+
+## LEARN FROM YOUR OWN PAST ADVICE
+When a "## YOUR PRIOR CRITIQUES" block is present below, each prior iteration ends with an "Outcome of your advice" line that says whether the next candidate the proposer produced was ACCEPTED (your advice helped — its loss strictly beat the running best) or REJECTED (your advice didn't help — the proposer discarded the result and reset to the previous accepted base). This is the loop's ground-truth signal on whether *your own previous critique was good*. Use it explicitly:
+  * If a previous piece of advice was ACCEPTED, it is OK to repeat / extend it. Reinforce in the same direction.
+  * If a previous piece of advice was REJECTED, do NOT repeat the same recommendation; in your new rationale, briefly acknowledge that the previous push in that direction was rejected by the gate and try a different in-family knob (or a smaller step in the same direction) instead.
+  * If you find yourself oscillating (e.g. iter 1 said "increase α", iter 2 said "decrease α", iter 3 about to say "increase α" again), STOP and recommend a value between the two flanking iterations instead.
+  * The "## LOSS TRAJECTORY" block at the top of the user prompt summarises the same information at the loop level — consult it before issuing a new regenerate-with-direction recommendation.
+
+
+## User Prompt
+
+## EXPERIMENTAL DOMAIN
+Subjects repeatedly choose between two fictitious products, A and B. Each option is described by a vector of binary expert ratings (each 0 or 1). Every experiment fixes its own feature count (via `validities` length) and per-expert validities; both are LLM-proposed. The validities are communicated to the subject in the instructions. Subjects pick whichever product they believe is of higher quality. There is no trial-by-trial correctness feedback.
+
+## ARBITER RECOMMENDATION (mechanism family the proposer was told to implement)
+The arbiter labelled this round's two theories in its recommendation as follows:
+- THEORY 1 = `pi_6`
+- THEORY 2 = `pi_3`
+- The recommendation below acts on THEORY 2 (= `pi_3`).
+
+Replace pi_3 entirely. Its core commitments (geometric decay in screen position; bimodal primacy vs recency reader subpopulations; fully normalised evidence so any unanimous cue set gives |S|=1) are each directly contradicted: fully normalised evidence forbids the observed reversed single-cue ladder (Exp10, -.20), and the claimed bimodality is absent (small between-subject variances in Exp1/2/5/6).
+
+Proposed replacement: **'Consensus-count integration with U-shaped display salience and gap inference from panel silence.'**
+
+1. Direction: subjects compute a weighted *vote* over all discriminating experts, with weights that are strongly compressed toward uniform, w_j = ((v_j-0.5)/0.5)^rho with rho small (~0.15-0.45). Numerosity, not diagnosticity, is the dominant driver of direction: three mid experts beat one .95 expert, and two experts beat one, almost regardless of validity. This is what produces Exp8 (.84), Exp7 (.82), Exp3 (+.09), Exp4 (.775) and the 2-vs-3 reversal inside Exp1 cell 8.
+2. Salience is a symmetric U-shape *within every subject*, not a signed gradient across subjects: s_j = 1 + a*exp(-j/tau) + a'*exp(-(n-1-j)/tau) with a, a' both moderate (1.2-2.2x at the ends). First and last list positions are both attended more, so two screen-extreme experts can outvote two central heavyweights (Exp2 cell 5, .85) while a single extreme cue can only tie a mid-list .95 cue (Exp5 .52, Exp6 .51, Exp1 cell 5). No subpopulations; individual differences are unimodal jitter in a, a', rho.
+3. Magnitude / confidence: the inferred quality gap is read off the *panel* rather than the weights \u2014 gap \u221d (number of experts who noticed) / (mean sensitivity of those who noticed). A difference only the .95 expert sees while five stay silent implies a tiny gap (near-chance choice); a difference the .56 expert sees implies a large gap (near-ceiling choice). This reproduces the reversed single-cue ladder of Exp10 (~-.20) and the big corroboration gain when weak experts agree, and it is what makes near-balanced votes collapse to coin flips without needing a convex exponent.
+4. Choice = logistic(beta * gap * relative_margin) with lapse epsilon; no serial reading, no sufficiency stop, no lexicographic component \u2014 all cues are always integrated, which distinguishes it sharply from pi_6's sequential stop rule and from pi_3's near-lexicographic scan.
+
+Parameter ranges should be set so that, at nominal values, the model reproduces: Exp1 pooled ~.50 (cell5 high, cell8 reversed), Exp2 cell5 ~.80-.90, Exp5/Exp6 ~.50, Exp7 ~.82, Exp8 ~.84, Exp10 ~-.15 to -.25, Exp4 ~.78, Exp9 ~0. Designs that discriminate it from pi_6 should vary the *count* of agreeing cues while holding total validity mass fixed, and should place the same cue at an end versus the middle of the list.
+
+
+## CANDIDATE THEORY
+**Reason-counting with parity-LEAKED display-position salience that is FLOORED (never fully switched off), a saturating majority bonus, unanimity boost, a sharp silence-to-confidence collapse (mutual endorsement ≈ silence), and a non-zero floor on read-out gain.**
+
+This keeps every mechanism of the accepted base and changes exactly two calibration commitments.
+
+1. **Direction is a count of reasons, only mildly graded by stated validity.** Each discriminating expert contributes x_j = ((v_j-0.5)/0.5)^rho with rho ~0.60-0.78: numerosity dominates diagnosticity, two mid-validity experts are a genuine match for one .95 expert. Screen position plays no role in this term.
+
+2. **Display salience is a PARTIALLY-LEAKED, NEVER-EXTINGUISHED tie-breaker over ABSOLUTE SCREEN POSITION.** s_j = exp(-j/tau)+exp(-(n-1-j)/tau), indexed by the literal display row, multiplied by a parity gate g = max(exp(-(k_A-k_B)^2/2 sigma^2), g_floor) with sigma ~0.60 and g_floor ~0.10. Full force on numerically deadlocked displays, ~a quarter of its force at a one-reason edge, and — this is the new commitment — a small but strictly positive residual force even when one side already holds a clear majority. First and last rows of the panel are always attended more than the middle; a decided vote merely makes that extra attention nearly, not entirely, irrelevant. The empirical signature is that a three-against-one display whose majority happens to occupy both display ends is followed more decisively (~.84) than one whose majority sits in the middle of the list.
+
+3. **Clear majorities are categorical and saturating:** M = lambda*sign(k_A-k_B)*min(max(|k_A-k_B|-1,0),1) with lambda ~0.68. Once one side has at least two more reasons than the other, 'more experts back this one' is itself a discrete reason, and it does not grow further with the size of the majority. This is the only term besides the floored salience that fires at |dk|>=2.
+
+4. **Unanimity among the speaking experts is categorical**: if every expert who noticed a difference points the same way, a constant bonus is added.
+
+5. **Gap inference from the panel is a sharp threshold on how much of the panel was informative about the gap, and 'both products are good' is nearly as uninformative as 'neither is'.** Validity is read as sensitivity: a difference that only sensitive experts notice implies a marginal true gap. Mutual endorsements count at weight omega ~0.8. c = 1 - eta*sigmoid(k*(f_sil - f0))*vbar with f0 ~0.36, k ~38.
+
+6. **The collapse of confidence is bounded below** — read-out gain asymptotes to c_min ~0.10 rather than zero, so a maximally-silenced panel is not a literal coin flip: a gap believed to be tiny still has a sign.
+
+7. **A small, display-contingent first-cue commitment survives**: people commit to the first expert who actually discriminates only if no expert further down the list outranks him in stated validity. Individual differences are unimodal jitter in rho, mu, sigma, g_floor, lambda, eta, k, f0, omega, c_min, beta; no strategy subpopulations, no learning.
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, state, history):
+    import numpy as np
+
+    # ------------------------------------------------------------------
+    # 1. parse the trial stimulus into two rating vectors (screen order)
+    # ------------------------------------------------------------------
+    a = None
+    b = None
+    if isinstance(state, dict):
+        if 'option_a_ratings' in state and 'option_b_ratings' in state:
+            a = np.asarray(list(state['option_a_ratings']), dtype=float)
+            b = np.asarray(list(state['option_b_ratings']), dtype=float)
+    if a is None:
+        arr = np.asarray(state, dtype=float)
+        arr = arr.reshape(2, -1)
+        a = arr[0].astype(float)
+        b = arr[1].astype(float)
+
+    a = np.ravel(a).astype(float)
+    b = np.ravel(b).astype(float)
+    n = int(min(a.shape[0], b.shape[0]))
+    if n == 0:
+        return np.array([0.5, 0.5])
+    a = a[:n]
+    b = b[:n]
+    d = a - b
+    disc = np.abs(d) > 1e-12
+    if not np.any(disc):
+        return np.array([0.5, 0.5])
+
+    # ------------------------------------------------------------------
+    # 2. communicated validities -> diagnosticity (= sensitivity)
+    # ------------------------------------------------------------------
+    val = parameters.get('validities', None)
+    try:
+        val = np.asarray(val, dtype=float).ravel()
+    except Exception:
+        val = None
+    if val is None or val.shape[0] != n:
+        val = np.linspace(0.95, 0.55, n) if n > 1 else np.array([0.90])
+    val = np.clip(val, 0.5 + 1e-6, 1.0 - 1e-9)
+    vs = np.clip((val - 0.5) / 0.5, 1e-6, 1.0)
+
+    # ------------------------------------------------------------------
+    # 3. parameters
+    # ------------------------------------------------------------------
+    rho = float(np.clip(parameters.get('rho', 0.69), 0.05, 4.0))
+    mu = float(np.clip(parameters.get('mu', 1.82), 0.0, 8.0))
+    lam = float(np.clip(parameters.get('lam', 0.68), 0.0, 3.0))
+    sigma = float(np.clip(parameters.get('sigma', 0.60), 0.15, 3.0))
+    g_floor = float(np.clip(parameters.get('g_floor', 0.10), 0.0, 0.5))
+    tau = float(np.clip(parameters.get('tau', 1.0), 0.2, 8.0))
+    ups = float(np.clip(parameters.get('ups', 1.50), 0.0, 4.0))
+    beta = float(np.clip(parameters.get('beta', 1.20), 0.05, 40.0))
+    eta = float(np.clip(parameters.get('eta', 1.55), 0.0, 5.0))
+    sil_k = float(np.clip(parameters.get('sil_k', 38.0), 1.0, 80.0))
+    sil_f0 = float(np.clip(parameters.get('sil_f0', 0.36), 0.05, 0.9))
+    omega = float(np.clip(parameters.get('omega', 0.82), 0.0, 1.0))
+    c_min = float(np.clip(parameters.get('c_min', 0.10), 0.0, 0.5))
+    phi = float(np.clip(parameters.get('phi', 1.05), 0.3, 3.0))
+    s_stop = float(np.clip(parameters.get('s_stop', 8.0), 0.5, 60.0))
+    d_com = float(np.clip(parameters.get('d_com', 2.50), 0.5, 8.0))
+    eps = float(np.clip(parameters.get('epsilon', 0.035), 0.0, 0.5))
+
+    def _sig(x):
+        return 1.0 / (1.0 + np.exp(-np.clip(x, -60.0, 60.0)))
+
+    # ------------------------------------------------------------------
+    # 4. reason count, mildly graded by stated validity (no position here)
+    # ------------------------------------------------------------------
+    x = np.power(vs, rho)
+    idxs = np.flatnonzero(disc)
+    m = int(idxs.shape[0])
+    sgn = np.sign(d[idxs])
+    xs = x[idxs]
+    V = float(np.sum(sgn * xs))
+
+    kA = int(np.count_nonzero(sgn > 0))
+    kB = int(np.count_nonzero(sgn < 0))
+
+    # ------------------------------------------------------------------
+    # 5. display salience over ABSOLUTE SCREEN POSITION (first & last
+    #    rows of the panel), deployed as a PARTIALLY LEAKED parity
+    #    tie-breaker: full force at |dk| = 0, ~a quarter at |dk| = 1,
+    #    and a small but STRICTLY POSITIVE residual (g_floor) once a
+    #    clear majority exists -- the ends of the list are never fully
+    #    ignored.
+    # ------------------------------------------------------------------
+    pos = np.arange(n, dtype=float)
+    e_sal_full = np.exp(-pos / tau) + np.exp(-(n - 1.0 - pos) / tau)
+    e_sal = e_sal_full[idxs]
+    S = float(np.sum(sgn * e_sal))
+    dk = float(kA - kB)
+    g = float(np.exp(-np.clip((dk * dk) / (2.0 * sigma * sigma), 0.0, 60.0)))
+    g = max(g, g_floor)
+
+    # ------------------------------------------------------------------
+    # 5b. saturating majority bonus (fires only at |dk| >= 2)
+    # ------------------------------------------------------------------
+    maj = min(max(abs(dk) - 1.0, 0.0), 1.0)
+    M = lam * (1.0 if dk > 0 else (-1.0 if dk < 0 else 0.0)) * maj
+
+    # ------------------------------------------------------------------
+    # 6. unanimity among the speakers is categorical
+    # ------------------------------------------------------------------
+    uni = 0.0
+    if kA == 0 or kB == 0:
+        uni = ups * (1.0 if kA > 0 else -1.0)
+
+    drive = V + mu * g * S + uni + M
+
+    # ------------------------------------------------------------------
+    # 7. gap inference from panel silence (validity = sensitivity).
+    #    An expert who endorsed BOTH products has positively asserted the
+    #    two are alike on his dimension: he is ALMOST as uninformative
+    #    about the quality gap as one who endorsed neither (weight omega).
+    #    SHARP collapse, but BOUNDED BELOW: read-out gain never falls to
+    #    zero, it asymptotes to a residual sensitivity c_min.
+    # ------------------------------------------------------------------
+    both1 = (~disc) & (a > 0.5) & (b > 0.5)
+    both0 = (~disc) & (~both1)
+    n_sil_eff = float(np.count_nonzero(both0)) + omega * float(np.count_nonzero(both1))
+    f_sil = n_sil_eff / float(n)
+    f_sil = float(np.clip(f_sil, 0.0, 1.0))
+    tot_x = float(np.sum(xs))
+    if tot_x <= 0:
+        return np.array([0.5, 0.5])
+    vbar = float(np.sum(xs * vs[idxs]) / tot_x)
+    c = 1.0 - eta * float(_sig(sil_k * (f_sil - sil_f0))) * vbar
+    c = float(np.clip(c, c_min, 1.0))
+
+    p_int = _sig(beta * c * drive)
+
+    # ------------------------------------------------------------------
+    # 8. authority-capped first-cue commitment (display-contingent)
+    # ------------------------------------------------------------------
+    j1 = int(idxs[0])
+    if j1 >= n - 1:
+        q_com = 1.0
+    else:
+        v_rest = float(np.max(vs[j1 + 1:]))
+        v_rest = max(v_rest, 1e-6)
+        ratio = vs[j1] / (phi * v_rest)
+        q_com = _sig(s_stop * (ratio - 1.0))
+    q_com = float(np.clip(q_com, 0.0, 1.0))
+
+    p_dec = _sig(beta * c * d_com)
+    p_com_a = p_dec if d[j1] > 0 else (1.0 - p_dec)
+
+    p_a = q_com * p_com_a + (1.0 - q_com) * p_int
+
+    p = np.array([p_a, 1.0 - p_a], dtype=float)
+    p = (1.0 - eps) * p + eps * 0.5
+    p = np.clip(p, 1e-12, None)
+    p = p / p.sum()
+    return p
+
+`policy(probs) -> int`:
+def policy(probs):
+    import numpy as np
+    probs = np.asarray(probs, dtype=np.float64)
+    probs = np.clip(probs, 0.0, None)
+    s = probs.sum()
+    if not np.isfinite(s) or s <= 0:
+        probs = np.ones_like(probs) / len(probs)
+    else:
+        probs = probs / s
+    return int(np.random.choice(len(probs), p=probs))
+
+`parameters`:
+- rho: [0.60, 0.78]
+- mu: [1.70, 1.95]
+- lam: [0.60, 0.76]
+- sigma: [0.55, 0.66]
+- g_floor: [0.075, 0.125]
+- tau: [0.85, 1.25]
+- ups: [1.25, 1.80]
+- beta: [1.05, 1.40]
+- eta: [1.45, 1.65]
+- sil_k: [30.0, 45.0]
+- sil_f0: [0.345, 0.375]
+- omega: [0.72, 0.92]
+- c_min: [0.07, 0.13]
+- phi: [0.95, 1.12]
+- s_stop: [6.0, 10.0]
+- d_com: [2.20, 2.90]
+- epsilon: [0.01, 0.06]
+- validities: validities
+
+`rationale`:
+**Two-line diff on the ACCEPTED iter-7 base (not on the rejected iter-8 candidate): (i) the parity gate gains a floor, `g = max(exp(-dk^2/2sigma^2), g_floor)` with g_floor ~0.10 (new parameter); (ii) lam moves [0.62,0.85] -> [0.60,0.76] (nominal .75 -> .68). sigma stays at .60 and c_min stays at .10 — iteration 8's sigma-trim + floor-raise pair is fully reverted, exactly as the critic instructed.**
+
+**Why this is the right minimal edit.** The loss trajectory is unambiguous: every leak-WIDENING step was accepted, the single NARROWING step (sigma .60 -> .52, paired with c_min .10 -> .145) was rejected because the two moves cancelled on their declared targets (Exp3 +.001, Exp4 +.020) while costing Exp6 (-.023), Exp9 (-.020), Exp5 (-.025) and Exp8 (+.022 of error). So I take back exactly those two moves and keep the one edit of iter 8 that demonstrably paid — the lam trim, which moved Exp2 .858 -> .829 and Exp1 .106 -> .090 (real .093, essentially exact).
+
+**Edit 1 — g_floor (the surgical new lever).** Because g_floor = .10 < g(1) = .25 < g(0) = 1 under sigma = .60, the `max` leaves *every* cell with |dk| <= 1 arithmetically bit-for-bit identical to the accepted base: Exp3, Exp4, both of Exp7's load classes, Exp8's single-cue ladder, Exp9 cell 8, Exp6 class 2, and every dk = 0 cell (Exp5, Exp10). Those eight cells cannot move by construction, which is precisely why iteration 8's collateral damage cannot recur. Only |dk| >= 2 cells change. The dominant one is Exp6 class 3 (disc {0,1,2,5}: three agreeing cues occupying BOTH display ends against the mid-list .95), where S ≈ +2.2, so mu*g_floor*S adds ~+0.40 to a drive of ~1.2 at c ≈ .85, lifting p from ~.79 to ~.84 and pooled Exp6 from .661 toward ~.69 (squared .032 -> ~.021). Theoretically this is also a move back TOWARD the arbiter's prescription, in which the U-shaped display salience is a permanent attentional property and is never switched off by the vote count.
+
+**Edit 2 — lam .75 -> .68.** The only real cost of edit 1 is Exp2, whose conflict cells are also |dk| = 2 with salience favouring the tally side; the lam trim offsets that. Measured from iter 8, lam .66 gave Exp2 .829 while costing Exp6 ~.009 of squared error; the base lam .75 gave Exp2 .858. The midpoint .68 should land Exp2 ~.84 (real .775) while surrendering only ~.015 of probability on Exp6 class 3, leaving edit 1 net-positive. lam remains inert in every cell with |dk| <= 1, so again Exp3/Exp4/Exp7/Exp8/Exp9 are untouched.
+
+**What I am deliberately NOT doing.** No further attempt to rescue Exp6 class 2 (silence-identical to Exp3 and Exp7-low; the omega>1 inequality makes it unreachable for this family), no omega/sil_k/sil_f0/eta retune (Exp8 is exact at -.205 and Exp7 at .013 — both carried by that term), no c_min move, no touching rho, mu, tau, beta or the commitment branch.
+
+**Projected net:** Exp6 +.011, Exp2 +.003, Exp1 ~+.0002, everything else exactly 0 by construction => squared residual ~.056 -> ~.042, loss ~.0695 -> ~.060.
+
+## LOSS TRAJECTORY (this propose-loop)
+Aggregate loss across iterations of THIS propose-loop (lower = better, 0 = perfect, `+inf` = unscorable). The ACCEPTED / REJECTED tag is the loop's programmatic accept-gate decision: `loss < accepted_loss` -> ACCEPTED (becomes new base), else REJECTED (base unchanged). Use this together with the per-experiment values below to grade fit-quality AND your own past advice (see `## YOUR PRIOR CRITIQUES` below).
+
+- iter 1: loss=0.1865 -> ACCEPTED
+- iter 2: loss=0.1218 -> ACCEPTED
+- iter 3: loss=0.1164 -> ACCEPTED
+- iter 4: loss=0.1007 -> ACCEPTED
+- iter 5: loss=0.0783 -> ACCEPTED
+- iter 6: loss=0.0723 -> ACCEPTED
+- iter 7: loss=0.0695 -> ACCEPTED
+- iter 8: loss=0.0767 -> REJECTED
+- iter 9 (current candidate you are grading): loss=0.0752 -> REJECTED
+Running-best (last accepted) base: iter 7 at loss=0.0695.
+
+## EXPERIMENTAL RESULTS (candidate vs real, per experiment)
+### Experiment 1
+**Design**
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1]
+  A=[1, 0, 0, 0, 1]  B=[0, 1, 1, 1, 0]
+  A=[1, 0, 0, 1, 0]  B=[0, 1, 1, 0, 0]
+  A=[0, 1, 1, 0, 0]  B=[1, 0, 0, 1, 0]
+  A=[1, 1, 1, 1, 0]  B=[0, 0, 0, 0, 1]
+  A=[1, 1, 0, 0, 0]  B=[0, 0, 1, 0, 0]
+  A=[1, 1, 0, 1, 1]  B=[1, 1, 1, 0, 0]
+  A=[0, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0]  B=[1, 1, 0, 1, 1]
+  A=[0, 1, 1, 1, 0]  B=[1, 0, 0, 0, 1]
+  A=[0, 0, 0, 0, 1]  B=[1, 1, 1, 1, 0]
+  A=[0, 0, 1, 0, 0]  B=[1, 1, 0, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+
+    dis_hits = 0.0
+    dis_n = 0.0
+    agr_hits = 0.0
+    agr_n = 0.0
+
+    for a_raw, b_raw, resp in zip(data['option_a_ratings'],
+                                  data['option_b_ratings'],
+                                  data['response']):
+        a = np.asarray(a_raw, dtype=float)
+        b = np.asarray(b_raw, dtype=float)
+        if a.shape != b.shape or a.size == 0:
+            continue
+
+        # Take-The-Best winner: features are listed in descending validity
+        # order, so scan left to right for the first discriminating cue.
+        ttb_winner = None
+        for j in range(a.size):
+            if a[j] > b[j]:
+                ttb_winner = 0
+                break
+            if b[j] > a[j]:
+                ttb_winner = 1
+                break
+        if ttb_winner is None:
+            continue
+
+        a_wins = float(np.sum(a > b))
+        b_wins = float(np.sum(b > a))
+        if a_wins == b_wins:
+            continue  # tally-tie pairs excluded (uninformative for the contrast)
+        tally_winner = 0 if a_wins > b_wins else 1
+
+        try:
+            r = int(resp)
+        except (TypeError, ValueError):
+            continue
+        hit = 1.0 if r == ttb_winner else 0.0
+
+        if tally_winner != ttb_winner:
+            dis_hits += hit
+            dis_n += 1.0
+        else:
+            agr_hits += hit
+            agr_n += 1.0
+
+    if dis_n == 0.0 or agr_n == 0.0:
+        return float('nan')
+
+    return float(dis_hits / dis_n - agr_hits / agr_n)
+```
+
+**Observed (real) value:** 0.0933 (var=0.0064)
+**Candidate trajectory (this loop):**
+  - iter 1: -0.0323 (var=0.0040) (Δ vs real -0.1256)
+  - iter 2: -0.0340 (var=0.0055) (Δ vs real -0.1273)
+  - iter 3: -0.0206 (var=0.0057) (Δ vs real -0.1140)
+  - iter 4: -0.0231 (var=0.0043) (Δ vs real -0.1165)
+  - iter 5: 0.1167 (var=0.0066) (Δ vs real +0.0233)
+  - iter 6: 0.1306 (var=0.0078) (Δ vs real +0.0373)
+  - iter 7: 0.1058 (var=0.0094) (Δ vs real +0.0125)
+  - iter 8: 0.0904 (var=0.0074) (Δ vs real -0.0029)
+  - iter 9 (current): 0.0642 (var=0.0063) (Δ vs real -0.0292)
+**Other theories' values on this metric (for reference):**
+- pi_1: 0.0038 (var=0.0080)
+- pi_2: -0.6931 (var=0.0366)
+- pi_3: 0.1027 (var=0.0215)
+- pi_4: -0.0050 (var=0.0008)
+- pi_5: -0.1875 (var=0.0052)
+- pi_6: 0.0110 (var=0.0029)
+
+### Experiment 2
+**Design**
+  A=[0, 0, 0, 0, 0, 1]  B=[1, 1, 1, 1, 1, 0]
+  A=[1, 1, 1, 1, 1, 0]  B=[0, 0, 0, 0, 0, 1]
+  A=[0, 0, 0, 0, 0, 1]  B=[1, 1, 1, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 1]
+  A=[1, 1, 1, 0, 0, 0]  B=[0, 0, 0, 1, 1, 1]
+  A=[0, 0, 0, 1, 1, 1]  B=[1, 1, 1, 0, 0, 0]
+  A=[1, 0, 1, 0, 0, 1]  B=[0, 1, 0, 0, 1, 1]
+  A=[0, 1, 0, 0, 1, 1]  B=[1, 0, 1, 0, 0, 1]
+  A=[0, 0, 1, 0, 0, 1]  B=[0, 1, 0, 1, 1, 1]
+  A=[0, 1, 0, 1, 1, 1]  B=[0, 0, 1, 0, 0, 1]
+  A=[1, 1, 1, 0, 1, 1]  B=[0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+
+    validities = np.array([0.9, 0.6, 0.8, 0.55, 0.7, 0.95], dtype=float)
+
+    n_match = 0.0
+    n_total = 0.0
+
+    for _, row in data.iterrows():
+        a = np.asarray(list(row['option_a_ratings']), dtype=float)
+        b = np.asarray(list(row['option_b_ratings']), dtype=float)
+        n = a.shape[0]
+        if validities.shape[0] == n:
+            val = validities
+        else:
+            # fallback: assume given order is already descending validity
+            val = np.arange(n, 0, -1, dtype=float)
+        order = np.argsort(-val, kind='stable')
+
+        a_wins = float(np.sum(a > b))
+        b_wins = float(np.sum(b > a))
+        if a_wins == b_wins:
+            continue
+        tally_winner = 0 if a_wins > b_wins else 1
+        margin = abs(a_wins - b_wins)
+        if margin < 2:
+            continue
+
+        ttb_winner = None
+        for j in order:
+            if a[j] > b[j]:
+                ttb_winner = 0
+                break
+            if b[j] > a[j]:
+                ttb_winner = 1
+                break
+        if ttb_winner is None:
+            continue
+        if ttb_winner == tally_winner:
+            continue  # only conflict trials
+
+        try:
+            resp = int(row['response'])
+        except (TypeError, ValueError):
+            continue
+        n_total += 1.0
+        if resp == tally_winner:
+            n_match += 1.0
+
+    if n_total == 0:
+        return float('nan')
+    return float(n_match / n_total)
+```
+
+**Observed (real) value:** 0.7750 (var=0.0072)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.7700 (var=0.0042) (Δ vs real -0.0050)
+  - iter 2: 0.7450 (var=0.0041) (Δ vs real -0.0300)
+  - iter 3: 0.7415 (var=0.0032) (Δ vs real -0.0335)
+  - iter 4: 0.7720 (var=0.0053) (Δ vs real -0.0030)
+  - iter 5: 0.7955 (var=0.0052) (Δ vs real +0.0205)
+  - iter 6: 0.8210 (var=0.0035) (Δ vs real +0.0460)
+  - iter 7: 0.8580 (var=0.0042) (Δ vs real +0.0830)
+  - iter 8: 0.8290 (var=0.0046) (Δ vs real +0.0540)
+  - iter 9 (current): 0.8630 (var=0.0038) (Δ vs real +0.0880)
+**Other theories' values on this metric (for reference):**
+- pi_2: 0.8660 (var=0.0083)
+- pi_1: 0.1530 (var=0.0129)
+- pi_3: 0.7780 (var=0.0646)
+- pi_4: 0.7860 (var=0.0029)
+- pi_5: 0.7755 (var=0.0037)
+- pi_6: 0.7530 (var=0.0025)
+
+### Experiment 3
+**Design**
+  A=[1, 0, 0, 0, 0, 1]  B=[0, 0, 0, 1, 0, 0]
+  A=[0, 0, 0, 1, 0, 0]  B=[1, 0, 0, 0, 0, 1]
+  A=[1, 0, 0, 0, 0, 0]  B=[0, 0, 0, 1, 0, 0]
+  A=[0, 0, 0, 1, 0, 0]  B=[1, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 1]  B=[0, 0, 0, 1, 0, 0]
+  A=[0, 0, 0, 1, 0, 0]  B=[0, 0, 0, 0, 0, 1]
+  A=[0, 0, 0, 0, 0, 1]  B=[1, 0, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0, 1]
+  A=[1, 0, 0, 0, 0, 0]  B=[0, 1, 1, 0, 0, 0]
+  A=[0, 1, 1, 0, 0, 0]  B=[1, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 1]  B=[1, 1, 1, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0]  B=[0, 0, 0, 0, 0, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    # Rate of choosing the option favoured by the HIGHEST-VALIDITY cue (screen
+    # position 3, validity .95) on the 'double-dissociation' pairs, i.e. trials
+    # where the two screen-extreme cues (positions 0 and 5) jointly favour one
+    # option while the middle top-validity cue favours the other.
+    num = 0.0
+    den = 0.0
+    num_all = 0.0
+    den_all = 0.0
+    a_col = data['option_a_ratings'].tolist()
+    b_col = data['option_b_ratings'].tolist()
+    r_col = data['response'].tolist()
+    for a_raw, b_raw, r in zip(a_col, b_col, r_col):
+        try:
+            a = np.asarray(list(a_raw), dtype=float)
+            b = np.asarray(list(b_raw), dtype=float)
+        except Exception:
+            continue
+        if a.shape[0] < 6 or b.shape[0] < 6:
+            continue
+        d3 = a[3] - b[3]
+        if d3 == 0:
+            continue
+        top_side = 0 if d3 > 0 else 1
+        try:
+            resp = int(r)
+        except Exception:
+            continue
+        chose_top = 1.0 if resp == top_side else 0.0
+        num_all += chose_top
+        den_all += 1.0
+        d0 = a[0] - b[0]
+        d5 = a[5] - b[5]
+        if d0 != 0 and d5 != 0:
+            s0 = 1.0 if d0 > 0 else -1.0
+            s5 = 1.0 if d5 > 0 else -1.0
+            s3 = 1.0 if d3 > 0 else -1.0
+            if s0 == s5 and s0 == -s3:
+                num += chose_top
+                den += 1.0
+    if den > 0:
+        return float(num / den)
+    if den_all > 0:
+        return float(num_all / den_all)
+    return float('nan')
+```
+
+**Observed (real) value:** 0.5175 (var=0.0233)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.3150 (var=0.0183) (Δ vs real -0.2025)
+  - iter 2: 0.4225 (var=0.0174) (Δ vs real -0.0950)
+  - iter 3: 0.3975 (var=0.0176) (Δ vs real -0.1200)
+  - iter 4: 0.4012 (var=0.0166) (Δ vs real -0.1162)
+  - iter 5: 0.4838 (var=0.0158) (Δ vs real -0.0337)
+  - iter 6: 0.4700 (var=0.0124) (Δ vs real -0.0475)
+  - iter 7: 0.4550 (var=0.0166) (Δ vs real -0.0625)
+  - iter 8: 0.4562 (var=0.0200) (Δ vs real -0.0612)
+  - iter 9 (current): 0.4475 (var=0.0162) (Δ vs real -0.0700)
+**Other theories' values on this metric (for reference):**
+- pi_1: 0.8562 (var=0.0143)
+- pi_3: 0.0375 (var=0.0022)
+- pi_2: 0.1400 (var=0.0151)
+- pi_4: 0.5200 (var=0.0187)
+- pi_5: 0.6262 (var=0.0216)
+- pi_6: 0.4450 (var=0.0192)
+
+### Experiment 4
+**Design**
+  A=[1, 0, 0, 0, 1]  B=[0, 0, 1, 0, 0]
+  A=[0, 0, 1, 0, 0]  B=[1, 0, 0, 0, 1]
+  A=[1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1]
+  A=[0, 0, 0, 0, 1]  B=[1, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 0, 1, 0, 1]
+  A=[0, 0, 1, 0, 1]  B=[1, 0, 0, 0, 0]
+  A=[0, 0, 0, 1, 0]  B=[1, 0, 0, 0, 1]
+  A=[1, 0, 0, 0, 1]  B=[0, 0, 0, 1, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 1, 0]
+  A=[0, 1, 1, 1, 0]  B=[1, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 1]  B=[0, 1, 1, 1, 0]
+  A=[0, 1, 1, 1, 0]  B=[0, 0, 0, 0, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+
+    VAL = np.array([0.78, 0.60, 0.95, 0.88, 0.72], dtype=float)
+
+    def ttb_winner(a, b, val):
+        order = np.argsort(-val, kind='stable')
+        for j in order:
+            if a[j] > b[j]:
+                return 0
+            if b[j] > a[j]:
+                return 1
+        return None
+
+    def scan_sign(d, lam):
+        n = d.shape[0]
+        pos = np.arange(n, dtype=float)
+        z = -lam * (pos - pos.mean())
+        z = z - z.max()
+        w = np.exp(z)
+        num = float(np.sum(w * d))
+        den = float(np.sum(w * np.abs(d)))
+        if den <= 1e-12:
+            return 0.0
+        return num / den
+
+    hits = []
+    for _, row in data.iterrows():
+        try:
+            a = np.asarray(list(row['option_a_ratings']), dtype=float)
+            b = np.asarray(list(row['option_b_ratings']), dtype=float)
+        except Exception:
+            continue
+        n = a.shape[0]
+        if b.shape[0] != n or n == 0:
+            continue
+        val = VAL if n == VAL.shape[0] else np.linspace(0.95, 0.55, n)
+        w_ttb = ttb_winner(a, b, val)
+        if w_ttb is None:
+            continue
+        d = a - b
+        s_prim = scan_sign(d, 2.0)    # primacy reader (lambda > 0)
+        s_rec = scan_sign(d, -2.0)    # recency reader (lambda < 0)
+        if abs(s_prim) < 0.15 or abs(s_rec) < 0.15:
+            continue
+        # scanner choice: S > 0 -> A (0), S < 0 -> B (1)
+        c_prim = 0 if s_prim > 0 else 1
+        c_rec = 0 if s_rec > 0 else 1
+        # keep only cells where BOTH scanning orientations oppose TTB
+        if c_prim == c_rec and c_prim != w_ttb:
+            try:
+                r = int(row['response'])
+            except Exception:
+                continue
+            hits.append(1.0 if r == w_ttb else 0.0)
+
+    if len(hits) == 0:
+        return 0.5
+    return float(np.mean(hits))
+
+```
+
+**Observed (real) value:** 0.5075 (var=0.0075)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.2838 (var=0.0057) (Δ vs real -0.2237)
+  - iter 2: 0.3725 (var=0.0107) (Δ vs real -0.1350)
+  - iter 3: 0.3513 (var=0.0059) (Δ vs real -0.1562)
+  - iter 4: 0.3950 (var=0.0064) (Δ vs real -0.1125)
+  - iter 5: 0.4469 (var=0.0076) (Δ vs real -0.0606)
+  - iter 6: 0.4288 (var=0.0078) (Δ vs real -0.0787)
+  - iter 7: 0.4175 (var=0.0054) (Δ vs real -0.0900)
+  - iter 8: 0.4375 (var=0.0091) (Δ vs real -0.0700)
+  - iter 9 (current): 0.4412 (var=0.0076) (Δ vs real -0.0662)
+**Other theories' values on this metric (for reference):**
+- pi_3: 0.0269 (var=0.0009)
+- pi_1: 0.8475 (var=0.0132)
+- pi_2: 0.1450 (var=0.0133)
+- pi_4: 0.4906 (var=0.0065)
+- pi_5: 0.4756 (var=0.0085)
+- pi_6: 0.3663 (var=0.0121)
+
+### Experiment 5
+**Design**
+  A=[1, 0, 0, 1, 0]  B=[0, 1, 1, 0, 0]
+  A=[0, 1, 1, 0, 0]  B=[1, 0, 0, 1, 0]
+  A=[0, 1, 1, 0, 0]  B=[0, 0, 0, 0, 1]
+  A=[0, 0, 0, 0, 1]  B=[0, 1, 1, 0, 0]
+  A=[1, 1, 1, 0, 0]  B=[0, 0, 0, 0, 1]
+  A=[0, 0, 0, 0, 1]  B=[1, 1, 1, 0, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1]
+  A=[0, 0, 0, 0, 1]  B=[1, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 1]  B=[0, 0, 1, 0, 0]
+  A=[0, 0, 1, 0, 0]  B=[0, 0, 0, 0, 1]
+  A=[1, 1, 0, 0, 0]  B=[0, 0, 0, 0, 1]
+  A=[0, 0, 0, 0, 1]  B=[1, 1, 0, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+
+    hits = 0
+    tot = 0
+    for _, row in data.iterrows():
+        try:
+            a = np.asarray([int(v) for v in row['option_a_ratings']], dtype=float)
+            b = np.asarray([int(v) for v in row['option_b_ratings']], dtype=float)
+        except Exception:
+            continue
+        if a.shape[0] != 5 or b.shape[0] != 5:
+            continue
+        d = a - b
+        # target cell: d = +-[1,-1,-1,1,0]  (pairs 1 and 2)
+        pattern_ok = (
+            abs(d[4]) < 1e-9
+            and abs(abs(d[0]) - 1.0) < 1e-9
+            and abs(abs(d[1]) - 1.0) < 1e-9
+            and abs(abs(d[2]) - 1.0) < 1e-9
+            and abs(abs(d[3]) - 1.0) < 1e-9
+            and abs(d[0] - d[3]) < 1e-9
+            and abs(d[1] - d[2]) < 1e-9
+            and abs(d[0] + d[1]) < 1e-9
+        )
+        if not pattern_ok:
+            continue
+        try:
+            resp = int(row['response'])
+        except Exception:
+            continue
+        if resp not in (0, 1):
+            continue
+        # side supported by expert positions 0 and 3 (the first- and last-
+        # discriminating cues); opposed by positions 1 and 2
+        favored_is_a = d[0] > 0
+        chose_favored = (resp == 0) if favored_is_a else (resp == 1)
+        hits += 1 if chose_favored else 0
+        tot += 1
+
+    if tot == 0:
+        return float('nan')
+    return float(hits) / float(tot)
+
+```
+
+**Observed (real) value:** 0.8200 (var=0.0126)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.5550 (var=0.0193) (Δ vs real -0.2650)
+  - iter 2: 0.8962 (var=0.0074) (Δ vs real +0.0763)
+  - iter 3: 0.9275 (var=0.0041) (Δ vs real +0.1075)
+  - iter 4: 0.8050 (var=0.0110) (Δ vs real -0.0150)
+  - iter 5: 0.8187 (var=0.0069) (Δ vs real -0.0012)
+  - iter 6: 0.7913 (var=0.0096) (Δ vs real -0.0287)
+  - iter 7: 0.8063 (var=0.0118) (Δ vs real -0.0137)
+  - iter 8: 0.7812 (var=0.0138) (Δ vs real -0.0387)
+  - iter 9 (current): 0.8187 (var=0.0129) (Δ vs real -0.0012)
+**Other theories' values on this metric (for reference):**
+- pi_4: 0.3500 (var=0.0175)
+- pi_3: 0.9513 (var=0.0036)
+- pi_1: 0.8250 (var=0.0169)
+- pi_2: 0.4850 (var=0.0117)
+- pi_5: 0.8325 (var=0.0087)
+- pi_6: 0.7913 (var=0.0231)
+
+### Experiment 6
+**Design**
+  A=[1, 0, 1, 1, 0, 1]  B=[1, 0, 1, 1, 0, 0]
+  A=[0, 0, 1, 0, 1, 1]  B=[0, 1, 1, 0, 1, 1]
+  A=[1, 1, 0, 1, 0, 0]  B=[0, 1, 0, 1, 0, 0]
+  A=[0, 1, 0, 0, 1, 1]  B=[0, 1, 1, 0, 1, 1]
+  A=[1, 1, 0, 1, 0, 1]  B=[0, 0, 1, 1, 0, 0]
+  A=[0, 0, 1, 0, 1, 0]  B=[1, 1, 0, 0, 1, 1]
+  A=[1, 1, 0, 0, 1, 1]  B=[0, 1, 1, 0, 1, 0]
+  A=[0, 0, 1, 1, 1, 0]  B=[1, 0, 0, 1, 1, 1]
+  A=[1, 0, 1, 1, 1, 0]  B=[1, 0, 0, 0, 1, 1]
+  A=[0, 1, 0, 0, 0, 1]  B=[0, 1, 1, 1, 0, 0]
+  A=[0, 1, 1, 1, 0, 1]  B=[1, 1, 1, 0, 0, 1]
+  A=[1, 0, 0, 0, 1, 0]  B=[0, 0, 0, 1, 1, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+
+    hits = 0
+    n = 0
+    for _, row in data.iterrows():
+        try:
+            a = np.asarray([int(v) for v in row['option_a_ratings']], dtype=float)
+            b = np.asarray([int(v) for v in row['option_b_ratings']], dtype=float)
+        except Exception:
+            continue
+        if a.shape[0] != b.shape[0] or a.shape[0] < 6:
+            continue
+        d = a - b
+        disc = [int(i) for i in np.nonzero(np.abs(d) > 1e-9)[0]]
+        target = None
+        # Class (2): d nonzero at {0,2,5}, first and last agree, mid-list top cue opposes
+        if disc == [0, 2, 5]:
+            if d[0] == d[5] and d[2] == -d[0]:
+                target = 0 if d[0] > 0 else 1
+        # Class (3): d nonzero at {0,1,2,5}, three cues agree, single top cue opposes
+        elif disc == [0, 1, 2, 5]:
+            if d[0] == d[1] == d[5] and d[2] == -d[0]:
+                target = 0 if d[0] > 0 else 1
+        if target is None:
+            continue
+        n += 1
+        try:
+            resp = int(row['response'])
+        except Exception:
+            continue
+        if resp == target:
+            hits += 1
+    if n == 0:
+        return 0.5
+    return float(hits) / float(n)
+
+```
+
+**Observed (real) value:** 0.8413 (var=0.0134)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.6831 (var=0.0088) (Δ vs real -0.1581)
+  - iter 2: 0.5856 (var=0.0111) (Δ vs real -0.2556)
+  - iter 3: 0.6075 (var=0.0087) (Δ vs real -0.2338)
+  - iter 4: 0.5919 (var=0.0077) (Δ vs real -0.2494)
+  - iter 5: 0.7150 (var=0.0049) (Δ vs real -0.1263)
+  - iter 6: 0.6162 (var=0.0086) (Δ vs real -0.2250)
+  - iter 7: 0.6613 (var=0.0064) (Δ vs real -0.1800)
+  - iter 8: 0.6381 (var=0.0075) (Δ vs real -0.2031)
+  - iter 9 (current): 0.6737 (var=0.0061) (Δ vs real -0.1675)
+**Other theories' values on this metric (for reference):**
+- pi_3: 0.9694 (var=0.0014)
+- pi_4: 0.3312 (var=0.0055)
+- pi_1: 0.1388 (var=0.0136)
+- pi_2: 0.8825 (var=0.0110)
+- pi_5: 0.8669 (var=0.0043)
+- pi_6: 0.7238 (var=0.0070)
+
+### Experiment 7
+**Design**
+  A=[0, 0, 1, 0, 0, 0]  B=[0, 0, 0, 0, 0, 0]
+  A=[0, 0, 0, 1, 0, 0]  B=[0, 0, 0, 0, 0, 0]
+  A=[0, 1, 1, 1, 1, 0]  B=[0, 1, 1, 0, 1, 0]
+  A=[1, 1, 1, 1, 1, 0]  B=[1, 1, 0, 1, 1, 0]
+  A=[1, 0, 0, 0, 0, 1]  B=[0, 0, 1, 0, 0, 0]
+  A=[1, 1, 0, 1, 1, 1]  B=[0, 1, 1, 1, 1, 0]
+  A=[0, 0, 1, 0, 0, 0]  B=[0, 0, 0, 0, 0, 1]
+  A=[1, 0, 0, 0, 0, 0]  B=[0, 0, 1, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0]  B=[0, 0, 1, 0, 0, 0]
+  A=[0, 0, 0, 0, 0, 0]  B=[0, 0, 0, 1, 0, 0]
+  A=[0, 1, 1, 0, 1, 0]  B=[0, 1, 1, 1, 1, 0]
+  A=[1, 1, 0, 1, 1, 0]  B=[1, 1, 1, 1, 1, 0]
+  A=[0, 0, 1, 0, 0, 0]  B=[1, 0, 0, 0, 0, 1]
+  A=[0, 1, 1, 1, 1, 0]  B=[1, 1, 0, 1, 1, 1]
+  A=[0, 0, 0, 0, 0, 1]  B=[0, 0, 1, 0, 0, 0]
+  A=[0, 0, 1, 0, 0, 0]  B=[1, 0, 0, 0, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+
+    hi_load_hits, hi_load_n = 0, 0
+    lo_load_hits, lo_load_n = 0, 0
+
+    for a_raw, b_raw, resp in zip(data['option_a_ratings'],
+                                  data['option_b_ratings'],
+                                  data['response']):
+        try:
+            a = np.asarray(list(a_raw), dtype=float)
+            b = np.asarray(list(b_raw), dtype=float)
+        except Exception:
+            continue
+        n = int(min(a.shape[0], b.shape[0]))
+        if n == 0:
+            continue
+        a = a[:n]
+        b = b[:n]
+        d = a - b
+
+        pos_idx = np.where(d > 0.5)[0]   # features favouring A
+        neg_idx = np.where(d < -0.5)[0]  # features favouring B
+        k_a = pos_idx.size
+        k_b = neg_idx.size
+
+        # keep only the 3-cue conflict cells: two cues on one side, one on the other
+        if not ((k_a == 2 and k_b == 1) or (k_a == 1 and k_b == 2)):
+            continue
+
+        # did the subject pick the side backed by the LARGER NUMBER of cues?
+        if k_a == 2:
+            chose_many = 1 if int(resp) == 0 else 0
+        else:
+            chose_many = 1 if int(resp) == 1 else 0
+
+        # processing load = shared positive endorsements (non-discriminating 1s)
+        L = int(np.count_nonzero((a > 0.5) & (b > 0.5)))
+
+        if L > 0:
+            hi_load_hits += chose_many
+            hi_load_n += 1
+        else:
+            lo_load_hits += chose_many
+            lo_load_n += 1
+
+    if hi_load_n == 0 or lo_load_n == 0:
+        return 0.0
+
+    return float(hi_load_hits / hi_load_n - lo_load_hits / lo_load_n)
+
+```
+
+**Observed (real) value:** 0.0533 (var=0.0494)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.0767 (var=0.0388) (Δ vs real +0.0233)
+  - iter 2: -0.0100 (var=0.0402) (Δ vs real -0.0633)
+  - iter 3: 0.0400 (var=0.0601) (Δ vs real -0.0133)
+  - iter 4: -0.0233 (var=0.0508) (Δ vs real -0.0767)
+  - iter 5: 0.2917 (var=0.0345) (Δ vs real +0.2383)
+  - iter 6: 0.0500 (var=0.0500) (Δ vs real -0.0033)
+  - iter 7: 0.0133 (var=0.0393) (Δ vs real -0.0400)
+  - iter 8: -0.0100 (var=0.0424) (Δ vs real -0.0633)
+  - iter 9 (current): -0.0233 (var=0.0353) (Δ vs real -0.0767)
+**Other theories' values on this metric (for reference):**
+- pi_5: 0.8050 (var=0.0193)
+- pi_3: 0.0033 (var=0.0067)
+- pi_1: 0.0017 (var=0.0171)
+- pi_2: -0.0050 (var=0.0221)
+- pi_4: 0.0283 (var=0.0260)
+- pi_6: -0.0050 (var=0.0446)
+
+### Experiment 8
+**Design**
+  A=[0, 1, 0, 0, 0]  B=[0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0]  B=[0, 1, 0, 0, 0]
+  A=[0, 0, 0, 0, 1]  B=[0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0]  B=[0, 0, 0, 0, 1]
+  A=[1, 0, 0, 0, 0]  B=[0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0]  B=[1, 0, 0, 0, 0]
+  A=[0, 0, 0, 1, 0]  B=[0, 0, 0, 0, 0]
+  A=[0, 0, 0, 0, 0]  B=[0, 0, 0, 1, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 0, 0, 1, 0]
+  A=[0, 0, 0, 1, 0]  B=[1, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 1]  B=[0, 1, 1, 1, 1]
+  A=[0, 1, 1, 1, 1]  B=[1, 1, 1, 0, 1]
+  A=[1, 0, 0, 0, 1]  B=[0, 0, 0, 1, 0]
+  A=[0, 0, 0, 1, 0]  B=[1, 0, 0, 0, 1]
+  A=[1, 1, 1, 0, 1]  B=[0, 1, 1, 1, 0]
+  A=[0, 1, 1, 1, 0]  B=[1, 1, 1, 0, 1]
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 1, 0]
+  A=[0, 1, 1, 1, 0]  B=[1, 0, 0, 0, 0]
+  A=[0, 0, 0, 1, 0]  B=[0, 0, 0, 0, 1]
+  A=[0, 0, 0, 0, 1]  B=[0, 0, 0, 1, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 0, 1, 0, 0]
+  A=[0, 0, 1, 0, 0]  B=[1, 0, 0, 0, 0]
+  A=[1, 1, 0, 1, 1]  B=[0, 1, 1, 1, 1]
+  A=[0, 1, 1, 1, 1]  B=[1, 1, 0, 1, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+
+    weak_idx = {1, 4}      # validities .56 and .62
+    strong_idx = {0, 3}    # validities .72 and .95
+
+    weak_hits = []
+    strong_hits = []
+
+    for _, row in data.iterrows():
+        try:
+            a = np.asarray(list(row['option_a_ratings']), dtype=float)
+            b = np.asarray(list(row['option_b_ratings']), dtype=float)
+        except Exception:
+            continue
+        if a.shape[0] != b.shape[0] or a.shape[0] == 0:
+            continue
+        d = a - b
+        nz = np.flatnonzero(np.abs(d) > 1e-9)
+        if nz.size != 1:
+            continue  # only single-discriminating-cue trials
+        j = int(nz[0])
+        # 1 if subject chose the option endorsed by the single discriminating expert
+        try:
+            resp = int(row['response'])
+        except Exception:
+            continue
+        chose_a = (resp == 0)
+        endorsed_a = d[j] > 0
+        hit = 1.0 if (chose_a == endorsed_a) else 0.0
+        if j in weak_idx:
+            weak_hits.append(hit)
+        elif j in strong_idx:
+            strong_hits.append(hit)
+
+    if len(weak_hits) == 0 or len(strong_hits) == 0:
+        return float('nan')
+
+    return float(np.mean(strong_hits) - np.mean(weak_hits))
+
+```
+
+**Observed (real) value:** -0.2025 (var=0.0220)
+**Candidate trajectory (this loop):**
+  - iter 1: -0.2000 (var=0.0155) (Δ vs real +0.0025)
+  - iter 2: -0.2487 (var=0.0271) (Δ vs real -0.0462)
+  - iter 3: -0.2488 (var=0.0145) (Δ vs real -0.0463)
+  - iter 4: -0.2188 (var=0.0166) (Δ vs real -0.0162)
+  - iter 5: -0.2838 (var=0.0243) (Δ vs real -0.0813)
+  - iter 6: -0.2538 (var=0.0223) (Δ vs real -0.0513)
+  - iter 7: -0.2050 (var=0.0209) (Δ vs real -0.0025)
+  - iter 8: -0.1825 (var=0.0208) (Δ vs real +0.0200)
+  - iter 9 (current): -0.2300 (var=0.0232) (Δ vs real -0.0275)
+**Other theories' values on this metric (for reference):**
+- pi_3: 0.0062 (var=0.0039)
+- pi_5: 0.3350 (var=0.0184)
+- pi_1: 0.0063 (var=0.0080)
+- pi_2: 0.0037 (var=0.0166)
+- pi_4: 0.2738 (var=0.0184)
+- pi_6: -0.1838 (var=0.0208)
+
+### Experiment 9
+**Design**
+  A=[1, 1, 1, 0, 0, 1]  B=[1, 1, 0, 0, 0, 1]
+  A=[1, 1, 0, 0, 0, 1]  B=[1, 1, 1, 0, 0, 1]
+  A=[1, 0, 1, 1, 1, 0]  B=[1, 0, 1, 1, 0, 0]
+  A=[1, 0, 1, 1, 0, 0]  B=[1, 0, 1, 1, 1, 0]
+  A=[1, 0, 1, 0, 0, 1]  B=[0, 0, 1, 0, 0, 1]
+  A=[0, 0, 1, 0, 0, 1]  B=[1, 0, 1, 0, 0, 1]
+  A=[1, 1, 1, 1, 0, 1]  B=[0, 1, 0, 1, 0, 0]
+  A=[0, 1, 0, 1, 0, 0]  B=[1, 1, 1, 1, 0, 1]
+  A=[1, 0, 0, 1, 0, 1]  B=[0, 0, 1, 1, 0, 0]
+  A=[0, 0, 1, 1, 0, 0]  B=[1, 0, 0, 1, 0, 1]
+  A=[1, 1, 0, 0, 1, 0]  B=[0, 1, 1, 0, 1, 0]
+  A=[0, 1, 1, 0, 1, 0]  B=[1, 1, 0, 0, 1, 0]
+  A=[0, 1, 1, 0, 1, 0]  B=[0, 1, 0, 0, 1, 1]
+  A=[0, 1, 0, 0, 1, 1]  B=[0, 1, 1, 0, 1, 0]
+  A=[1, 0, 0, 0, 1, 1]  B=[0, 1, 1, 1, 1, 0]
+  A=[0, 1, 1, 1, 1, 0]  B=[1, 0, 0, 0, 1, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+
+    # Cells where BOTH scanning orientations (primacy and recency) predict the
+    # option favoured by the two screen-extreme cues (pos0 = .72, pos5 = .70),
+    # while the advocated model predicts a coin flip (cell 5) or a reversal
+    # toward the mid-list crowd (cell 8).
+    #   cell 5: d = (+1, 0, -1, 0, 0, +1)  and its mirror
+    #   cell 8: d = (+1, -1, -1, -1, 0, +1) and its mirror
+    targets = {
+        (1, 0, -1, 0, 0, 1),
+        (-1, 0, 1, 0, 0, -1),
+        (1, -1, -1, -1, 0, 1),
+        (-1, 1, 1, 1, 0, -1),
+    }
+
+    hits = []
+    for _, row in data.iterrows():
+        try:
+            a = [int(v) for v in row['option_a_ratings']]
+            b = [int(v) for v in row['option_b_ratings']]
+        except Exception:
+            continue
+        if len(a) != 6 or len(b) != 6:
+            continue
+        d = tuple(int(x) - int(y) for x, y in zip(a, b))
+        if d not in targets:
+            continue
+        resp = row['response']
+        try:
+            resp = int(resp)
+        except Exception:
+            continue
+        # option favoured by the screen-extreme cues (positions 0 and 5 agree)
+        fav_a = (d[0] > 0)
+        chose_a = (resp == 0)
+        hits.append(1.0 if (chose_a == fav_a) else 0.0)
+
+    if len(hits) == 0:
+        return float('nan')
+    return float(np.mean(hits))
+```
+
+**Observed (real) value:** 0.4900 (var=0.0105)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.5675 (var=0.0097) (Δ vs real +0.0775)
+  - iter 2: 0.4408 (var=0.0100) (Δ vs real -0.0492)
+  - iter 3: 0.4242 (var=0.0078) (Δ vs real -0.0658)
+  - iter 4: 0.4067 (var=0.0133) (Δ vs real -0.0833)
+  - iter 5: 0.4967 (var=0.0101) (Δ vs real +0.0067)
+  - iter 6: 0.4683 (var=0.0117) (Δ vs real -0.0217)
+  - iter 7: 0.4533 (var=0.0064) (Δ vs real -0.0367)
+  - iter 8: 0.4325 (var=0.0110) (Δ vs real -0.0575)
+  - iter 9 (current): 0.4425 (var=0.0112) (Δ vs real -0.0475)
+**Other theories' values on this metric (for reference):**
+- pi_6: 0.4325 (var=0.0102)
+- pi_3: 0.9692 (var=0.0013)
+- pi_1: 0.1575 (var=0.0113)
+- pi_2: 0.4817 (var=0.0049)
+- pi_4: 0.1583 (var=0.0049)
+- pi_5: 0.4042 (var=0.0068)
+
+### Experiment 10
+**Design**
+  A=[1, 1, 1, 1, 0, 1]  B=[1, 1, 0, 1, 0, 1]
+  A=[1, 1, 0, 1, 0, 1]  B=[1, 1, 1, 1, 0, 1]
+  A=[0, 1, 0, 1, 1, 1]  B=[0, 1, 0, 1, 1, 0]
+  A=[0, 1, 0, 1, 1, 0]  B=[0, 1, 0, 1, 1, 1]
+  A=[1, 1, 0, 0, 1, 0]  B=[1, 0, 0, 0, 1, 0]
+  A=[1, 0, 0, 0, 1, 0]  B=[1, 1, 0, 0, 1, 0]
+  A=[1, 1, 1, 1, 1, 0]  B=[1, 0, 0, 0, 1, 0]
+  A=[1, 0, 0, 0, 1, 0]  B=[1, 1, 1, 1, 1, 0]
+  A=[1, 1, 0, 0, 1, 1]  B=[0, 1, 1, 1, 1, 0]
+  A=[0, 1, 1, 1, 1, 0]  B=[1, 1, 0, 0, 1, 1]
+  A=[1, 0, 1, 1, 0, 0]  B=[0, 0, 1, 1, 0, 1]
+  A=[0, 0, 1, 1, 0, 1]  B=[1, 0, 1, 1, 0, 0]
+  A=[0, 1, 1, 0, 1, 0]  B=[1, 1, 0, 0, 1, 0]
+  A=[1, 1, 0, 0, 1, 0]  B=[0, 1, 1, 0, 1, 0]
+  A=[1, 1, 1, 0, 0, 0]  B=[0, 0, 0, 1, 1, 1]
+  A=[0, 0, 0, 1, 1, 1]  B=[1, 1, 1, 0, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+
+    # Cell-5 pairs (trials 9 and 10 of the design), mirrored across sides:
+    #   d = a - b = [+1, 0, -1, -1, 0, +1]   -> extremes (pos0=.62, pos5=.58) favour A
+    #   d = a - b = [-1, 0, +1, +1, 0, -1]   -> extremes favour B
+    # Score = fraction of these trials on which the subject chose the option
+    # endorsed by the two SCREEN-EXTREME (weakest) experts, i.e. against the
+    # two mid-list heavyweight experts (.95 and .86).
+    target_A = (1, 0, -1, -1, 0, 1)
+    target_B = (-1, 0, 1, 1, 0, -1)
+
+    hits = 0
+    n = 0
+    for a_raw, b_raw, resp in zip(data['option_a_ratings'],
+                                  data['option_b_ratings'],
+                                  data['response']):
+        try:
+            a = [int(v) for v in a_raw]
+            b = [int(v) for v in b_raw]
+        except Exception:
+            continue
+        if len(a) != len(b) or len(a) != 6:
+            continue
+        d = tuple(int(x - y) for x, y in zip(a, b))
+        if d == target_A:
+            extreme_side = 0  # option A
+        elif d == target_B:
+            extreme_side = 1  # option B
+        else:
+            continue
+        n += 1
+        try:
+            r = int(resp)
+        except Exception:
+            continue
+        if r == extreme_side:
+            hits += 1
+
+    if n == 0:
+        return 0.5
+    return float(hits) / float(n)
+```
+
+**Observed (real) value:** 0.8500 (var=0.0111)
+**Candidate trajectory (this loop):**
+  - iter 1: 0.4450 (var=0.0168) (Δ vs real -0.4050)
+  - iter 2: 0.7700 (var=0.0185) (Δ vs real -0.0800)
+  - iter 3: 0.8500 (var=0.0125) (Δ vs real +0.0000)
+  - iter 4: 0.8767 (var=0.0081) (Δ vs real +0.0267)
+  - iter 5: 0.8717 (var=0.0101) (Δ vs real +0.0217)
+  - iter 6: 0.8717 (var=0.0076) (Δ vs real +0.0217)
+  - iter 7: 0.8867 (var=0.0091) (Δ vs real +0.0367)
+  - iter 8: 0.8817 (var=0.0086) (Δ vs real +0.0317)
+  - iter 9 (current): 0.8717 (var=0.0081) (Δ vs real +0.0217)
+**Other theories' values on this metric (for reference):**
+- pi_3: 0.9717 (var=0.0024)
+- pi_6: 0.2300 (var=0.0174)
+- pi_1: 0.1217 (var=0.0142)
+- pi_2: 0.5083 (var=0.0237)
+- pi_4: 0.0083 (var=0.0006)
+- pi_5: 0.1233 (var=0.0134)
+
+## YOUR PRIOR CRITIQUES (for this propose-loop)
+Each block is one of YOUR previous critique iterations: the verdict you returned, the interpretation and rationale you wrote, and an **Outcome of your advice** line that says whether the candidate the proposer produced AFTER following your advice was ACCEPTED (your advice helped — its loss strictly beat the running-best) or REJECTED (your advice didn't help — the gate discarded the candidate). Use this self-history to (a) reinforce advice that was ACCEPTED, (b) avoid repeating advice that was REJECTED, and (c) detect your own oscillation across iterations.
+
+### Iteration 1
+Verdict: regenerate
+Interpretation: The candidate is a partial success: it nails the three metrics that discriminate it from the other families (Exp2 .770 vs .775; Exp8 -.200 vs -.203, i.e. the reversed single-cue ladder falls straight out of the silence/gap term; Exp7 +.077 vs +.053, load-invariance from fully relative evidence) and is close on Exp9 (.568 vs .490). The residual error is concentrated in one coherent cluster: the extremes-vs-centre cells. There the candidate is wrong in BOTH directions, which is diagnostic. Where two screen-extreme cues oppose ONE mid-list heavyweight (Exp3 cell: .315 vs .518; Exp4 cell: .284 vs .508), the candidate lets the extremes win ~70% while humans are dead at chance. Where two (or more) extreme/peripheral cues oppose TWO mid-list heavyweights or where the vote is 2v2 (Exp10 .445 vs .850; Exp5 .555 vs .820; Exp6 .683 vs .841), humans follow the extremes near-ceiling while the candidate is near chance. So it is not that the U-shaped salience is globally too weak or too strong: the model's DIRECTION term is monotone in the salience-weighted vote, and the two clusters sit on opposite sides of that monotone trade-off, exactly as the rationale concedes. The key structural fact the candidate is not exploiting is that the two clusters differ in how many experts speak (3-of-5/6 speakers in Exp3/Exp4 vs 4-of-6 in Exp10 cell 5 and 4-of-5 in Exp5): the panel-silence term is the natural in-family device for collapsing the sparse-speaker cells to chance while leaving the dense-speaker cells decisive, but with eta~1.9 and sil_pow~2.65 the compression is essentially flat for f_sil in [0.2, 0.5] and does almost no work there. Separately, Exp1 (-.032 vs +.093) shows the added 'authority-capped first-cue commitment' branch is not buying the TTB-flavoured dissociation it was introduced for, and it is a drift away from the prescribed family (the arbiter explicitly ruled out any serial/lexicographic commitment component).
+Rationale: Accepted by the gate, so keep this as the base, but there is a large, structured residual worth one more in-family pass. Three concrete adjustments, all inside the prescribed 'compressed numerosity vote + U-shaped display salience + silence-based gap inference' family:
+
+1) FAITHFULNESS: drop (or drastically attenuate) the authority-capped first-cue commitment branch. The arbiter's prescription is explicit that all cues are always integrated, with no sufficiency stop and no lexicographic component; this branch is a re-import of pi_6's mechanism and it is not even paying for itself (Exp1 went to -.03 when the real value is +.09, and it plausibly distorts the validity-ordered panels of Exp5). Either remove it, or cap q_com at <=0.15 so it acts only as a small primacy bias, and instead recover Exp1's small positive TTB-dissociation via a slightly heavier primacy limb (alpha > gamma) on the highest-validity first row.
+
+2) LOAD THE SILENCE TERM WHERE IT DISCRIMINATES. Re-shape c so it separates 3-speaker from 4-speaker panels: e.g. c = 1 - eta * f_sil^q * vbar with q in [1.3, 2.0] and eta in [1.0, 1.6], retuned so that (a) f_sil=0.5 (Exp3/Exp4 double-dissociation cells) gives c small enough to push those cells to ~.50 regardless of the vote sign, (b) f_sil=0.33 (Exp10 cell 5) leaves c near 1 so the extremes verdict is executed decisively, and (c) the single-speaker contrast still reproduces Exp8 at about -.20 (this is currently exact, so check it after retuning rather than before). This is the one lever that can satisfy Exp3/Exp4 and Exp10/Exp5 simultaneously without a monotone trade-off.
+
+3) RE-BALANCE THE VOTE TOWARD POSITION AND AWAY FROM VALIDITY. Exp10's extremes are the two WEAKEST experts (.62, .58) and yet win 85% of the time; that requires rho nearer the arbiter's nominal band than the candidate's drift upward. Move rho to [0.15, 0.40] and make the U more symmetric and stronger: alpha in [1.2, 2.2], gamma in [1.0, 2.0], tau in [0.8, 1.4] (a tighter tau concentrates the boost on the literal first/last rows, which is what Exp10/Exp6 need, while the near-end position 3 of Exp5 still picks up a useful recency boost). Also consider softening kappa toward ~1.1-1.25 once the silence term is doing the chance-collapsing work, since the convex exponent is currently being used to fake the chance-level cells and is simultaneously flattening Exp6/Exp10.
+
+Targets for the next iteration: Exp10 >= .70, Exp5 >= .75, Exp6 >= .78, Exp3/Exp4 in [.42, .55], while holding Exp2 in [.74, .81], Exp8 in [-.25, -.15], Exp7 in [-.05, .12], Exp9 in [.45, .55], and nudging Exp1 from -.03 to slightly positive.
+
+**Outcome of your advice:** iter 1 candidate loss=0.1865 -> iter 2 candidate loss=0.1218 -> the gate marked it ACCEPTED.
+
+### Iteration 2
+Verdict: regenerate
+Interpretation: Iteration 2 is a clear improvement (0.1865 -> 0.1218) and the parity-gated salience did exactly what I asked for at the level of the extremes-vs-centre cluster: Exp10 moved .445 -> .770 (real .850) and Exp5 .555 -> .896 (real .820), i.e. the 2-vs-2 deadlock cells are now essentially solved, and the two opposite-signed cells Exp3 (.315 -> .423, real .518) and Exp4 (.284 -> .373, real .508) moved in the right direction simultaneously for the first time. The silence/gap term continues to carry the signature phenomena that discriminate this family: Exp8 -.249 (real -.203, reversed single-cue ladder, right sign and near-right magnitude), Exp7 -.010 (real +.053, load-invariance), Exp2 .745 (real .775), Exp9 .441 (real .490). So the prescribed family "compressed numerosity vote + display salience + silence-calibrated gap" is being honoured in its core and is fitting most of the battery.
+
+The residual is no longer diffuse; it is concentrated in two places. (a) Exp6 is now the single worst cell and it REGRESSED relative to iter 1 (.683 -> .586 vs real .841, \u0394 = -.256, ~47% of the remaining squared error). This is a direct side-effect of the hard parity gate: with sigma=.42, g(|k_A-k_B|=1) \u2248 .06, so salience is switched off almost completely in Exp6's class-2 (2 extremes vs 1 mid heavyweight) and class-3 (3 vs 1) cells, where humans are near-ceiling for the extreme/crowd side. The gate is too binary. (b) Exp3/Exp4 remain ~.09-.14 too LOW (candidate over-follows the extremes there), which is the same |dk|=1 regime as Exp6 but with the opposite required direction \u2014 and crucially the difference between them is not parity or silence (both f_sil=.5 in Exp3 and Exp6 class 2) but the *stated validities* of the extreme cues: Exp3/Exp4's extremes are weak relative to the mid .95, Exp6's are not. That means the residual in the |dk|=1 regime is a rho (validity-grading) problem, not a gating problem, and the two can be fixed jointly. (c) Exp1 (-.034 vs +.093) is unchanged across both iterations; the authority-capped commitment branch is still not buying the TTB dissociation it was introduced for, but it is small and I will not re-litigate it since the gate accepted the candidate that kept it.
+Rationale: ACCEPTED, so keep this candidate as the base, but one more in-family pass is clearly worth it: Exp6 alone accounts for roughly half the remaining squared error and it moved the WRONG way this iteration. Stay inside the arbiter's family (always-integrate weighted vote + display salience + silence-based gap); the only changes I am asking for are knob-level.
+
+1) LEAK THE PARITY GATE (this is the direct cause of the Exp6 regression). Do not make salience an all-or-nothing tie-breaker. Widen sigma so that g(0)=1, g(1)\u22480.25-0.35, g(2)\u22480.05 \u2014 i.e. sigma in [0.55, 0.80] in the current Gaussian form (sigma=0.60 gives g(1)=0.25), or equivalently switch to g=exp(-|dk|/\u03c4_g) with \u03c4_g\u22480.7. That restores enough first/last-difference influence in Exp6's 2-vs-1 and 3-vs-1 cells to push it back above .70 without re-opening the 2-vs-2 cells, which are already fine.
+
+2) COMPENSATE WITH A SHARPER VALIDITY EXPONENT so Exp3/Exp4 do not fall further. Move rho up from [0.60,0.82] to roughly [0.85, 1.15] (near-linear in (v-0.5)/0.5). Hand-check: with rho\u22481.0 the Exp3 double-dissociation cell becomes ~(.72,.70 extremes) 0.44+0.40=0.84 against the .95 cue's 0.90 \u2014 a near-tie, i.e. the ~.50 humans show \u2014 while Exp6's stronger extremes still outvote its mid heavyweight. Do NOT push rho past ~1.15: Exp2's decisive 2-vs-1 cell (.90+.60 against .95) flips sign around rho\u22481.25 and Exp2 would drop out of its [.74,.81] band.
+
+3) TRIM THE SALIENCE AMPLITUDE slightly (mu from [2.10,2.90] to ~[1.90,2.50]) to absorb the leaked gate: Exp5 is currently .896 against a real .820, i.e. already a modest overshoot, and step (1) will push it further up if mu is untouched.
+
+4) LEAVE THE SILENCE/GAP TERM AND THE COMMITMENT BRANCH ALONE. eta/sil_pow are producing Exp8 (-.249 vs -.203) and Exp7 (~0) correctly; my earlier push to delete the commitment branch was not taken up and the candidate that kept it was accepted, so I am not repeating it \u2014 at most nudge d_com down a little if Exp1 stays negative, but treat Exp1 (\u0394=-.13 on a metric with real value only +.09) as the lowest-priority cell.
+
+Targets for the next iteration: Exp6 \u2265 .75, Exp3 in [.47,.56], Exp4 in [.45,.56], Exp5 in [.78,.86], Exp10 \u2265 .80, while holding Exp2 in [.74,.81], Exp8 in [-.25,-.15], Exp7 in [-.05,.10], Exp9 in [.44,.55]. If the leaked gate cannot lift Exp6 without dragging Exp3/Exp4 below .42, settle on the midpoint (sigma\u22480.50, rho\u22480.90) rather than oscillating between the hard and fully-open gate.
+
+**Outcome of your advice:** iter 2 candidate loss=0.1218 -> iter 3 candidate loss=0.1164 -> the gate marked it ACCEPTED.
+
+### Iteration 3
+Verdict: regenerate
+Interpretation: Iteration 3 was accepted (0.1218 -> 0.1164), but the improvement is small and came from exactly one place: Exp10 is now exact (.850 vs .850) thanks to the mutual-endorsement (omega) asymmetry in the silence term. The remaining squared error is highly concentrated and essentially unchanged in structure from iteration 2. Approximate per-experiment squared residuals: Exp6 .055 (47% of total), Exp4 .024, Exp3 .014, Exp1 .013, Exp5 .012, Exp9 .004, everything else <.003. So four of the ten metrics are effectively solved (Exp10 exact, Exp7 .040 vs .053, Exp2 .742 vs .775, Exp8 -.249 vs -.203) and the family's signature phenomena \u2014 the reversed single-cue ladder, load-invariance, the 2-vs-2 extremes verdicts \u2014 are all reproduced, which is strong evidence the arbiter's prescribed family is right. The failures are a single coherent dissociation the model currently cannot represent: in the |k_A-k_B| = 1 regime, humans go near-ceiling for the two-cue side in Exp6 class 2 (.84) but are dead at chance in Exp3 (.518) and Exp4 (.508), while the candidate does the reverse \u2014 it follows the two-cue side ~60-65% in Exp3/Exp4 (metric too LOW by .12/.16) and only ~58% in Exp6 (metric too LOW by .23). Structurally these cells are identical to the model (same parity, same speaker ranks, same first/last-difference pattern, and in Exp3 vs Exp6-class-2 even the same silence density after the omega fix), so nothing but the *stated validities* can separate them \u2014 which points at rho, not at the gate, the salience amplitude, or the silence term. Note also that Exp6 class 3 (3-vs-1, |dk| = 2) is being under-driven: with the hard parity gate, salience is off and drive is just V = x0+x1+x5-x2 \u2248 0.9, so p \u2248 .72 against a human value near .84 \u2014 a pure numerosity-weight shortfall. Exp5 is now a mild overshoot in the opposite direction (.928 vs .820) while Exp10, its structural twin, is exact; the difference between them is that Exp5's 'last speaker' is display position 3 of 5 (not a true display end), whereas Exp10's are the literal first and last rows \u2014 the candidate ranks salience over SPEAKERS rather than over absolute display positions, which over-credits Exp5.
+Rationale: Accepted, so build on this candidate, but Exp6 alone is ~47% of the remaining loss and has now been the worst cell for three straight iterations; one more in-family pass is clearly worth it. Stay inside the arbiter's family (always-integrate compressed vote + U-shaped display salience + silence-calibrated gap); all requests below are knob/normalisation level.
+
+1) SALIENCE OVER ABSOLUTE DISPLAY POSITION, NOT SPEAKER RANK (lowest-risk, do this first). The arbiter's prescription is s_j = 1 + a*exp(-j/tau) + a'*exp(-(n-1-j)/tau) over the LIST index j; the candidate computes exp(-r/tau)+exp(-(m-1-r)/tau) over the rank r among discriminating cues. Switching to absolute j leaves Exp10's target cell (speakers at rows 0,2,3,5 \u2014 true ends) essentially untouched but demotes Exp5's 'last' cue (row 3 of 5), which is precisely where the model overshoots (.928 vs .820). Expected: Exp5 -> ~.86-.88, Exp10 held in [.82,.87]. Worth ~.005-.008 of loss on its own and it restores faithfulness to the prescribed salience form.
+
+2) SPLIT THE |dk|=1 REGIME FROM THE |dk|>=2 REGIME WITH A MAJORITY BONUS, THEN RAISE rho MODESTLY. Add M = lambda * sign(dk) * max(|dk| - 1, 0) to the drive (lambda ~ 0.4-0.8). This is pure numerosity, fully in-family, and it fires ONLY where the data want more decisiveness (Exp6 class 3 at dk=2, Exp2's 3-vs-1 conflict cells at dk=2) and NOT in the cells that must sit at chance (Exp3, Exp4, Exp8, Exp9, Exp7, all |dk|<=1) or in the salience-decided dk=0 cells (Exp5, Exp10). With Exp2's decisive cells protected by M, you can then afford rho a bit higher. Arithmetic on Exp4's known validities [.78,.60,.95,.88,.72]: the target cell is (.78,.72) against (.95); at rho=.70 the pair leads by +.30 (model follows the pair ~65%, humans 50%), at rho\u22481.0 the lead is +.10, at rho\u22481.15 it is a tie. My earlier push to rho\u2208[.85,1.15] was declined by the proposer and the alternative (omega) was accepted, so do NOT jump the whole way: set rho to roughly [0.85, 1.00] \u2014 the midpoint between the current [0.60,0.82] and my earlier request \u2014 and let M carry Exp2/Exp6-class-3. Targets: Exp3 in [.46,.56], Exp4 in [.44,.55], Exp2 held in [.73,.81], Exp6 class 3 -> >=.85.
+
+3) WATCH EXP6 CLASS 2 AND STOP IF IT COLLAPSES. Class 2 (2 cues vs the mid heavyweight, dk=1) is the one cell that rho\u2191 can damage, and it is structurally indistinguishable from Exp3's cell to this model, so it cannot be rescued by the gate or by silence \u2014 only by Exp6's own validity values. Instrument it: if raising rho to .95 drops Exp6 below ~.62 while Exp3/Exp4 gain less than .10 each, back rho down to ~0.85 and take the net gain from M + item (1) alone. Do not reintroduce a leaked parity gate (that was my iteration-2 suggestion, the proposer's arithmetic showed it moves Exp3/Exp4 the wrong way, and it should not be retried).
+
+4) LEAVE ALONE what is working: the omega asymmetry, eta/sil_pow (Exp8 -.249 vs -.203, Exp7 +.040 vs +.053, Exp10 exact) and the unanimity bonus. Exp1 (-.021 vs +.093) remains the lowest-priority cell; if anything, test the sensitivity of the display-contingent commitment branch (d_com, s_stop) on Exp1 only \u2014 it is still a mild drift toward pi_6's lexicographic stop rule that the arbiter excluded, and it is not paying for itself, but it is small and I will not demand its removal a third time.
+
+Success criterion for the next iteration: loss < 0.1164, with Exp6 >= .72, Exp3/Exp4 both >= .44, Exp5 in [.84,.88], and Exp2, Exp7, Exp8, Exp9, Exp10 held inside their current bands.
+
+**Outcome of your advice:** iter 3 candidate loss=0.1164 -> iter 4 candidate loss=0.1007 -> the gate marked it ACCEPTED.
+
+### Iteration 4
+Verdict: regenerate
+Interpretation: Iteration 4 was accepted (0.1164 -> 0.1007) and the gain came almost entirely from the two changes I asked for in item (1) of my last critique — salience indexed by ABSOLUTE display row rather than speaker rank (Exp5 .928 -> .805 against a real .820, Exp10 held at .877 vs .850) — plus the saturating majority bonus, which repaired Exp2 (.742 -> .772 vs real .775). Those are now essentially solved cells, along with Exp8 (-.219 vs -.203, the reversed single-cue ladder) and Exp7 (-.023 vs +.053). The family's signature phenomena are all reproduced, so the arbiter's prescribed mechanism is clearly the right one and the remaining problem is calibration, not architecture.
+
+But the OTHER half of my last advice — raising rho to [0.82,1.00] to move Exp3/Exp4 toward chance — demonstrably failed on its own target cells and cost Exp6. Exp3 moved .3975 -> .4012 (+.004; real .5175) and Exp4 .3513 -> .3950 (+.044; real .5075), while Exp6 fell .6075 -> .5919 (real .8413). I explicitly instrumented this in iteration 3 ("if raising rho to .95 drops Exp6 below ~.62 while Exp3/Exp4 gain less than .10 each, back rho down"), and that is exactly the outcome. Exp6 is now ~62% of the total squared residual (.062 of ~.100) and has been the worst cell for four straight iterations.
+
+The structural diagnosis is now sharp. Exp6 class 2 and the Exp3/Exp4 double-dissociation cells are the SAME configuration to this model — two screen-extreme cues against one mid-list .95 cue, |dk| = 1 — yet humans are at .84 in Exp6 and at .51 in Exp3/Exp4. Only two things differ: (i) Exp6's panels are dense with mutual endorsements, so f_sil ~ .22, whereas Exp3's cell has four all-zero rows (f_sil ~ .67) and Exp4's has two of five (f_sil ~ .40); (ii) the extreme validities. In the current parameterisation the confidence term already crushes Exp3 (c ~ .26) but only half-crushes Exp4 (c ~ .58), and the direction term at rho ~ .9 makes V for two weak extremes vs a .95 cue slightly NEGATIVE, while the hard parity gate (sigma = .42 => g(1) ~ .06) switches off the salience that would otherwise carry Exp6. So the model gets Exp6 class 2 at ~.40-.45 and pooled Exp6 at .59, and simultaneously still over-follows the extremes in Exp4.
+Rationale: Accepted, so build on THIS candidate, but one more in-family pass is worth it: Exp6 alone is ~62% of the remaining loss and it has moved the wrong way in three of four iterations. Keep the prescribed family verbatim (always-integrate compressed vote + U-shaped ABSOLUTE-display-position salience + silence-calibrated gap + majority/unanimity bonuses); everything below is knob/normalisation level. Do NOT touch the parts that are now solved: absolute-position salience, the M bonus, omega, the unanimity bonus, beta.
+
+1) MAKE THE SILENCE -> CONFIDENCE COLLAPSE THRESHOLD-LIKE, NOT SMOOTH (do this first; it is the enabling change). The dissociation Exp6-vs-Exp3/Exp4 lives entirely in f_sil (.22 vs .40 vs .67), but with eta=1.5, sil_pow=1.2 the attenuation is nearly linear over that range and Exp4 retains c ~ .58. Re-shape c so the collapse happens between f_sil ~ .25 and ~ .40: either raise sil_pow to ~[1.8, 2.3] with eta to ~[3.0, 5.0], or (cleaner) replace the power law with a logistic, c = 1 - eta * sigmoid(k*(f_sil - f0)) * vbar with f0 ~ 0.30, k ~ 8-12, eta ~ [0.85, 1.0]. Nominal targets: c(f_sil=.22) >= .75, c(f_sil=.40) <= .25, c(f_sil=.67) <= .10. CHECK Exp8 AFTER retuning, not before: the -.20 ladder comes from vbar (weak lone speaker => high c => decisive; .95 lone speaker => c clipped => chance) at f_sil = .8, and that contrast must survive the steeper curve (with a logistic it does, because vbar still multiplies). Also verify Exp10 (f_sil ~ .05) and Exp5 (f_sil ~ .20) stay unattenuated.
+
+2) BACK rho DOWN TO ~[0.55, 0.78]. I pushed rho up twice; on its declared targets it bought +.004 on Exp3 and +.044 on Exp4 while costing ~.02 on Exp6, so that push did not pay and I am not repeating it. Rather than swing all the way to the arbiter's nominal .15-.45, take the midpoint between my two flanking recommendations: rho ~ 0.65-0.70 nominal. With Exp6's weak extremes this raises V for the two-cue side from ~-.4 to ~+.1-.3, and with step (1) the Exp3/Exp4 cells no longer need the vote to cancel — their chance-level behaviour is now produced by c, which is the correct in-family locus (arbiter item 3). Exp2 is protected by M, as it was this iteration.
+
+3) ONLY IF Exp6 IS STILL BELOW .72 AFTER (1)+(2): leak the parity gate a little, sigma -> ~0.55-0.62 so g(1) ~ 0.20-0.30 (not more). I know I warned against this in iteration 3, and on its own it is harmful; but it is harmful only because Exp4 currently has c ~ .58. Once step (1) puts Exp4's confidence below ~.25 a modest leak buys Exp6 class 2 cheaply (drive at dk=1 gains ~+0.4-0.6) and costs Exp3/Exp4 almost nothing, since a large drive times a tiny c is still ~ .50. Treat this as conditional and instrument it: if Exp4 drops below .35, revert sigma.
+
+4) LOWEST PRIORITY, DO NOT SPEND FIT ON IT: Exp1 (-.023 vs +.093) is now the second-largest residual but it is a difference-of-rates metric with real value only +.09 and the commitment branch (a mild drift toward pi_6's lexicographic stop, which the arbiter excluded) has not paid for itself in four iterations. If anything, try a single small step: let q_com apply a modest primacy weight rather than a near-deterministic override (cap q_com at ~0.5 and keep d_com), which should push Exp1 slightly positive without disturbing Exp5/Exp3 where the first speaker is also an extreme. Leave Exp7 and Exp9 alone.
+
+Success criterion for the next iteration: loss < 0.1007 with Exp6 >= .74, Exp4 >= .44, Exp3 >= .45, while holding Exp2 in [.73,.81], Exp5 in [.78,.86], Exp8 in [-.26,-.15], Exp10 in [.80,.90], Exp7 in [-.05,.10], Exp9 in [.42,.55]. If lowering rho to .65 drags Exp2 below .73 or flips Exp8's sign, stop at rho ~ .75 and take the gain from step (1) alone.
+
+**Outcome of your advice:** iter 4 candidate loss=0.1007 -> iter 5 candidate loss=0.0783 -> the gate marked it ACCEPTED.
+
+### Iteration 5
+Verdict: regenerate
+Interpretation: Iteration 5 was accepted (0.1007 -> 0.0783) and the two changes I asked for did work where they were aimed: the threshold-like silence\u2192confidence map moved Exp3 .401 -> .484 (real .518) and Exp4 .395 -> .447 (real .508), the rho retreat plus the leaked parity gate lifted Exp6 .592 -> .715 (real .841), and Exp1 flipped from -.023 to +.117 against a real +.093. Exp5 (.819 vs .820), Exp9 (.497 vs .490), Exp10 (.872 vs .850) and Exp2 (.796 vs .775) are now effectively solved. So the prescribed family (always-integrate compressed numerosity vote + U-shaped ABSOLUTE-display-position salience + silence-calibrated gap + majority/unanimity bonuses) is being honoured and is carrying nine of ten cells.
+
+But the loss has re-concentrated in a NEW place, and it is a place I flagged and under-weighted last round. Exp7 went -.023 -> +.292 against a real +.053 (\u0394 = +.238, squared residual ~.057, i.e. ~65% of the total ~.086). This is not noise: Exp7's metric rests on exactly four trials per subject (trials 5 and 13 are the low-load 2-vs-1 cells, trials 6 and 14 the high-load ones), and the model's two load classes are driven to opposite extremes by the new sharp sigmoid. Hand-arithmetic on the design: trial 5 (A=[1,0,0,0,0,1], B=[0,0,1,0,0,0]) has three all-zero rows, f_sil = .50 -> sigmoid(20*(.50-.34)) \u2248 .96 -> c clipped to ~.02 -> p \u2248 .50; trial 6 (A=[1,1,0,1,1,1], B=[0,1,1,1,1,0]) is the SAME difference vector but with the three silent rows mutually endorsed, so with omega = .15 f_sil = .075 -> c \u2248 .99 -> p \u2248 .90 once the leaked gate adds the two-extremes salience. The model therefore manufactures a ~+.35 load effect where humans show ~.05. The culprits are (i) omega being near zero (a panel of 'both are good' rows is treated as a fully speaking panel) and (ii) sil_k \u2248 20 with f0 \u2248 .34 placing a near-step discontinuity exactly between Exp7's two load classes.
+
+There is also a generalisation warning embedded here: Exp7's low-load cell and Exp3's target cell are structurally identical to this model (2 screen-extreme speakers vs 1 mid-list heavyweight, f_sil = .5), so the silence term cannot be tuned to produce chance in one and decisiveness in the other. Any further sharpening of the silence collapse buys Exp3/Exp4 at Exp7's expense. Secondary residuals: Exp6 still -.126 low and Exp8 now overshoots (-.284 vs -.203), both small by comparison.
+Rationale: ACCEPTED, so build on THIS candidate, but one more in-family pass is clearly worth it: a single cell (Exp7) is now ~65% of the remaining loss and it moved sharply the WRONG way this iteration as a side-effect of the change I recommended. Keep the prescribed family verbatim; everything below is knob-level. Do not touch what is solved: absolute-position salience, M, the unanimity bonus, beta, the commitment branch, rho.
+
+1) RAISE omega \u2014 make mutual endorsement count as MOSTLY silent (do this first; it is the targeted fix). Move omega from [0.0,0.30] to roughly [0.55, 0.85], nominal ~0.70. Rationale inside the arbiter's item 3: a panel where three experts say 'both products are good' is exactly as uninformative about the quality GAP as one where they say 'neither is good' \u2014 the asymmetry was introduced to rescue Exp10 and is now being over-exploited. Checked collateral on the actual designs: Exp3 (all-zero silent rows), Exp4 (all-zero), Exp5 (one all-zero row), Exp8's single-cue ladder trials (all-zero) are ARITHMETICALLY UNCHANGED by omega. Exp10's target cell and Exp6's dense classes each have exactly 2 mutually-endorsed rows of 6, so f_sil rises only .05 -> ~.28-.33, which with the numbers below still leaves c \u2248 .70-.85, i.e. both stay decisive (I re-derived Exp10: drive \u2248 1.9 at dk=0, p \u2248 .84). Exp7's high-load cells go from f_sil=.075 to ~.40, collapsing the manufactured load effect toward ~.05-.12.
+
+2) SOFTEN THE THRESHOLD SLIGHTLY, don't delete it. sil_k from [16,24] to ~[9,14] and sil_f0 from ~.34 to ~[0.38, 0.44]. This keeps Exp3 (f_sil=.50) collapsed and Exp8's f_sil=.80 ladder saturated, but stops the map from being a literal step function straddling Exp7's two classes. Do NOT raise sil_k again \u2014 that is what created this residual.
+
+3) DO NOT WIDEN THE PARITY LEAK FURTHER. The sigma \u2192 .60 leak paid for itself on Exp6 (+.12) so keep it, but it is the second contributor to Exp7's high-load cells. If, after (1)+(2), Exp7 is still above ~+.15, trim sigma to ~0.50-0.54 (g(1) \u2248 .13-.18) rather than touching the silence term again; Exp6 loses only a little and Exp3/Exp4 gain slightly.
+
+4) SMALL TRIM ON eta. Exp8 now overshoots (-.284 vs -.203, outside the [-.26,-.15] band I set). Lower eta from [1.55,1.85] to ~[1.35,1.60]; this also softens every silence-driven cell a fraction, which is the direction Exp4 and Exp7 both want. Re-check Exp8 AFTER (1)-(3), since the ladder is carried by vbar at saturating f_sil.
+
+5) LOWEST PRIORITY: Exp6 (-.126). If (1)-(4) leave loss headroom, take it from lam (majority bonus) nudged up to ~[0.55,0.75], which fires only at |dk|>=2 \u2014 i.e. Exp6's class-3 (3-vs-1) cells and Exp2 \u2014 and provably not in Exp7/Exp3/Exp4/Exp8 (all |dk|<=1) nor in the dk=0 cells of Exp5/Exp10. Watch Exp2, which is already +.02 high; stop if it exceeds .81.
+
+Success criterion for the next iteration: loss < 0.0783 with Exp7 in [-.05, +.15], Exp8 in [-.26,-.15], while HOLDING Exp3 >= .44, Exp4 >= .40, Exp6 >= .68, Exp5 in [.78,.86], Exp10 in [.80,.90], Exp2 in [.74,.81], Exp1 in [.02,.16], Exp9 in [.44,.55]. If raising omega drags Exp6 below .65 or Exp10 below .78, settle at omega \u2248 0.45 rather than oscillating back to ~0.15.
+
+**Outcome of your advice:** iter 5 candidate loss=0.0783 -> iter 6 candidate loss=0.0723 -> the gate marked it ACCEPTED.
+
+### Iteration 6
+Verdict: regenerate
+Interpretation: Iteration 6 was accepted (0.0783 -> 0.0723) and the targeted fix worked exactly as argued: raising omega to ~0.82 collapsed the manufactured load effect in Exp7 (+.292 -> +.050 against a real +.053, now essentially exact) at a cost of only ~.003 elsewhere. Exp10 (.872 vs .850), Exp9 (.468 vs .490), Exp5 (.791 vs .820), Exp3 (.470 vs .518), Exp1 (.131 vs .093), Exp2 (.821 vs .775) and Exp8 (-.254 vs -.203) are all inside or near their bands. The prescribed family (always-integrate compressed numerosity vote + U-shaped ABSOLUTE-display-position salience + majority/unanimity bonuses + silence-calibrated gap) is honoured and carries nine of ten cells.
+
+The loss is now almost entirely one cell: Exp6 .616 vs .841 (delta -.225, ~70% of the residual), and the proposer knowingly paid for Exp7 with Exp6. Everything else sums to <.02. Decomposing Exp6 on the actual design, the metric uses exactly four trials: class-3 cells (trials 5,6; disc {0,1,2,5}, |dk|=2, one all-zero + one mutually-endorsed row -> f_sil=.303, c~.85, drive ~ V+lam, p~.73) and class-2 cells (trials 7,8; disc {0,2,5}, |dk|=1, one all-zero + two mutually-endorsed rows -> f_sil=.44 > f0=.36 with k=38, so c clips to .02 and p=.50). Pooled .615, matching the simulated .616. So the entire Exp6 deficit is class-2 being hard-collapsed by the step.
+
+The proposer's impossibility argument is only half right. With the CURRENT parameterisation (omega<1, near-step sigmoid) Exp3's cell (3 all-zero rows, f=.50), Exp7-low (3 all-zero, f=.50), Exp7-high (3 mutual, f=.41) and Exp6-class-2 (1 zero + 2 mutual, f=.44) cannot be separated as the data require. But the algebra shows why: any monotone row-type weighting makes Exp7's two classes differ unless the mutual weight equals the zero weight, and once they are equal, Exp6-class-2 and Exp3 become IDENTICAL in silence \u2014 which means the Exp3-vs-Exp6 dissociation must be carried by the OTHER factor already in the confidence term, vbar (mean sensitivity of the speakers), and by the drive, not by f_sil. Exp3's speaking set contains the .95 mid cue against two weak extremes (.72/.70) so vbar is high and V~0; Exp6's extremes are stronger relative to its mid cue, so V is clearly positive and vbar lower. That is a live, unexploited in-family lever, and it is exactly the arbiter's item 3 ('gap inferred from who noticed / mean sensitivity of those who noticed').
+Rationale: ACCEPTED, so build on THIS candidate, but one cell (Exp6) is ~70% of the remaining loss and has been the worst cell for five straight iterations. Stay strictly inside the prescribed family; everything below is knob/normalisation level (no new mechanism, no serial stop rule, no lexicographic component). Do not touch what is now solved: absolute-position salience, mu, tau, sigma (the 0.60 leak), the saturating M bonus, the unanimity bonus, rho, beta, the commitment branch.
+
+1) PUSH omega ALL THE WAY TO ~1.0 (range [0.95, 1.00]). Raising omega was my last recommendation and it was ACCEPTED, so this is reinforcement in the same direction, not an oscillation. At omega = 1 a mutually-endorsed row is arithmetically identical to an all-zero row, so Exp7's two load classes become the SAME panel and the load effect is exactly 0 by construction (real +.053, var .049 \u2014 statistically indistinguishable from 0). That permanently removes the constraint that has been blocking every threshold move, and it costs at most ~.003 on Exp7. Collateral, re-checked on the designs: Exp3, Exp4, Exp5, Exp8 (all-zero silent rows) are unchanged; Exp10's target cell goes f_sil .28 -> .33 and Exp6 class-3 .303 -> .333, both still on the decisive side of any f0 >= .40.
+
+2) NOW SOFTEN THE STEP AND LET vbar DO THE SEPARATING. With Exp7 neutralised, the objection the proposer raised last round (that a softer sigmoid straddles Exp7's two classes) no longer applies \u2014 state that explicitly in the next rationale. Move sil_k from [30,45] to ~[10,18], sil_f0 from ~.36 to ~[0.43, 0.47], and eta from [1.45,1.65] to ~[1.15,1.35]. The point is to stop c from clipping to .02: at f_sil ~ .5 c should be a GRADED function of speaker sensitivity, roughly c ~ 1 - eta*vbar, so a high-vbar panel (Exp3's cell, which contains the .95 cue: c ~ .20-.25) stays at chance while a lower-vbar panel with a genuinely positive vote (Exp6 class 2) retains c ~ .35-.45 and, with the existing leaked salience (mu*g*S ~ .8 at |dk|=1), lands near .63-.70 instead of .50. Hand-target: c(f=.33) >= .80 (Exp10, Exp6 class 3), c(f=.40) in [.25,.35] (Exp4), c(f=.50) in [.18,.28] scaled by vbar (Exp3, Exp7, Exp6 class 2), c(f=.80) still governed by vbar so the Exp8 ladder survives.
+
+3) INSTRUMENT THE KNOWN COST AND CAP IT. Exp4 (f_sil = .40) is the cell that softening hurts, exactly as the proposer computed: it will drift down from .429. Its squared residual is only .006 against Exp6's .051, so a drop to ~.38 is an acceptable trade (net gain still positive if Exp6 reaches ~.72). But if Exp4 falls below .35, raise sil_f0 toward .47 or eta toward 1.40 rather than reverting omega or re-steepening sil_k \u2014 re-steepening is what created the Exp7 problem two rounds ago.
+
+4) DO NOT chase Exp2 (.821 vs .775) or Exp1 (.131 vs .093); both are small and over-shooting, so resist any further lam/beta increase for Exp6 class 3 \u2014 lam fires on Exp2's |dk|=2 conflict cells too and would push Exp2 past .85. Exp6's gain must come from class 2 (the collapsed cell), not from class 3. Exp8 (-.254) is only .003 of loss; check it after the retune but do not tune for it.
+
+Success criterion for the next iteration: loss < 0.0723 with Exp6 >= .72, while HOLDING Exp7 in [-.05,+.12], Exp3 in [.44,.58], Exp4 >= .36, Exp5 in [.76,.86], Exp10 in [.80,.90], Exp2 in [.74,.85], Exp8 in [-.30,-.15], Exp1 in [.02,.16], Exp9 in [.42,.55]. If omega=1 plus the softened threshold cannot lift Exp6 above .68 without dragging Exp4 below .35, settle at sil_k ~ 20, sil_f0 ~ .45, eta ~ 1.40 (the midpoint between this round's step and my request) rather than oscillating back to the near-step map.
+
+**Outcome of your advice:** iter 6 candidate loss=0.0723 -> iter 7 candidate loss=0.0695 -> the gate marked it ACCEPTED.
+
+### Iteration 7
+Verdict: regenerate
+Interpretation: Iteration 7 was accepted (0.0723 -> 0.0695), and both edits did roughly what the proposer's arithmetic predicted: the bounded collapse (c_min ~ .10) lifted Exp8 back to essentially exact (-.205 vs -.203, the reversed single-cue ladder is now the model's cleanest success) and nudged Exp6 .616 -> .661, while lam .50 -> .75 bought the Exp6 class-3 (3-vs-1) cells. The prescribed family is being honoured verbatim (always-integrate compressed numerosity vote, U-shaped salience over ABSOLUTE display rows, saturating majority + unanimity bonuses, silence/vbar-calibrated gap; the only out-of-family remnant is the small commitment branch, which has been in the accepted base for six iterations and I am not re-litigating). Nine of ten cells are within ~.09: Exp1 .106/.093, Exp5 .806/.820, Exp7 .013/.053, Exp8 -.205/-.203, Exp9 .453/.490, Exp10 .887/.850, Exp3 .455/.518, Exp4 .418/.508, Exp2 .858/.775, Exp6 .661/.841.
+
+The residual (~.056 squared) has, however, re-partitioned in an informative way. Exp6 is still the largest single cell (.032, ~57%), but it is no longer the only place with recoverable error: lam=.75 over-corrected Exp2 to .858 (real .775, squared .0069) — exactly the side-effect I flagged in iteration 6 — and Exp3/Exp4 both drifted DOWN this round (.470 -> .455 and .429 -> .418; combined squared .0120), because raising the confidence floor from .02 to .10 multiplied the effective read-out of the residual extremes-favouring drive in precisely those floored cells by ~5x. That is the key new structural fact: with c pinned at c_min in Exp3, Exp4, Exp7-both-classes and Exp6-class-2, the DRIVE term (not the silence term) is now what sets those cells, and the leaked parity gate mu*g(1)*S is what pushes Exp3/Exp4 below chance. The proposer's impossibility argument about separating Exp6-class-2 from Exp3/Exp7-low via f_sil is basically correct and I accept it; but it does not apply to the drive, and the drive is now the cheap lever.
+Rationale: ACCEPTED, so build on THIS candidate; but there is ~.015-.020 of clearly diagnosed, low-risk squared error outside Exp6 and it can be taken with two knob moves plus one interaction. Stay strictly inside the prescribed family (no new mechanism, no serial stop, no lexicographic component). Do not touch what is solved: absolute-position salience form, tau, mu, omega, the unanimity bonus, rho, eta/sil_k/sil_f0 (Exp8 is now exact — check it after, do not tune for it), beta, the commitment branch.
+
+1) TRIM lam BACK TO ~0.66-0.70 (midpoint, not a reversal). lam .50 -> .75 bought Exp6 class 3 but pushed Exp2 from .821 to .858, i.e. +.083 over real (.775) and now the second-largest residual. lam fires in exactly two places: Exp6 class 3 and Exp2's |dk|=2 conflict cells. At lam ~.68 Exp2 should land ~.83 (-.003 squared recovered) while Exp6 class 3 loses only ~.01-.015 in probability. I warned against the full .75 step last round and the data confirmed it; settle between the two flanking values rather than reverting to .50.
+
+2) TRIM THE PARITY LEAK TO sigma ~ 0.50-0.54 (g(1) ~ .13-.18). This is NOT a wash any more, and the proposer's earlier arithmetic against it was computed at c_min = .02. With the floor now at .10 the same drive change is read out ~5x more strongly in exactly the floored cells: Exp3 and Exp4 are both sitting ~.06-.09 BELOW chance because mu*g(1)*S still tilts them toward the extremes at c = c_min. Reducing the leak moves their drive toward 0, which pins them at ~.49-.51 (real .518/.508) — worth ~.010 squared between them. Collateral is small and checkable: Exp5 and Exp10's target cells are dk = 0 (g = 1, untouched — and Exp10 is +.037 high, so it can only help if anything spills); Exp6 class 2 is floored, so it barely notices; Exp7's two classes are both floored and move together, so the load effect stays ~0; the only genuine cost is Exp9 cell 8, worth ~.002.
+
+3) EXPLOIT THE INTERACTION: once (2) has flattened the drive in Exp3/Exp4, a modest further lift of the floor is nearly free there but pays in Exp6 class 2. Try c_min ~ .14-.17 (range [0.12, 0.18]) jointly with (2). Mechanism: p = sigmoid(beta*c_min*drive), so cells with drive ~ 0 (Exp3, Exp4, Exp7) stay at .50 regardless of the floor, while Exp6 class 2 (V clearly positive, extremes stronger relative to its mid cue) climbs from ~.52 to ~.56-.58 and pooled Exp6 to ~.68. Raising the floor was my/your last accepted edit, so this is reinforcement in the same direction, at a smaller step, and its Exp3/Exp4 cost is cancelled by (2). Instrument it: if Exp3 or Exp4 drops below .44, back c_min down to ~.12 rather than re-widening sigma.
+
+4) DO NOT re-attempt omega -> 1.0 plus a softened sigmoid. The proposer's inequality argument (Exp7's two load classes require omega/2 > f0 while Exp6-class-2 requires (1+2*omega)/6 < f0, which needs omega > 1) is sound, and the candidate that declined my prescription still beat the gate. Treat Exp6 class 2 as partially unreachable for this family and stop paying for it with Exp3/Exp4/Exp7; take Exp6's remaining headroom only from class 3 (via beta*c, not via lam, which is now capped by Exp2).
+
+Success criterion for the next iteration: loss < 0.0695 with Exp2 in [.78, .84], Exp3 >= .46, Exp4 >= .45, Exp6 >= .66, while HOLDING Exp1 in [.02,.16], Exp5 in [.76,.86], Exp7 in [-.05,+.12], Exp8 in [-.26,-.15], Exp9 in [.42,.55], Exp10 in [.80,.90]. If the joint sigma-trim + floor-lift cannot lift Exp3/Exp4 above .46 without dragging Exp6 below .64, take step (1) alone (the Exp2 trim is unconditionally positive) and ship.
+
+**Outcome of your advice:** iter 7 candidate loss=0.0695 -> iter 8 candidate loss=0.0767 -> the gate marked it REJECTED.
+
+### Iteration 8 (most recent)
+Verdict: regenerate
+Interpretation: The current candidate (iter 8) was REJECTED by the gate (0.0767 vs running-best 0.0695), and the per-cell decomposition shows clearly which of my three requested edits paid and which did not. (a) The lam trim (.75 -> .66) did what it was supposed to: Exp2 .858 -> .829 (real .775, squared .0069 -> .0029) and Exp1 .106 -> .090 (real .093, now essentially exact). That part is a genuine, if small, gain. (b) The sigma trim (.60 -> .52) plus the c_min raise (.10 -> .145) were jointly a net loss and, worse, they cancelled each other on their own declared targets: Exp3 moved .455 -> .456 (predicted +.006, delivered ~0) because the narrower leak reduced the drive while the higher floor multiplied whatever drive remained; Exp4 gained only +.020. Meanwhile the collateral was real and one-sided: Exp6 .661 -> .638 (squared .0324 -> .0412, the single biggest loss on the board), Exp9 .453 -> .433, Exp7 .013 -> -.010, Exp5 .806 -> .781, Exp8 -.205 -> -.183. Summing squared residuals: ~.056 (iter 7) -> ~.063 (iter 8), i.e. the sigma/c_min pair cost ~.008 and the lam trim recovered ~.001-.004.
+
+Structurally the picture is unchanged and now well understood. Nine of ten cells are within ~.09 of the human value and the family's signature phenomena are all reproduced by the prescribed mechanism (reversed single-cue ladder Exp8 ~ -.20; load invariance Exp7 ~ 0; 2-vs-2 extremes verdicts Exp5 .81 / Exp10 .89; conflict-tally following Exp2; TTB-dissociation Exp1). The residual is dominated by Exp6 (.032, ~57%), which splits into class 2 (|dk| = 1, hard-floored at c_min, p ~ .52-.54) and class 3 (|dk| = 2, c ~ .85, p ~ .79 against a human value near .84-.88). I accept the proposer's impossibility argument about class 2 (it is silence-identical to Exp3 and Exp7-low), so class 2 should be left alone. Class 3, however, is NOT exhausted: it is the only place in the battery where |dk| >= 2 coincides with both screen-extreme cues sitting on the majority side, and the current hard Gaussian parity gate (sigma = .60 gives g(2) = .004) switches display salience completely off there.
+Rationale: REJECTED by the gate, so this is forced; build on the UNCHANGED iter-7 base (lam .75, sigma .60, c_min .10) and do not re-apply iter 8's sigma trim + floor raise. My own advice history is explicit here: every LEAK-WIDENING / floor-raising step I recommended (iters 2, 4, 5, 6, 7-step-3) was accepted, and the one NARROWING step (iter 7-step-2, sigma .60 -> .52) was rejected. So: stop trimming the salience gate and stop moving c_min. Stay strictly inside the prescribed family (always-integrate compressed numerosity vote + U-shaped salience over ABSOLUTE display rows + saturating majority/unanimity bonuses + silence/vbar-calibrated gap); everything below is knob/shape level.
+
+1) ADD A SMALL FLOOR TO THE PARITY GATE AT |dk| >= 2 (this is the new, surgical lever; do it first). Replace g = exp(-dk^2/2 sigma^2) with g = max(exp(-dk^2/2 sigma^2), g_floor), g_floor in [0.08, 0.12], holding sigma = .60 so that g(0) = 1 and g(1) = .25 are ARITHMETICALLY IDENTICAL to the accepted base. Consequence: every cell that is at |dk| <= 1 is bit-for-bit unchanged \u2014 Exp3, Exp4, Exp7 (both load classes), Exp8's single-cue ladder, Exp9's cell 8, Exp6 class 2 \u2014 and every dk = 0 cell (Exp5, Exp10) is unchanged. Only |dk| >= 2 cells move, and there the sign is favourable: Exp6 class 3 (disc {0,1,2,5}, three agreeing cues including BOTH display ends against the mid heavyweight) has S \u2248 +2.2, so at mu ~ 1.8 and g_floor = .10 its drive gains ~ +0.40, lifting it from p ~ .79 to ~ .84 and pooled Exp6 from .661 to ~ .69 (squared .0324 -> ~.021, worth ~ +.011). Exp1's dissociation and agreement cells both get pushed in the direction that lowers the metric from .106 toward the real .093 (I checked the sign on trials 1 and 5), so it is a small bonus, not a cost. This also moves the model back TOWARD the arbiter's prescription, in which salience is never gated off at all.
+
+2) HOLD THE Exp2 COST WITH A MODEST lam TRIM (keep the one edit of iter 8 that worked, at the midpoint). The only real cost of step (1) is Exp2, whose conflict cells are also |dk| = 2 and whose salience sum favours the tally side (S \u2248 -0.6 to -0.8), adding ~ +.008-.015 to the metric. Set lam ~ 0.68 (between the base .75 and the rejected .66). Projected Exp2 ~ .84-.85 (real .775) \u2014 slightly better than the base .858 \u2014 while Exp6 class 3 loses only ~.015 of the gain from step (1). Do not go below lam ~ .66: at .66 the Exp6 loss (.0088) exceeded the Exp2 gain (.0040).
+
+3) FREEZE EVERYTHING ELSE. sigma back to .60, c_min back to .10, and leave rho, mu, tau, omega, eta, sil_k, sil_f0, beta, the unanimity bonus and the commitment branch exactly as in the accepted base. Exp8 (-.205 vs -.203), Exp7 (.013 vs .053), Exp5 (.806), Exp9 (.453) and Exp10 (.887) are all untouched by steps (1)-(2) by construction \u2014 say so explicitly in the next rationale and verify it in simulation rather than re-tuning for them. Accept Exp3 (.455) and Exp4 (.418) as they stand this round: iteration 8 demonstrated that they cannot be lifted by the sigma/c_min pair (the two effects cancel), and they are worth only ~.012 combined.
+
+Success criterion: loss < 0.0695 with Exp6 >= .69 and Exp2 <= .85, while HOLDING Exp1 in [.04,.14], Exp3 >= .45, Exp4 >= .41, Exp5 in [.78,.86], Exp7 in [-.05,+.10], Exp8 in [-.26,-.15], Exp9 in [.42,.55], Exp10 in [.80,.90]. If the gate floor drags Exp2 above .87 even at lam = .66, halve g_floor to ~.05 rather than touching sigma, c_min, or the silence term.
+
+**Outcome of your advice:** iter 8 candidate loss=0.0767 -> CURRENT candidate loss=0.0752 -> the gate marked it REJECTED.
+
+## RESPONSE FORMAT
+
+Return a JSON object with the following fields:
+- interpretation: Freeform analysis of the model simulation results on existing experiments and how they do or do not support the proposed model/theory.
+- verdict: Either 'regenerate' (regenerate a new model/theory) or 'continue' (keep the current model/theory).
+- rationale: If verdict='regenerate', why the current predict / policy / parameter-ranges should be revised. If verdict='continue', a sketch of why the current theory should be kept.
+
+
+## Response
+
+```json
+{
+  "interpretation": "The iter-9 candidate was REJECTED (0.0752 vs running-best 0.0695), but the decomposition says something important about *why*, and it is not what the proposer's arithmetic predicted. The g_floor edit was supposed to be arithmetically inert on every |dk|<=1 cell, yet Exp7 moved .013 -> -.023, Exp8 -.205 -> -.230, Exp3 .455 -> .448 and Exp1 .106 -> .064. Those cells cannot have changed deterministically, so they moved by *simulation noise* \u2014 and their between-subject variances confirm it (Exp7 var .035-.049 on a 4-trial-per-subject metric, Exp8 var .022, Exp1 var .006-.009). Meanwhile the intended targets did move in the intended direction: Exp6 .661 -> .674, Exp4 .418 -> .441, Exp5 .806 -> .819, Exp10 .887 -> .872. In fact the *squared* residual sum actually fell (.058 -> .055) while the reported loss rose, which tells us the aggregate loss is close to linear in |\u0394| (mean|\u0394| is .0555 for iter 7 and .0596 for iter 9, tracking the two losses almost exactly at a ~1.25 scale) and that per-iteration deltas of ~.005 in loss are inside the Monte-Carlo noise band. Substantively, the prescribed family is honoured and is doing very well: the reversed single-cue ladder (Exp8 ~ -.20 to -.23 vs real -.203), load-invariance (Exp7 ~ 0 vs real +.053, var .049), the 2-vs-2 screen-extreme verdicts (Exp5 .819/.820, Exp10 .872/.850), TTB-dissociation (Exp1 .064-.106 vs .093) and Exp9 (.443 vs .490) are all essentially solved. The *systematic*, iteration-invariant residual is now only four cells and has the same sign every round: Exp6 too LOW by ~.17 (class 2 floored at c_min, class 3 under-driven), Exp2 too HIGH by ~.09 (has been .82-.86 for four straight iterations against a real .775), and Exp3/Exp4 too LOW by ~.07 each (the model still lets the two screen-extreme cues beat the mid-list .95 where humans are at chance). Those four sum to ~.39 of the ~.60 total absolute error; everything else is noise.",
+  "verdict": "regenerate",
+  "rationale": "Rejected by the gate, so this is forced: build on the UNCHANGED iter-7 base. Two of my recent prescriptions have now been tested and failed the gate \u2014 the sigma-trim + c_min-raise pair (iter 8) and the g_floor + lam .68 pair (iter 9) \u2014 so I will not ask for either again. Stay strictly inside the prescribed family (always-integrate compressed numerosity vote + U-shaped salience over ABSOLUTE display rows + saturating majority/unanimity bonuses + silence/vbar-calibrated gap); everything below is knob level.\n\n0) CALIBRATE YOUR EXPECTATIONS TO THE NOISE FLOOR. The aggregate loss tracks mean|\u0394| almost exactly, and four metrics (Exp7, Exp8, Exp1, Exp9) have between-subject variance large enough that their simulated values wander \u00b1.03-.05 between identical-in-expectation parameterisations. Do NOT tune on those cells, and do NOT justify an edit by a projected .003 gain \u2014 it is unobservable. Only edits with an expected total |\u0394| improvement of >= .04 summed across the four systematic cells (Exp6, Exp2, Exp3, Exp4) are worth making.\n\n1) THE ONE LEVER THAT MOVES THREE SYSTEMATIC CELLS THE SAME WAY: a modest rho increase. Set rho to ~[0.78, 0.90], nominal ~0.83. Justification for the direction despite my earlier retreat: I have flanked this parameter at .90 (iter 3-4, harmful then) and .65-.70 (iter 4-5, accepted), so .83 is the midpoint, not an oscillation \u2014 and, crucially, the regime has changed since iter 4. With c now FLOORED at c_min = .10, Exp3, Exp4 and Exp6-class-2 are read out purely through the drive term and respond ~5x more strongly to any change in V than they did when c clipped to .02. Sharpening the validity grading (a) raises V for the mid-list .95 cue in Exp3/Exp4, pulling both from ~.45/.42 up toward .50 (expected +.04 to +.06 each, real .518/.508); (b) reduces tally-following in Exp2's 3-vs-1 conflict cells, pulling .858 down toward ~.81-.83 (real .775) \u2014 this is the first lever I have found that helps Exp2 WITHOUT the lam cut that costs Exp6; (c) leaves the dk=0 salience-decided cells (Exp5, Exp10) governed by mu*S, with only a mild extra tilt against the weak extremes in Exp10, which is +.037 high anyway and can absorb it.\n\n2) KEEP ONE SMALL lam TRIM, .75 -> ~0.70. This is the only component of iters 8 and 9 that paid in both runs (Exp2 .858 -> .829 at lam .66; Exp1 .106 -> .090). At .70 the Exp6-class-3 cost is ~.01 of probability while Exp2 gains ~.015 on top of the rho effect. Do not go below .66.\n\n3) FREEZE EVERYTHING ELSE, EXPLICITLY. sigma stays .60, c_min stays .10, NO g_floor (tested, rejected), and do not touch mu, tau, omega, eta, sil_k, sil_f0, beta, the unanimity bonus or the commitment branch. Exp8 (-.205), Exp7 (.013), Exp9 (.453) should be verified, not tuned; if rho=.83 pushes Exp8 above -.15 (the sharper grading partially offsets the vbar-driven ladder), back rho down to .78 rather than touching eta/sil_k.\n\n4) ACCEPT EXP6-CLASS-2 AS UNREACHABLE. Its silence signature is identical to Exp3's and Exp7-low's, and every attempt to buy it (three iterations running) has cost Exp3/Exp4/Exp7 more than it bought. Exp6's residual headroom should be treated as ~.06-.08, not .17, and should not be paid for out of the other three systematic cells.\n\nSuccess criterion: loss < 0.0695 with Exp3 >= .48, Exp4 >= .46, Exp2 <= .83, while HOLDING Exp6 >= .64, Exp5 in [.76,.86], Exp10 in [.80,.90], Exp8 in [-.28,-.15], Exp7 in [-.06,+.12], Exp1 in [.02,.16], Exp9 in [.42,.55]. If rho=.83 drags Exp6 below .62 or Exp10 below .80, settle at rho ~ .78 and take the Exp2/Exp3/Exp4 gain alone."
+}
+```
+
+## Usage
+
+```json
+{
+  "input_tokens": 48222,
+  "output_tokens": 10461
+}
+```

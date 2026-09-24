@@ -1,0 +1,714 @@
+# Round 9 — Theories
+
+**Verdict:** `new_theory` (slot 1 replaced)
+
+## Starting theories
+
+### slot 1 — `pi_7` — KILLED ✗
+
+**Description:** Anti-Validity Frugality with Diffuse Positional-Salience Heterogeneity (momentary-diffusion variant). People are one-reason decision makers: cues are consulted one at a time in descending subjective weight and the first strictly discriminating cue decides; no integration across cues (flat psychometric profile over tally margins). The population-central hierarchy is anti-validity (distrust-the-weakest, w = -validity). Each subject's weights are a continuous perturbation, w_j = -val_j + gamma*salience_j + A^3*(sigma_h*zeta_j + kappa*xi_j), where (i) salience_j is a positional gradient favoring early-listed experts with gamma drawn asymmetrically from [-0.05, +0.12] — a graded tilt, never a discrete primacy rule, bounded so it can flip nothing on the anchored designs that pin the anti-validity core; (ii) binding ambiguity A = 1 - |Spearman(position, validity)| enters CUBED, a steeply convex, gate-free gradient; and (iii) the idiosyncratic distortion is split into a small stable part (zeta_j, fixed per subject) and a large MOMENTARY part (xi_j, re-drawn every trial): under high binding ambiguity the consultation order is not merely idiosyncratic but diffuse — attention fluctuates from trial to trial, which keeps populations tight around chance-level conformity instead of spreading subjects into fixed opposing deciders. All distortion applies only when all advertised validities are distinct (exact ties anchor the distrust order). Noise is softmax(beta) over the binary winner score plus an independent lapse epsilon (implied follow p_f mean ~0.71, SD ~0.08); no discriminating cue yields exactly 0.5; validity ties are broken by a free per-subject tie-break (~80% early position); history is ignored.
+
+**Rationale:** Minimal-diff edit of the ACCEPTED base (loss 0.0915), addressing the critic's (A)-(E) with one structural addition my own moment audit shows is necessary. (A) PATHWAY VERIFICATION — the critic suspects zeta is silently zeroed. It is not: a zeta-zeroed model (pure anti-validity core at this p_f regime, mean ~0.71) produces an Exp-10 index near the pi_4 level (~590), while the simulation returns 241; moreover iter-1 (weaker sigma_h, linear A) gave 255 and iter-2 (nearly doubled sigma_h, A-squared) gave 241 — a SATURATED lever, not an inert one. I did remove the silent zeros fallback (it now raises), so any future shape mismatch fails loudly. (B) THE REAL Exp-10 DIAGNOSIS — the residual +124 is carried by the dispersion term: our per-subject var is 0.0134 vs observed 0.0041. With FIXED per-subject consultation orders, scrambling MAXIMIZES between-subject follow-rate dispersion (each subject's order deterministically flips or matches each cue pair, giving between-subject SD ~0.13-0.17); the observed SD 0.064 sits barely above the binomial floor (0.053 at ~90 trials). No recalibration of a fixed zeta — including the critic's suggested sigma_h [0.6,1.2] with zeta +/-1, which by my pair-flip calculation still lands near ~200 — can produce a tight, chance-centered population. The fix: split the distortion into a small STABLE part (sigma_h*zeta, exactly the critic's suggested range) plus a large MOMENTARY per-trial diffusion (kappa*xi, fresh every trial). This keeps every pooled-mean metric identical to the fixed-zeta version (means are linear in the noise distribution) while collapsing the between-subject Gini to the binomial floor plus a small stable component. Moment math on Exp 10 (A=0.857, A^3=0.63, kappa~10 -> per-cue noise std ~3.6): mean follow ~0.505, per-subject SD ~0.06 -> index ~100-135 (observed 116.6, var ~0.004) instead of 241. On Exp 12 (A^3=0.32, noise ~1.9): analytic full-diffusion follow = 0.535 vs observed 0.532. I steepened the gradient from A^2 to A^3 so that Exp 9 (A=0.23, A^3~0.012 -> noise ~0.08, close to its current ~0.15) stays anchored at its excellent current fit (0.416 vs 0.428); a linear or quadratic scaling at Exp-10-appropriate magnitude would over-scramble Exp 9 toward 0.5. (C) Exp 4 — adopted the critic's asymmetric gamma [-0.05, +0.12] verbatim: the floor sits above the anchored-design flip threshold (-0.0625) and the cap below the Exp-14 primacy threshold (+0.144), so Exp 14 stays exactly 0.000 with var 0 and Exp 7 keeps its recovered opposition while a positive tail partially restores the early-position lean the gamma tightening removed. (D) GATE RELAXATION REJECTED, with a cell-level audit: on Exp 8 (tied, A=0.77) all four margin-0 deciders ALREADY oppose the reversed hierarchy — the model sits at the family's maximum opposition (1-p_f ~ 0.27; observed -0.289 exceeds even that), so dispersion can only wash it toward 0; on Exp 13 (tied, A=0.91) the observed 0.150 lies BELOW the pure-opposition floor 1-p_f ~ 0.29, and noise drifts the metric UP toward 0.5; on Exp 7 dispersion washes the signed contrast toward 0, the wrong direction from -0.196 vs observed -0.311. Only Exp 5 would benefit, and it cannot outweigh three regressions; I also verified the tie-break is inert on the metric cells of Exps 5, 6, 7, 11 and 13. (E) p_f untouched (mean ~0.71, SD ~0.08): Exp 3 pins it at 0.727 and the de-conformity on Exps 10/12 now comes from decider diffusion, not response weakness. Acknowledged family limits left in place: Exps 13 and 7 (observed opposition beyond 1-p_f), Exp 5 (tied-design over-conformity, unfixable without the rejected gate relaxation), Exp 1 (TTB-following level pinned near 1-p_f). Expected net movement: Exp 10 from +124 to roughly 0 +/- 20, Exp 12 from +0.037 to ~0, Exp 4 recovery toward +0.04 if the gamma mechanism is as the critic's audit indicates, with Exps 2, 3, 5, 6, 8, 9, 11, 13, 14 preserved — comfortably below the accepted loss floor.
+
+**Parameters:**
+  - `beta`: `[0.5, 1.9]`
+  - `epsilon`: `[0.08, 0.24]`
+  - `gamma`: `[-0.05, 0.12]`
+  - `sigma_h`: `[0.6, 1.2]`
+  - `kappa`: `[8, 12]`
+  - `zeta`: `[(-1, 1)] * n_features`
+  - `tie_break`: `[0, 1]`
+  - `validities`: `validities`
+
+**`predict(parameters, stimulus, history)`:**
+```python
+def predict(parameters, state, history):
+    # Anti-Validity Frugality with Diffuse Positional-Salience Heterogeneity
+    # (momentary-diffusion variant).
+    #
+    # One-reason decision making: cues are consulted one at a time in
+    # DESCENDING subjective weight and the first strictly discriminating
+    # cue decides; no integration across cues (flat psychometric profile
+    # over tally margins).
+    #
+    # Subjective weights (continuous, per subject):
+    #     w_j = -val_j + gamma * salience_j
+    #            + A^3 * (sigma_h * zeta_j + kappa * xi_j)
+    #
+    # - ANTI-VALIDITY CORE: -val_j (distrust the weakest advertised
+    #   expert; consult ascending validity).
+    # - POSITIONAL SALIENCE: salience_j = (n-1-j)/(n-1) - 1/2, favoring
+    #   early-listed experts; gamma is drawn ASYMMETRICALLY from
+    #   [-0.05, +0.12]: the negative clamp sits above the anchored-design
+    #   flip threshold (-0.0625) and the positive cap below the primacy
+    #   type threshold (+0.144), so the tilt remains a graded perturbation
+    #   that can never manufacture spurious pure types while retaining a
+    #   partial early-position lean on anchored designs.
+    # - BINDING AMBIGUITY: A = 1 - |Spearman(display position, validity)|,
+    #   now entering CUBED. The steeply convex gradient keeps
+    #   low/moderate-ambiguity designs anchored (A^3 ~ 0.01-0.02) while
+    #   fully diffusing high-ambiguity all-distinct designs (A^3 ~ 0.3-0.6).
+    # - DIFFUSE HETEROGENEITY: the idiosyncratic distortion is split into
+    #   (a) a SMALL STABLE part, sigma_h * zeta_j (zeta fixed per subject,
+    #   zero-centered), and (b) a LARGE MOMENTARY part, kappa * xi_j,
+    #   where xi is RE-DRAWN EVERY TRIAL. Momentary consultation diffusion
+    #   is what makes high-ambiguity populations tight around chance-level
+    #   conformity: with fixed per-subject orders, scrambling MAXIMIZES
+    #   between-subject follow-rate dispersion, whereas the observed
+    #   population SD (~0.064 on the conformity-dispersion experiment)
+    #   sits barely above the binomial floor. Both parts are applied ONLY
+    #   when all advertised validities are distinct (exact ties anchor the
+    #   distrust order).
+    # NO reversal re-encoding, NO sigmoid gates, NO discrete component
+    # draws.
+    #
+    # Noise: softmax(beta) over the binary winner score mixed with an
+    # independent lapse epsilon (implied follow probability
+    # p_f = (1-eps)*sigmoid(beta) + eps/2, mean ~0.71, SD ~0.08).
+    # No discriminating cue -> exactly 0.5. History is ignored.
+    stim = np.asarray(state, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(
+            f"Expects a (2, n_features) stimulus; got shape {stim.shape}."
+        )
+    n_features = stim.shape[1]
+
+    val = np.asarray(parameters["validities"], dtype=float).ravel()
+    if val.shape[0] != n_features:
+        raise ValueError(
+            f"validities length {val.shape[0]} != n_features {n_features}."
+        )
+
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+    gamma = float(parameters["gamma"])
+    sigma_h = float(parameters["sigma_h"])
+    kappa = float(parameters["kappa"])
+    tie_break = float(parameters["tie_break"])
+
+    zeta = np.asarray(parameters["zeta"], dtype=float).ravel()
+    if zeta.shape[0] != n_features:
+        # NO silent zeros fallback: a shape mismatch means the entire
+        # heterogeneity mechanism would be silently disabled, so fail
+        # loudly instead (per the arbiter's diagnosis request).
+        raise ValueError(
+            f"zeta length {zeta.shape[0]} != n_features {n_features}."
+        )
+
+    # ---- helper: average-tie ranks ----
+    def avg_ranks(x):
+        n = x.shape[0]
+        srt = np.argsort(x, kind="stable")
+        ranks = np.empty(n, dtype=float)
+        i = 0
+        while i < n:
+            j = i
+            while j + 1 < n and x[srt[j + 1]] == x[srt[i]]:
+                j += 1
+            ranks[srt[i:j + 1]] = 0.5 * (i + j)  # 0-indexed average rank
+            i = j + 1
+        return ranks
+
+    # ---- positional-salience gradient (early-listed experts favored) ----
+    # Centered so the tilt is a pure graded perturbation: +0.5 at the
+    # first listed expert, -0.5 at the last, linear in between.
+    if n_features > 1:
+        sal = ((n_features - 1 - np.arange(n_features, dtype=float))
+               / (n_features - 1.0)) - 0.5
+    else:
+        sal = np.zeros(1, dtype=float)
+
+    # ---- binding ambiguity: A = 1 - |Spearman(position, validity)| ----
+    if n_features > 1:
+        ranks = avg_ranks(val)
+        pos_r = np.arange(n_features, dtype=float)
+        vp = pos_r - pos_r.mean()
+        vr = ranks - ranks.mean()
+        denom = np.sqrt(float((vp * vp).sum()) * float((vr * vr).sum()))
+        if denom > 1e-12:
+            rho = float((vp * vr).sum()) / denom
+        else:
+            # All validities tied: distrust order undefined.
+            rho = 0.0
+        ambiguity = 1.0 - abs(rho)
+    else:
+        ambiguity = 0.0
+
+    # ---- continuous subjective weights ----
+    w = -val + gamma * sal
+
+    # ---- diffuse idiosyncratic distortion (distinct lists only) ----
+    # Exact validity ties anchor the distrust order (no distortion);
+    # all-distinct lists degrade with the CUBE of binding ambiguity.
+    # The distortion is split into a small STABLE per-subject part
+    # (sigma_h * zeta) and a large MOMENTARY per-trial part (kappa * xi,
+    # xi re-drawn fresh on every call), so that high-ambiguity designs
+    # show tight, chance-centered conformity rather than fixed
+    # idiosyncratic deciders that spread the population apart.
+    distinct = (np.unique(val).shape[0] == n_features)
+    if distinct and ambiguity > 0.0:
+        amb3 = ambiguity * ambiguity * ambiguity
+        xi = np.random.uniform(-1.0, 1.0, size=n_features)
+        w = w + amb3 * (sigma_h * zeta + kappa * xi)
+
+    # Consult cues in DESCENDING subjective weight. np.lexsort uses the
+    # LAST key as primary. Exact ties in w are broken by the free
+    # per-subject tie_break parameter (population-consistent: ~80% of
+    # subjects break ties by early display position).
+    pos = np.arange(n_features)
+    secondary = pos if tie_break < 0.8 else (n_features - 1 - pos)
+    cue_order = np.lexsort((secondary, -w))
+
+    a, b = stim[0], stim[1]
+    winner = None
+    for j in cue_order:
+        if a[j] > b[j]:
+            winner = 0
+            break
+        if b[j] > a[j]:
+            winner = 1
+            break
+
+    n_opts = 2
+    if winner is None:
+        # No discriminating cue: pure guess (lapse mixing leaves a
+        # uniform unchanged).
+        return np.ones(n_opts) / float(n_opts)
+
+    scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])
+
+    # Numerically stable softmax over the binary winner score: the
+    # winner's probability is sigmoid(beta). Implied decider-follow
+    # probability p_f = (1-eps)*sigmoid(beta) + eps/2 has mean ~0.71
+    # with per-subject SD ~0.08 over the sampled (beta, epsilon) ranges.
+    z = beta * (scores - scores.max())
+    e = np.exp(z)
+    p_core = e / e.sum()
+
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / float(n_opts))
+```
+
+**`policy(probs)`:**
+```python
+def policy(probs):
+    probabilities = np.asarray(probs, dtype=np.float64)
+    probabilities = probabilities / probabilities.sum()  # guard against float drift
+    return np.random.choice(len(probabilities), p=probabilities)
+```
+
+
+### slot 2 — `pi_9` — SURVIVED ✓
+
+**Description:** Diffuse Mixture Frugality with Strong Interior-Gated Validity Leak (sub-linear coherence variant). People are one-reason decision makers: experts are consulted one at a time and the first strictly discriminating expert decides; no integration across cues, no history use, exact validity ties anchor the consultation order, and a trial with no discriminating expert yields exactly 0.5. The population-central hierarchy is anti-validity (distrust-the-weakest: consult ascending advertised validity). Three graded mechanisms modulate the core. (1) STRONG INTERIOR-GATED VALIDITY LEAK with SUB-LINEAR COHERENCE WEIGHTING: when the anti cascade's first discriminating expert carries a strictly interior validity (min + 0.10 < val < max - 0.10), the decision mixes toward the standard TTB (descending-validity) decider with probability q = rho_leak * sqrt(reversal_coherence) * gap_term, where gap_term is the range-normalized mean adjacent unique-validity gap. The sub-linear coherence exponent leaves fully reversal-coherent designs (coherence ~ 1) exactly on their calibrated anchor values while granting moderately coherent designs substantially more leak mass than the linear weighting did — capturing the empirical fact that leak toward the strongest expert is not confined to perfectly mirror-structured validity lists. (2) DIFFUSE HETEROGENEITY: w_j = -val_j + gamma*salience_j + A^3*(sigma_h*zeta_j + kappa*xi_j), with a small stable per-subject part (zeta) and a large momentary per-trial part (xi), applied only when all validities are distinct. (3) POSITIONAL-PRIMACY MINORITY, TIE-ANCHORED and STEEPLY THRESHOLD-GATED: the reading-order fallback fires only on designs that BOTH contain exact advertised-validity ties AND exhibit near-maximal binding ambiguity (A >= 0.80, linear ramp over 0.20, mixture weight capped at 0.35); all-distinct and monotone/anchored designs remain fully collapsed onto the anti-validity core. Response discipline is heterogeneous: softmax(beta) plus lapse epsilon with beta in [0.3, 2.0] and epsilon in [0.08, 0.30], giving pooled decider-follow ~0.69 with the wide between-subject spread that reproduces the follow-protection tail.
+
+**Rationale:** Minimal-diff edit of the running-best (iter-2) base following the critic's iteration-4 prescription exactly: change ONE thing whose expected effect exceeds the ~0.03 run-to-run noise floor, plus retain the one mechanism the critic explicitly confirmed. (1) THE ONE NEW KNOB — SUB-LINEAR COHERENCE WEIGHTING IN THE LEAK: q = rho_leak * coherence**0.5 * gap_term instead of rho_leak * coherence * gap_term, with rho_leak [0.85, 1.25] and the range-normalized gap_term unchanged. This is a pure normalization-scheme swap inside the arbiter's prescribed leak family. By construction it leaves the high-coherence anchors untouched (coherence ~ 1.0 on the leak-dip design Exp 17, the knife-edge designs Exps 4/1/3, so their near-perfect fits — Exp 17 at -0.198 vs -0.196 observed, Exp 10 at 118.8 vs 116.6 — are preserved), while moderately coherent designs gain leak mass toward the TTB decider: Exp 5 (coherence ~0.38 -> effective 0.62, ~+60% leak on its f4-carrier ladder cells) should pull its +0.06 over-prediction (0.672 vs 0.613 observed) down toward target; Exp 8 (coherence ~0.4-0.5) should deepen its negative misbound-decider contrast from -0.223 toward the observed -0.289; Exp 9/10 (coherence ~0.6 -> effective 0.77, ~+29%) get a small pull-down, with Exp 10's +2.3 overshoot acceptable down to ~110 per the critic's stated floor. (2) RETAINED: the steepened tie-anchored primacy gate from the (rejected) iter-3/4 candidates — threshold lowered from 0.85 to 0.80, ramp widened to /0.20, cap 0.35 — which the critic confirmed moved Exp 13 in the right direction in BOTH trial iterations (0.298 -> 0.268/0.271) without a real cost on Exp 15 (iter 3's 0.1256 with the same gate shows iter 4's 0.071 was Monte Carlo noise, not mechanism). Exp 13's design (ties, A ~ 0.91) now gets gate ~0.55 -> w_eff ~ 0.20 instead of ~0.15, pushing its value from ~0.30 toward ~0.27; the count-contrast design (all-distinct validities) keeps w_eff = 0 exactly, protecting Exp 15's recovered +0.12 contrast. (3) RESTORED VERBATIM: the base's response-discipline ranges (beta [0.3, 2.0], epsilon [0.08, 0.30]) — the discipline axis was sampled at three points in this loop (iters 2/3/4) and the base's setting is the empirical optimum; the coupled beta+epsilon moves of iters 3 and 4 were each rejected because their systematic effects were smaller than the run-to-run Monte Carlo noise on the high-ambiguity diffusion designs, so the discipline knob is renounced. (4) RENOUNCED EXPLICITLY, per the critic's structural diagnosis: Exp 7 (its validities contain nothing strictly inside the interior band (0.7, 0.85), so the leak is structurally gated off — ~-0.19 is the family bound vs -0.311 observed), Exp 6 (ties + zero binding ambiguity switch off every graded mechanism; all anti-validity-core theories over-predict it), Exp 13's residual (family floor ~0.25-0.27), and Exp 2's residual (partly noise). No fitted experiment is traded for these. The expected net effect is dominated by gains on Exps 5, 8, and 10 against at most small, monitorable costs on Exp 9 — a favorable trade under the aggregate L2 loss that should land at or below the 0.0739 floor.
+
+**Parameters:**
+  - `rho_leak`: `[0.85, 1.25]`
+  - `primacy_weight`: `[0.3, 0.45]`
+  - `gamma`: `[-0.05, 0.12]`
+  - `sigma_h`: `[0.6, 1.2]`
+  - `kappa`: `[8, 12]`
+  - `beta`: `[0.3, 2.0]`
+  - `epsilon`: `[0.08, 0.30]`
+  - `tie_break`: `[0, 1]`
+  - `zeta`: `[(-1, 1)] * n_features`
+  - `validities`: `validities`
+
+**`predict(parameters, stimulus, history)`:**
+```python
+def predict(parameters, state, history):
+    # Diffuse Mixture Frugality with Strong Interior-Gated Validity Leak
+    # (sub-linear coherence variant: sqrt(coherence) leak weighting,
+    # steepened tie-anchored primacy gate at A >= 0.80).
+    #
+    # One-reason decision making: experts consulted one at a time, first
+    # strictly discriminating expert decides; no integration across cues.
+    # Population-central hierarchy: ANTI-VALIDITY (ascending advertised
+    # validity; distrust the weakest expert).
+    #
+    # Mechanisms:
+    #   (1) STRONG INTERIOR-GATED VALIDITY LEAK: when the anti cascade's
+    #       first discriminating expert j* carries a strictly interior
+    #       validity (min+0.10 < val[j*] < max-0.10), mix toward the TTB
+    #       (descending-validity) decider with probability
+    #       q = rho_leak * coherence^0.5 * gap_term,
+    #       where gap_term = mean adjacent unique-validity gap NORMALIZED
+    #       by the validity range (vmax - vmin). The SUB-LINEAR coherence
+    #       exponent is the single change vs the accepted base: designs
+    #       with coherence ~ 1.0 (the leak anchors: leak-dip, knife-edge,
+    #       reversed-cascade designs) keep q unchanged (sqrt(1) = 1),
+    #       while moderately coherent designs gain leak mass — e.g.
+    #       coherence 0.38 -> effective 0.62 (+62%), coherence 0.6 -> 0.77
+    #       (+29%) — pulling their over-predicted decider-follow contrasts
+    #       down toward the observed values without touching the anchors.
+    #   (2) DIFFUSE HETEROGENEITY: w_j = -val_j + gamma*salience_j
+    #       + A^3*(sigma_h*zeta_j + kappa*xi_j), applied only when all
+    #       validities are distinct; zeta stable per subject, xi re-drawn
+    #       every trial.
+    #   (3) POSITIONAL-PRIMACY MINORITY, TIE-ANCHORED + STEEP-THRESHOLD-
+    #       GATED (retained from the iter-3/4 experiments, per the
+    #       critic's confirmation): the reading-order fallback fires ONLY
+    #       on designs that both contain exact validity ties AND have
+    #       near-maximal binding ambiguity (A >= 0.80, ramp (A-0.80)/0.20),
+    #       with the mixture weight capped at 0.35. All-distinct designs
+    #       and monotone/anchored designs keep the pure leak-augmented
+    #       anti-validity core.
+    #
+    # Response discipline: softmax(beta) over the binary winner score plus
+    # independent lapse epsilon, with the ACCEPTED BASE's ranges verbatim
+    # (beta in [0.3, 2.0], epsilon in [0.08, 0.30]) — the discipline axis
+    # was sampled at three points in this loop and the base's setting is
+    # the optimum; it is not touched again.
+    # No discriminating cue -> exactly 0.5. History is ignored.
+    stim = np.asarray(state, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(
+            f"Expects a (2, n_features) stimulus; got shape {stim.shape}."
+        )
+    n_features = stim.shape[1]
+
+    val = np.asarray(parameters["validities"], dtype=float).ravel()
+    if val.shape[0] != n_features:
+        raise ValueError(
+            f"validities length {val.shape[0]} != n_features {n_features}."
+        )
+
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+    gamma = float(parameters["gamma"])
+    sigma_h = float(parameters["sigma_h"])
+    kappa = float(parameters["kappa"])
+    rho_leak = float(parameters["rho_leak"])
+    primacy_weight = float(parameters["primacy_weight"])
+    tie_break = float(parameters["tie_break"])
+
+    zeta = np.asarray(parameters["zeta"], dtype=float).ravel()
+    if zeta.shape[0] != n_features:
+        raise ValueError(
+            f"zeta length {zeta.shape[0]} != n_features {n_features}."
+        )
+
+    n_opts = 2
+    a, b = stim[0], stim[1]
+
+    if not np.any(a != b):
+        # No discriminating cue: pure guess (lapse mixing leaves a
+        # uniform unchanged).
+        return np.ones(n_opts) / float(n_opts)
+
+    # ---- helper: average-tie ranks ----
+    def avg_ranks(x):
+        n = x.shape[0]
+        srt = np.argsort(x, kind="stable")
+        ranks = np.empty(n, dtype=float)
+        i = 0
+        while i < n:
+            j = i
+            while j + 1 < n and x[srt[j + 1]] == x[srt[i]]:
+                j += 1
+            ranks[srt[i:j + 1]] = 0.5 * (i + j)  # 0-indexed average rank
+            i = j + 1
+        return ranks
+
+    # ---- positional-salience gradient (early-listed experts favored) ----
+    if n_features > 1:
+        sal = ((n_features - 1 - np.arange(n_features, dtype=float))
+               / (n_features - 1.0)) - 0.5
+    else:
+        sal = np.zeros(1, dtype=float)
+
+    # ---- binding ambiguity: A = 1 - |Spearman(position, validity)| ----
+    if n_features > 1:
+        ranks = avg_ranks(val)
+        pos_r = np.arange(n_features, dtype=float)
+        vp = pos_r - pos_r.mean()
+        vr = ranks - ranks.mean()
+        denom = np.sqrt(float((vp * vp).sum()) * float((vr * vr).sum()))
+        if denom > 1e-12:
+            rho = float((vp * vr).sum()) / denom
+        else:
+            rho = 0.0
+        ambiguity = 1.0 - abs(rho)
+    else:
+        ambiguity = 0.0
+
+    # ---- reversal coherence: |Spearman(validity, validity[::-1])| ----
+    if n_features > 1:
+        ranks_v = avg_ranks(val)
+        ranks_r = avg_ranks(val[::-1])
+        dv = ranks_v - ranks_v.mean()
+        dr = ranks_r - ranks_r.mean()
+        denom2 = np.sqrt(float((dv * dv).sum()) * float((dr * dr).sum()))
+        if denom2 > 1e-12:
+            rho_rev = float((dv * dr).sum()) / denom2
+        else:
+            rho_rev = 0.0
+        coherence = abs(rho_rev)
+    else:
+        coherence = 0.0
+
+    # ---- mean adjacent gap over UNIQUE validities, RANGE-NORMALIZED ----
+    # gap_term = mean_gap / (vmax - vmin): a scale-free measure of how
+    # coarse the validity grid is, so coherent small-range designs are
+    # no longer starved of leak mass relative to wide-range designs.
+    uvals = np.unique(val)
+    distinct = (uvals.size == n_features)
+    has_ties = (uvals.size < n_features)
+    if uvals.size > 1:
+        mean_gap = float(np.mean(np.diff(uvals)))
+        v_range = float(uvals[-1] - uvals[0])
+        gap_term = mean_gap / v_range if v_range > 1e-12 else 0.0
+    else:
+        gap_term = 0.0
+
+    pos = np.arange(n_features)
+    secondary = pos if tie_break < 0.8 else (n_features - 1 - pos)
+
+    # ---- anti-validity weights with diffuse heterogeneity ----
+    # Exact validity ties anchor the distrust order (no distortion);
+    # all-distinct lists degrade with the CUBE of binding ambiguity.
+    # Small stable part (sigma_h * zeta) + large momentary part
+    # (kappa * xi, re-drawn fresh on every trial).
+    w = -val + gamma * sal
+    if distinct and ambiguity > 0.0:
+        amb3 = ambiguity * ambiguity * ambiguity
+        xi = np.random.uniform(-1.0, 1.0, size=n_features)
+        w = w + amb3 * (sigma_h * zeta + kappa * xi)
+    order_anti = np.lexsort((secondary, -w))
+
+    def cascade(order):
+        for j in order:
+            if a[j] > b[j]:
+                return 0
+            if b[j] > a[j]:
+                return 1
+        return None
+
+    winner_anti = cascade(order_anti)
+
+    # ---- this trial's anti-validity carrier (for the leak gate) ----
+    j_star = None
+    for j in order_anti:
+        if a[j] != b[j]:
+            j_star = int(j)
+            break
+
+    def score_prob(winner):
+        scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])
+        z = beta * (scores - scores.max())
+        e = np.exp(z)
+        return e / e.sum()
+
+    # Start from the (momentary) anti-validity decider.
+    p = score_prob(winner_anti)
+
+    # ---- POSITIONAL-PRIMACY MINORITY (tie-anchored, steep-threshold gate) ----
+    # The reading-order fallback is elicited ONLY when the design BOTH
+    # contains exact advertised-validity ties AND sits in the near-maximal
+    # binding-ambiguity regime (A >= 0.80, linear ramp over 0.20). This is
+    # the steepened gate confirmed by the critic: it lowered the
+    # anti-misbound-decider follow (Exp 13) in both trial iterations
+    # without a real cost on the count-vs-primacy contrast (Exp 15),
+    # whose all-distinct validities keep w_eff = 0 exactly.
+    if has_ties and ambiguity >= 0.80:
+        gate = min(1.0, max(0.0, (ambiguity - 0.80) / 0.20))
+    else:
+        gate = 0.0
+    w_eff = min(primacy_weight * gate, 0.35)
+    if w_eff > 0.0:
+        winner_prim = cascade(pos)  # earliest-listed expert first
+        if winner_prim is not None:
+            p = (1.0 - w_eff) * p + w_eff * score_prob(winner_prim)
+
+    # ---- STRONG INTERIOR-GATED VALIDITY LEAK ----
+    # Fires only when the anti cascade's carrier is strictly interior:
+    # min + 0.10 < val[j*] < max - 0.10. Weakest-carrier and near-top
+    # carrier trials keep the leak OFF.
+    # SINGLE CHANGE vs the accepted base: the coherence factor enters
+    # SUB-LINARLY (coherence**0.5) instead of linearly. High-coherence
+    # anchor designs are untouched by construction (sqrt(1) = 1);
+    # moderately coherent designs gain leak mass, pulling their
+    # over-predicted decider-follow contrasts toward the observed values.
+    if j_star is not None and n_features > 1:
+        vmin = float(val.min())
+        vmax = float(val.max())
+        if (vmin + 0.10) < val[j_star] < (vmax - 0.10):
+            q = rho_leak * (coherence ** 0.5) * gap_term
+            # Numerical validity clamp only (keeps mixture weights proper
+            # probabilities on extreme small-n designs); far above the
+            # substantive target range on the leak-dip design.
+            q = min(max(q, 0.0), 0.75)
+            if q > 0.0:
+                order_ttb = np.lexsort((secondary, -val))
+                winner_ttb = cascade(order_ttb)
+                if winner_ttb is not None:
+                    p = (1.0 - q) * p + q * score_prob(winner_ttb)
+
+    # ---- heterogeneous response discipline: softmax + lapse ----
+    # (base ranges verbatim: beta [0.3, 2.0], epsilon [0.08, 0.30])
+    return (1.0 - epsilon) * p + epsilon * (np.ones(n_opts) / float(n_opts))
+```
+
+**`policy(probs)`:**
+```python
+def policy(probs):
+    probabilities = np.asarray(probs, dtype=np.float64)
+    probabilities = probabilities / probabilities.sum()  # guard against float drift
+    return np.random.choice(len(probabilities), p=probabilities)
+```
+
+
+## Replacement
+
+### `pi_10` → slot 1 (via `new_theory`)
+
+**Description:** Band-Gated Graded-Leak Anti-Validity Frugality with Anchored-Order Sharpening (recalibrated tie-band variant). People are one-reason decision makers: experts are consulted one at a time and the first strictly discriminating expert decides; no integration across cues, no history use. The population-central hierarchy is ANTI-VALIDITY (distrust-the-weakest: consult ascending advertised validity), anchored exactly when advertised validities contain exact ties. Four graded mechanisms modulate the core. (1) DIFFUSE HETEROGENEITY: on all-distinct designs, w_j = -val_j + gamma*salience_j + A^3*(sigma_h*zeta_j + kappa*xi_j) with a stable per-subject part (zeta) and a momentary per-trial part (xi), gated by the cube of binding ambiguity A. (2) GRADED VALIDITY-RESPECTING LEAK: on trials whose anti-validity carrier is not a validity extreme, mix toward the TTB decider with q = rho_leak * (1 - (extremity/w_ext)^2) * (mean unique validity gap / range)^2. (3) ANTI-MISBOUND OPPOSITION MINORITY, band-gated as an inverted-U in binding ambiguity, now with a DECOUPLED, HEAVIER tie-list mass and an EARLIER tie down-ramp: the reversed-position re-encoding (w_j = -val[n-1-j]) is a mid-scrambling phenomenon — distinct lists rise over A in [0.35, 0.55] and fall over [0.72, 0.86] at ceiling 0.30 (protecting Exps 9/10/12/15/16); tie-anchored lists rise over [0.50, 0.70] at a raised ceiling am_tie_mass in [0.36, 0.44] and fall over [0.74, 0.86], so that the mid-ambiguity tie designs (A ~ 0.59-0.78) that demand opposition mass get it at near-full strength while the high-ambiguity tie designs (Exp 5, A = 0.826) have their gate cut back to ~0.28 and the doubly-anchored maximal-scrambling designs (Exps 11/13, A = 0.912) stay fully behind the ramp. (4) ANCHORED-ORDER SHARPENING: on tie-anchored designs with near-maximal scrambling (A >= 0.84), the doubly-anchored distrust reading is executed with sharply heightened consistency (beta scaled up by 1 + b_anchor, lapse shrunk by 65% at full gate). Response discipline elsewhere: softmax(beta) + lapse(epsilon), beta in [0.2, 2.2], epsilon in [0.06, 0.30]. No discriminating cue yields exactly 0.5.
+
+**Rationale:** Minimal-diff edit of the accepted iter-2 base implementing the critic's iter-4 prescription exactly: fix the tie-band SHAPE, not the mechanism family. I first computed binding ambiguity A exactly (average-rank Spearman, the code's own formula) for every tie-anchored design before fixing endpoints, as instructed: Exp 5 = 0.826, Exp 8 = 0.784, Exp 7 = 0.624, Exp 19 ~ 0.59, Exps 11/13 = 0.912, Exps 6/17/18/20 <= 0.19. (A) EARLIER TIE DOWN-RAMP: [0.86, 0.91] -> [0.74, 0.86] (the critic's alternative bracket). At Exp 5's A=0.826 this yields gate = 1 - (0.826-0.74)/0.12 = 0.28, so with mass 0.40 the effective minority mass is ~0.11 — the level at which iter-2 fit Exp 5 nearly exactly (+0.011) — recovering the ~0.09 of error the late ramp introduced in iter-4 (0.5267 vs real 0.6133). Exp 8 (A=0.784) keeps gate 0.63 and Exp 7 (A=0.624) keeps gate 0.62, preserving or mildly improving their opposition mass; empirical sensitivity checks show Exp 8 was insensitive to tie mass in this region (0.30 vs 0.33 mass gave -0.200 vs -0.193), so the modest gate reduction there is costless. Crucially, Exps 11/13 (A=0.912) sit fully behind the new ramp (gate 0), so the anchored-order sharpening and the Exp 13 anchor (0.1508, real 0.1500) are untouched. (B) RAISED, DECOUPLED TIE CEILING: new parameter am_tie_mass in [0.36, 0.44] (mean 0.40) applies only to tie-anchored lists; distinct lists keep the verbatim 0.30 ceiling so Exps 9/10/12/15/16 are protected by construction. With the up-ramp [0.50, 0.70] unchanged from iter-4, Exp 19's effective mass rises to the interpolation point between iter-2 (-0.098 at low mass) and iter-3 (-0.325 at mass 0.35), targeting the real -0.1996; Exp 7 gains opposition mass in the direction its iter-4 movement confirmed (-0.171 -> -0.197 toward real -0.3107). (C) Everything else is verbatim from the accepted base: the graded leak (Exps 17/20/12 anchors at or near exact), the diffuse heterogeneity, the distinct-list band, the sharpening, and the beta/epsilon ranges (pinned by Exps 17/18/20). Per the critic's guards, I do not chase Exp 1 (distinct, A~0, outside every gate) and accept any small Exp 8 residual rather than re-widening the band and re-breaking Exp 5. Expected net effect versus the rejected iter-4 (loss 0.0625): Exp 5 recovers ~+0.06-0.08 of error, Exp 19 deepens ~0.03-0.06, Exp 7/8 improve slightly, and all guard experiments are untouched by construction — enough to beat the 0.0611 floor.
+
+**Parameters:**
+  - `beta`: `[0.2, 2.2]`
+  - `epsilon`: `[0.06, 0.30]`
+  - `gamma`: `[-0.05, 0.12]`
+  - `sigma_h`: `[0.6, 1.2]`
+  - `kappa`: `[8, 12]`
+  - `rho_leak`: `[1.5, 2.3]`
+  - `w_ext`: `[0.55, 0.95]`
+  - `am_flag`: `[0, 1]`
+  - `am_tie_mass`: `[0.36, 0.44]`
+  - `b_anchor`: `[1.4, 2.2]`
+  - `tie_break`: `[0, 1]`
+  - `zeta`: `[(-1, 1)] * n_features`
+  - `validities`: `validities`
+
+**`predict(parameters, stimulus, history)`:**
+```python
+def predict(parameters, state, history):
+    # Band-Gated Graded-Leak Anti-Validity Frugality with Anchored-Order
+    # Sharpening (recalibrated tie-band variant). Minimal-diff edit of the
+    # accepted iter-2 base addressing the iter-4 critic feedback.
+    #
+    # CHANGES vs the accepted base (everything else verbatim):
+    #   (a) TIE-LIST MINORITY MASS DECOUPLED AND RAISED: a new per-subject
+    #       parameter am_tie_mass in [0.36, 0.44] replaces the shared 0.30
+    #       ceiling for tie-anchored lists only (distinct lists keep 0.30
+    #       verbatim, protecting Exps 9/10/12/15/16). The tie up-ramp is
+    #       left-shifted to [0.50, 0.70] so the mid-ambiguity tie designs
+    #       that demand opposition mass (Exp 19 A~0.59-0.66, Exp 7
+    #       A=0.62) sit deep inside the band.
+    #   (b) EARLIER TIE DOWN-RAMP: [0.86, 0.91] -> [0.74, 0.86]. The
+    #       iter-4 regression on Exp 5 (0.5267 vs real 0.6133) was caused
+    #       by the late down-ramp leaving Exp 5's A=0.826 in the fully
+    #       saturated region (effective mass ~0.33). With the ramp now
+    #       bracketing the gap between Exp 8's A=0.784 (needs full mass)
+    #       and Exp 5's A=0.826 (needs gate ~0.25-0.30), Exp 5's gate
+    #       falls to ~0.28 -> effective mass ~0.11 (its iter-2 near-exact
+    #       level), while Exps 7/8 keep gate 0.6-1.0. Exps 11/13 (A=0.912)
+    #       remain fully behind the ramp (gate 0), so the sharpening and
+    #       the Exp 13 anchor are untouched.
+    # The leak, the diffuse heterogeneity, the tie anchoring, the exact
+    # 0.5 on full ties, the distinct-list band, the anchored-order
+    # sharpening, and the response-discipline ranges are retained
+    # verbatim from the accepted base.
+    stim = np.asarray(state, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(
+            f"Expects a (2, n_features) stimulus; got shape {stim.shape}."
+        )
+    n_features = stim.shape[1]
+
+    val = np.asarray(parameters["validities"], dtype=float).ravel()
+    if val.shape[0] != n_features:
+        raise ValueError(
+            f"validities length {val.shape[0]} != n_features {n_features}."
+        )
+
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+    gamma = float(parameters["gamma"])
+    sigma_h = float(parameters["sigma_h"])
+    kappa = float(parameters["kappa"])
+    rho_leak = float(parameters["rho_leak"])
+    w_ext = float(parameters["w_ext"])
+    am_flag = float(parameters["am_flag"])
+    am_tie_mass = float(parameters["am_tie_mass"])
+    tie_break = float(parameters["tie_break"])
+    b_anchor = float(parameters["b_anchor"])
+
+    zeta = np.asarray(parameters["zeta"], dtype=float).ravel()
+    if zeta.shape[0] != n_features:
+        raise ValueError(
+            f"zeta length {zeta.shape[0]} != n_features {n_features}."
+        )
+
+    n_opts = 2
+    a, b = stim[0], stim[1]
+
+    if not np.any(a != b):
+        # No discriminating cue: pure guess (lapse mixing leaves a
+        # uniform unchanged).
+        return np.ones(n_opts) / float(n_opts)
+
+    # ---- helper: average-tie ranks ----
+    def avg_ranks(x):
+        n = x.shape[0]
+        srt = np.argsort(x, kind="stable")
+        ranks = np.empty(n, dtype=float)
+        i = 0
+        while i < n:
+            j = i
+            while j + 1 < n and x[srt[j + 1]] == x[srt[i]]:
+                j += 1
+            ranks[srt[i:j + 1]] = 0.5 * (i + j)  # 0-indexed average rank
+            i = j + 1
+        return ranks
+
+    # ---- positional-salience gradient (early-listed experts favored) ----
+    if n_features > 1:
+        sal = ((n_features - 1 - np.arange(n_features, dtype=float))
+               / (n_features - 1.0)) - 0.5
+    else:
+        sal = np.zeros(1, dtype=float)
+
+    # ---- binding ambiguity: A = 1 - |Spearman(position, validity)| ----
+    if n_features > 1:
+        ranks = avg_ranks(val)
+        pos_r = np.arange(n_features, dtype=float)
+        vp = pos_r - pos_r.mean()
+        vr = ranks - ranks.mean()
+        denom = np.sqrt(float((vp * vp).sum()) * float((vr * vr).sum()))
+        if denom > 1e-12:
+            rho = float((vp * vr).sum()) / denom
+        else:
+            rho = 0.0
+        ambiguity = 1.0 - abs(rho)
+    else:
+        ambiguity = 0.0
+
+    uvals = np.unique(val)
+    distinct = (uvals.size == n_features)
+
+    vmin = float(val.min())
+    vmax = float(val.max())
+    vrange = vmax - vmin
+
+    # ---- range-normalized validity-gap structure (squared) ----
+    if uvals.size > 1 and vrange > 1e-12:
+        mean_gap = float(np.mean(np.diff(uvals)))
+        gap_term = (mean_gap / vrange) ** 2
+    else:
+        gap_term = 0.0
+
+    pos = np.arange(n_features)
+    secondary = pos if tie_break < 0.8 else (n_features - 1 - pos)
+
+    def cascade(order):
+        for j in order:
+            if a[j] > b[j]:
+                return 0
+            if b[j] > a[j]:
+                return 1
+        return None
+
+    # ---- ANCHORED-ORDER SHARPENING (verbatim from base) ----
+    # Fires only on tie-anchored (non-distinct) designs whose binding
+    # ambiguity is near maximal (ramp over [0.84, 0.92]): the doubly
+    # anchored distrust reading is executed with sharply heightened
+    # consistency. beta is scaled up, the lapse shrunk toward zero.
+    if (not distinct) and n_features > 1:
+        anchor_gate = min(1.0, max(0.0, (ambiguity - 0.84) / 0.08))
+    else:
+        anchor_gate = 0.0
+    beta_eff = beta * (1.0 + b_anchor * anchor_gate)
+    epsilon_eff = epsilon * (1.0 - 0.65 * anchor_gate)
+
+    def score_prob(winner):
+        scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])
+        z = beta_eff * (scores - scores.max())
+        e = np.exp(z)
+        return e / e.sum()
+
+    # ---- ANTI-MISBOUND OPPOSITION MINORITY (band-gated, recalibrated) ----
+    # Inverted-U gate in binding ambiguity. Distinct lists: unchanged
+    # verbatim (up over [0.35, 0.55], down over [0.72, 0.86], ceiling
+    # 0.30). Tie-anchored lists: up-ramp left-shifted to [0.50, 0.70]
+    # with a RAISED, DECOUPLED ceiling am_tie_mass in [0.36, 0.44], and
+    # the down-ramp moved earlier to [0.74, 0.86] so that Exp 5's
+    # A = 0.826 lands mid-ramp (gate ~0.28) instead of in the saturated
+    # region, while Exps 11/13 (A = 0.912) stay fully behind the ramp.
+    if n_features > 1:
+        if distinct:
+            up = min(1.0, max(0.0, (ambiguity - 0.35) / 0.20))
+            dn = min(1.0, max(0.0, (ambiguity - 0.72) / 0.14))
+            am_mass = 0.30
+        else:
+            up = min(1.0, max(0.0, (ambiguity - 0.50) / 0.20))
+            dn = min(1.0, max(0.0, (ambiguity - 0.74) / 0.12))
+            am_mass = am_tie_mass
+        am_gate = up * (1.0 - dn)
+    else:
+        am_gate = 0.0
+        am_mass = 0.30
+    if am_gate > 0.0 and am_flag < am_mass * am_gate:
+        # Consult ascending reversed-position validity: w_j = -val[n-1-j],
+        # consulted in descending subjective weight (same lexsort
+        # convention as every other order in this theory).
+        w_am = -val[::-1]
+        order_am = np.lexsort((secondary, -w_am))
+        winner_am = cascade(order_am)
+        if winner_am is None:
+            return np.ones(n_opts) / float(n_opts)
+        p_am = score_prob(winner_am)
+        return (1.0 - epsilon_eff) * p_am \
+            + epsilon_eff * (np.ones(n_opts) / float(n_opts))
+
+    # ---- anti-validity core with diffuse heterogeneity ----
+    # Exact validity ties anchor the distrust order (no distortion);
+    # all-distinct lists degrade with the CUBE of binding ambiguity.
+    # Small stable part (sigma_h * zeta) + large momentary part
+    # (kappa * xi, re-drawn fresh every trial).
+    w = -val + gamma * sal
+    if distinct and ambiguity > 0.0:
+        amb3 = ambiguity * ambiguity * ambiguity
+        xi = np.random.uniform(-1.0, 1.0, size=n_features)
+        w = w + amb3 * (sigma_h * zeta + kappa * xi)
+    order_anti = np.lexsort((secondary, -w))
+    winner_anti = cascade(order_anti)
+
+    if winner_anti is None:
+        return np.ones(n_opts) / float(n_opts)
+
+    p = score_prob(winner_anti)
+
+    # ---- GRADED VALIDITY-RESPECTING LEAK (verbatim from base) ----
+    if n_features > 1 and vrange > 1e-12:
+        j_star = None
+        for j in order_anti:
+            if a[j] != b[j]:
+                j_star = int(j)
+                break
+        if j_star is not None:
+            ext = abs(val[j_star] - 0.5 * (vmin + vmax)) / (0.5 * vrange)
+            ramp = 1.0 - (ext / w_ext) ** 2
+            if ramp > 0.0:
+                q = rho_leak * ramp * gap_term
+                q = min(max(q, 0.0), 0.60)
+                if q > 0.0:
+                    order_ttb = np.lexsort((secondary, -val))
+                    winner_ttb = cascade(order_ttb)
+                    if winner_ttb is not None:
+                        p = (1.0 - q) * p + q * score_prob(winner_ttb)
+
+    # ---- heterogeneous response discipline: softmax + lapse ----
+    return (1.0 - epsilon_eff) * p \
+        + epsilon_eff * (np.ones(n_opts) / float(n_opts))
+```
+
+**`policy(probs)`:**
+```python
+def policy(probs):
+    probabilities = np.asarray(probs, dtype=np.float64)
+    probabilities = probabilities / probabilities.sum()  # guard against float drift
+    return np.random.choice(len(probabilities), p=probabilities)
+```

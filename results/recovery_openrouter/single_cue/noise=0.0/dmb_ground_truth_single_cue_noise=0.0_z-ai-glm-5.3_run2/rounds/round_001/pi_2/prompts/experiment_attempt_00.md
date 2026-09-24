@@ -1,0 +1,463 @@
+# experiment_attempt_00
+
+## System Prompt
+
+You are a renowned cognitive scientist designing an experiment in the Decision Making (Binary Features) domain.
+
+Your goal is to be an adversarial collaborator: propose a design whose outcomes would be predicted by your advocated theory but NOT by the competing theory. Both are provided below.
+
+A useful proposal targets a *quantitative* dissociation between the two theories — how they respond differently to specific stimuli in addition to differences in overall performance.
+
+
+## User Prompt
+
+## EXPERIMENTAL DOMAIN
+Subjects repeatedly choose between two fictitious products, A and B. Each option is described by a vector of binary expert ratings (each 0 or 1). Every experiment fixes its own feature count (via `validities` length) and per-expert validities; both are LLM-proposed. The validities are communicated to the subject in the instructions. Subjects pick whichever product they believe is of higher quality. There is no trial-by-trial correctness feedback.
+
+A multi-attribute decision-making experiment. On each trial the subject sees two options (A, B), each described by `n_features` integer expert ratings (`n_features` is set by the length of `validities` you propose). Choose `validities` — one per feature, each in [0.5, 1.0], order free — to fix each expert's advertised accuracy; subjects are told these values up front. Then choose `trial_a_ratings/trial_b_ratings` (each rating value in [0, 1]) so that the intended decision-making theories make distinguishable predictions: avoid degenerate pairs where every theory agrees, and prefer pairs that maximally dissociate the candidate theories. Validities and the trial ratings together define the design; they are fixed across all trials in this experiment. No trial-by-trial correctness feedback. The total number of trials per subject is held at roughly 96: each unique pair is repeated K = max(1, 96 // n_unique_pairs) times in an independently-randomized order per subject.
+
+Subjects see the following instructions:
+In this experiment you will repeatedly choose between two fictitious products, A and B. On every trial you will see `n_features` expert ratings for each product (the number of experts is fixed across all trials and is set by the length of `validities`).
+
+Each rating is an integer in [0, 1]. The ratings are displayed as a horizontal filled bar with the numeric value (e.g. "0/1") shown next to it. Higher = more positive.
+
+The same experts (in the same order) provide ratings for both products on every trial. Each expert's accuracy (their validity expressed as a percentage, e.g. "Expert 1 (80%)") is shown next to their rating on every trial AND is also listed up front in an "Expert accuracies" panel.
+
+On each trial, decide which product is of higher quality and press A for product A or B for product B. There is no time limit and no feedback. Note that for the first ~`min_rt_ms` of each trial the answer prompt is hidden and the keys are locked, so subjects first see the full ratings and can answer once the A / B prompt appears — design pairs that actually require comparing the ratings.
+
+Total trials per subject is roughly `MAX_TRIALS`: each unique pair you propose is repeated `K = max(1, MAX_TRIALS // n_unique_pairs)` times in an independently-randomized order per subject.
+
+## ADVOCATED THEORY
+**Description:** People compare two options by counting, across all features, how often one option has a higher value than the other. The option that wins on more features is chosen. Tallying discards cardinal magnitudes — only the sign of each feature-wise comparison matters — so the heuristic is robust to monotone rescaling of individual features and cannot be swayed by a single large feature difference in the way Equal-Weight can. Ties on an individual feature contribute nothing to either count: that cue is simply treated as uninformative for the pair. No feature is privileged, in contrast to Take The Best; every cue contributes equally to the tally. When the two counts are equal the heuristic has no basis for preference and the learner must guess. Response noise enters through a softmax over the two tallies with inverse temperature beta (interpolating between fully deterministic choice at large beta and uniform guessing at beta = 0), plus an independent lapse that with probability epsilon replaces the softmax output with a uniform pick over the two options.
+
+
+**Parameters:**
+- beta: [0.1, 20.0]
+- epsilon: [0.0, 0.5]
+
+**`predict source code`:**
+```python
+def predict(parameters, stimulus, history):
+    # Paper-faithful Tallying heuristic (Dawes 1979; Gigerenzer &
+    # Goldstein 1999). Stimulus is the pair of option feature vectors
+    # for the current trial: array-like of shape (2, n_features),
+    # with row 0 = option A, row 1 = option B. History is ignored.
+    stim = np.asarray(stimulus, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(
+            f"Tallying expects a (2, n_features) stimulus; got shape {stim.shape}."
+        )
+
+    a, b = stim[0], stim[1]
+    # Count strict feature-wise wins; ties contribute to neither option.
+    a_wins = float(np.sum(a > b))
+    b_wins = float(np.sum(b > a))
+    scores = np.array([a_wins, b_wins])
+
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+
+    # Softmax with max-subtraction for numerical stability. When
+    # a_wins == b_wins the softmax is exactly uniform regardless of
+    # beta, which is the correct behavior for an undiscriminating
+    # tally.
+    z = beta * (scores - scores.max())
+    e = np.exp(z)
+    p_core = e / e.sum()
+
+    n_opts = p_core.shape[0]
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+```
+
+**`policy source code`:**
+```python
+def policy(probabilities):
+    probabilities = probabilities / probabilities.sum()  # Ensure valid probabilities.
+    return np.random.choice(len(probabilities), p=probabilities)
+```
+
+
+## COMPETING THEORY
+**Description:** Reversed-Hierarchy Frugality (misbinding TTB). People are one-reason decision makers: they consult cues one at a time and let the first strictly discriminating cue decide, ignoring all lower cues and all magnitude information. However, the subjective cue hierarchy is ANTI-correlated with the instructed validities: subjects misbind the communicated validity list to feature positions (binding the highest validity to the last-presented feature), so the cascade effectively runs in ascending true validity (kappa = 1, full misbinding). When no cue discriminates, the model guesses uniformly. Response noise enters through a softmax with inverse temperature beta over the binary winner score, plus an independent lapse epsilon mixing in a uniform choice. Because no integration across cues occurs, the model predicts a flat choice profile across tally margins (zero psychometric slope), in direct opposition to Tallying's graded curve. The noise regime is moderate: the cascade-follow probability p = (1-eps)*sigmoid(beta) + eps/2 sits near 0.60, matching the human follow rate implied by both experiments.
+
+**Parameters:**
+- beta: [0.45, 0.55]
+- epsilon: [0.11, 0.15]
+- kappa: {1.0}
+- validities: validities
+
+**`predict source code`:**
+```python
+def predict(parameters, state, history):
+    # Reversed-Hierarchy Frugality: one-reason decision making (TTB
+    # cascade) run over a SUBJECTIVE cue hierarchy that is
+    # anti-correlated with the instructed validities. Subjects
+    # misbind the communicated validity list to feature positions
+    # (highest validity bound to the last-presented feature), so the
+    # cascade effectively consults cues in ascending true validity.
+    #
+    # Stimulus: array-like of shape (2, n_features), row 0 = option A,
+    # row 1 = option B. History is ignored (no feedback in this task).
+    stim = np.asarray(state, dtype=float)
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(
+            f"Expects a (2, n_features) stimulus; got shape {stim.shape}."
+        )
+    n_features = stim.shape[1]
+
+    val = np.asarray(parameters["validities"], dtype=float)
+    if val.shape[0] != n_features:
+        raise ValueError(
+            f"validities length {val.shape[0]} != n_features {n_features}."
+        )
+
+    # Subjective validities: mixture of the instructed vector and its
+    # end-to-end reversal. kappa = 0 -> instructed hierarchy;
+    # kappa = 1 -> fully reversed hierarchy (near-complete misbinding).
+    kappa = float(parameters["kappa"])
+    w = (1.0 - kappa) * val + kappa * val[::-1]
+
+    # Descending SUBJECTIVE validity; stable argsort so ties break
+    # toward the earlier feature index.
+    cue_order = np.argsort(-w, kind="stable")
+
+    a, b = stim[0], stim[1]
+    winner = None
+    for j in cue_order:
+        if a[j] > b[j]:
+            winner = 0
+            break
+        if b[j] > a[j]:
+            winner = 1
+            break
+
+    if winner is None:
+        # No discriminating cue — pure guess.
+        return np.ones(2) / 2.0
+
+    scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])
+
+    beta = float(parameters["beta"])
+    epsilon = float(parameters["epsilon"])
+
+    # Numerically stable softmax over the binary winner score: the
+    # winner's probability is sigmoid(beta), mapping beta=0 to 50/50
+    # guessing and large beta to deterministic choice.
+    z = beta * (scores - scores.max())
+    e = np.exp(z)
+    p_core = e / e.sum()
+
+    n_opts = p_core.shape[0]
+    return (1.0 - epsilon) * p_core + epsilon * (np.ones(n_opts) / n_opts)
+```
+
+**`policy source code`:**
+```python
+def policy(probabilities):
+    probabilities = np.asarray(probabilities, dtype=np.float64)
+    probabilities = probabilities / probabilities.sum()  # guard against float drift
+    return np.random.choice(len(probabilities), p=probabilities)
+```
+
+
+## ALREADY-EXPLORED EXPERIMENTS (do not repeat)
+[0] The design exploits the core structural difference between Take-The-Best (TTB) and Tallying: TTB's choice is determined solely by the single highest-validity discriminating cue, whereas Tallying integrates the sign of every feature comparison. I use 5 features with a clear validity hierarchy [0.90, 0.80, 0.70, 0.60, 0.55] so the cue cascade is unambiguous. The trial set is built to produce a QUANTITATIVE dissociation, not just a qualitative one. (1) Conflict trials T1-T3: option A wins only on the top cue (validity 0.90) while B wins on progressively fewer lower cues (tally margins -3, -2, -1 for A). TTB predicts p(A) is IDENTICAL across T1, T2, T3 (a constant (1-eps)*sigmoid(beta)+eps/2, since the TTB score is always [1,0]); Tallying predicts a strictly graded p(A) that increases with the tally margin (sigmoid(-3*beta), sigmoid(-2*beta), sigmoid(-beta)). A flat vs. graded profile across these three trial types is the central quantitative signature. (2) Mirror conflict trials T4-T6 test the same dissociation in the opposite direction (TTB->B, Tallying->A), ruling out side-bias explanations. (3) Tally-tie trials T7-T8: the tally is exactly 1-1, so Tallying is forced to 50/50 regardless of beta, while TTB is near-deterministic (top cue decides). These trials alone can falsify Tallying at the aggregate level: any consistent preference is TTB-only. (4) Cascade-depth trials T11-T12: the top cue ties and the SECOND cue (0.80) discriminates against the tally majority — TTB follows cue 2, Tallying follows the 3-vs-2 count. This confirms subjects respect the validity ordering, not just 'any high cue wins'. (5) Agreement trials T9-T10 (both theories favor the same option, margin +1) and a full-tie trial T13 (both predict exactly 50/50) serve as controls: they anchor the lapse rate and verify that neither theory is needed where both agree. Crucially, TTB predicts a single constant choice probability across all five TTB->A trial types (T1, T2, T3, T7, T9), whereas Tallying predicts five distinct probabilities spanning from well below 0.5 to well above 0.5 — model comparison on the response profile across these cells cleanly separates the theories even after fitting beta and epsilon to each. With 13 unique pairs and K=7 repetitions (91 trials), each cell is sampled enough to estimate choice proportions per subject.
+
+[1] This design dissociates Tallying from Take-The-Best (TTB) along two orthogonal quantitative dimensions simultaneously: (i) the tally MARGIN (a_wins - b_wins), which is the ONLY trial-dependent quantity in Tallying's softmax (p(A) = (1-eps)*sigmoid(beta*margin) + eps/2), and (ii) the identity/validity of the first discriminating cue, which is the ONLY trial-dependent quantity in TTB (p(A) = (1-eps)*sigmoid(beta) + eps/2 toward the top-cue winner, constant across ALL discriminating trials). I use 6 features with an unambiguous validity hierarchy [0.95, 0.85, 0.75, 0.65, 0.60, 0.55]. CENTRAL SIGNATURE 1 — the full crossing psychometric function (T1-T5 and mirror T6-T10): the top cue (0.95) always favors one option while the tally margin sweeps across its full range (-4, -2, 0, +2, +4). TTB predicts a FLAT p(A) = (1-eps)*sigmoid(beta)+eps/2 across all five trials in each direction; Tallying predicts a strictly monotone graded curve that passes through EXACTLY 0.5 at margin 0 (T3/T8) — a knife-edge prediction independent of beta that any consistent preference falsifies — and reverses sign at negative margins (T1/T2: TTB says A with high confidence, Tallying says B; T6/T7: the mirror sign reversal, ruling out side bias). T1 vs T10 is especially clean: identical tally margins (-4) but opposite TTB winners, so Tallying predicts identical p(A) on both while TTB predicts opposite extremes. CENTRAL SIGNATURE 2 — cascade-depth invariance (T11-T15): the top cue TIES and the TTB decision comes from cue 2 (0.85), cue 3 (0.75), or even cue 5 (0.60, T14). TTB predicts the SAME constant p(A) on T1, T2, T3, T11, T12, T13, T14 (all TTB->A regardless of which cue decided or how deep the cascade ran); Tallying predicts six distinct values spanning sigmoid(-2beta) to sigmoid(+1beta), including exact 0.5 on T3/T13/T14. T15 is a depth-2 sign reversal (cue 2 favors B, tally margin +2 favors A). T14 probes the bottom of the hierarchy: when cues 1-4 all tie, TTB commits to the single 0.60-validity cue while Tallying sits at exactly 50/50 — if subjects treat a lone low-validity cue as uninformative, TTB fails where Tallying succeeds. T16 (full tie) is the shared 50/50 control anchoring lapse rate and side bias. With 16 unique pairs and K=6 (96 trials exactly), each cell yields 6 repetitions per subject for stable choice-proportion estimates. Model comparison on the full 16-cell response profile — flat vs. graded across margins, constant vs. varied across cascade depths, and exact-0.5 vs. deterministic on margin-0 trials — cleanly separates the theories even after fitting beta and epsilon to each.
+
+[2] This design dissociates Reversed-Hierarchy Frugality (misbinding TTB) from Tallying by exploiting their two orthogonal trial-dependent quantities: (i) Tallying's choice depends ONLY on the tally margin m = a_wins - b_wins, giving p(A) = (1-eps)*sigmoid(beta*m) + eps/2, a strictly graded psychometric curve; (ii) misbinding TTB's choice depends ONLY on which cue first discriminates when the cascade runs in ASCENDING true validity (kappa=1 binds the highest subjective validity to the LAST feature), giving a CONSTANT p(winner) = (1-eps)*sigmoid(beta) + eps/2 ~ 0.60 on every discriminating trial. I use 5 features with validities [0.90, 0.80, 0.70, 0.60, 0.55], so the reversed cascade consults the 0.55 expert first, then 0.60, 0.70, 0.80, 0.90. CENTRAL SIGNATURE 1 - margin sweep with the lowest-validity cue as fixed decider (trials 1-4 and 5-8): the 0.55 expert always favors one option while the tally margin sweeps across -3, -2, -1, 0 (and mirrored +3, +2, +1, 0). Misbinding TTB predicts a FLAT p ~ 0.60 toward the lowest-cue winner on all eight trials; Tallying predicts a strictly monotone graded curve that passes through EXACTLY 0.5 at margin 0 (trials 4, 8) - a knife-edge prediction independent of beta - and reverses sign at negative margins (trial 1: Tallying says B strongly, misbinding TTB says A). CENTRAL SIGNATURE 2 - matched-margin opposite-decider pairs, a parameter-free falsification for Tallying: pairs (2, 10), (4, 8), (6, 9), (7, 14) have IDENTICAL tally margins (-2, 0, +2, +1) but opposite lowest-cue winners. Tallying predicts IDENTICAL p(A) within each pair for ANY (beta, eps); misbinding TTB predicts a ~0.60 vs ~0.40 split within each pair. Trial 14 is especially diagnostic: it is the deepest cascade (only the 0.90 expert discriminates, all lower cues tie), and misbinding TTB predicts the SAME constant p there as on trial 1 (where the 0.55 expert decides) - cascade-depth invariance - while Tallying treats trials 7 and 14 identically (both margin +1) though misbinding TTB gives opposite choices. CENTRAL SIGNATURE 3 - reversed-hierarchy depth probes at margin 0 (trials 11, 12, 13): the decider is the 0.60, 0.70, or 0.80 expert while the tally is exactly 1-1, so Tallying is pinned to exactly 0.50 regardless of parameters while misbinding TTB stays at ~0.60/~0.40. Trial 15 is a depth-3 conflict (0.70 expert favors A, tally margin -1 favors B). Trial 5 additionally separates misbinding TTB from STANDARD TTB: the top-validity 0.90 expert and the tally both favor A, but the reversed cascade follows the 0.55 expert to B - if subjects choose A here, the misbinding claim fails. Trial 16 is a full-tie control anchoring lapse and side bias (both theories: exactly 0.5). The overall profile is non-monotone in margin (margin +3 -> p(A) ~ 0.40; margin -3 -> p(A) ~ 0.60), which no monotone psychometric function of margin - i.e., no parameterization of Tallying - can reproduce, whereas misbinding TTB predicts one constant across all 15 discriminating trials with variation only in direction. 16 unique pairs, K = 6 (96 trials exactly), give 6 repetitions per cell for stable per-subject choice proportions.
+
+## RESPONSE FORMAT
+Return a JSON object with the following fields:
+- rationale: Reasoning behind this experimental design; used when interpreting results.
+- validities: Per-expert validities, one per feature. Each must be in [0.5, 1.0]; order is free (no descending requirement — theories that depend on validity order re-sort internally). Length determines n_features for the whole experiment and must match the rating-list length in every trial pair. Pick a spread (at least one high validity and at least one low one) — uniform validities (e.g. all 0.7) make many candidate theories indistinguishable, so spread them out.
+- trial_a_ratings: List of option-A rating vectors, one per trial. Each inner list has length equal to len(validities); each value is binary (0 or 1). `trial_a_ratings[i]` pairs with `trial_b_ratings[i]` on trial i.
+- trial_b_ratings: List of option-B rating vectors, one per trial. Same length and shape constraints as `trial_a_ratings`. Pick trials that let the intended theories be dissociated; avoid trials where every theory agrees.
+
+
+## Response
+
+```json
+{
+  "rationale": "This design dissociates Tallying from Reversed-Hierarchy Frugality (misbinding TTB, kappa=1) along three novel quantitative axes that the previous designs did not exploit. SETUP: 6 features with validities [0.90, 0.80, 0.70, 0.65, 0.60, 0.55]. Because validities descend across positions, the misbound hierarchy (positional reversal) equals an ascending-validity cascade: the reversed TTB model consults f5 (0.55) first, then f4, f3, f2, f1, f0 (0.90) last. AXIS 1 \u2014 THE CONFIDENCE CEILING (T3, T4, T12): the competing theory's beta is locked in [0.45, 0.55] with epsilon in [0.11, 0.15], so its predicted choice probability on ANY discriminating trial is capped at ~(0.87)*sigmoid(0.55)+0.075 \u2248 0.62. T3/T4 are unanimous trials (margin \u00b16) and T12 is a sparse trial where only the two highest-validity experts discriminate, both favoring A. Every sensible strategy \u2014 including Tallying with a moderate beta (p(A) = (1-eps)*sigmoid(2*beta)+eps/2, up to ~0.93) \u2014 predicts near-ceiling consistency here, but the misbinding model is mathematically FORBIDDEN from exceeding ~0.62. Human consistency above ~65% on these cells falsifies the competing theory at its parameter boundary while Tallying accommodates it. AXIS 2 \u2014 EXTREME-MARGIN CONFLICT WITH ORDINAL INVERSION (T1, T2, T14): on T1, A wins the four highest-validity experts (margin +4) but the lowest-validity expert (f5) favors B. Tallying predicts p(A) = (1-eps)*sigmoid(4*beta)+eps/2 \u2265 0.59 (well above 0.5 for any beta > 0.1); reversed TTB follows f5 to B, predicting p(A) \u2248 0.39. Crucially, compare T1 to T5 (margin 0, decider f5 favors A): Tallying predicts p(T1) >> p(T5) = exactly 0.50, while reversed TTB predicts p(T1) \u2248 0.39 < p(T5) \u2248 0.61 \u2014 a complete ORDINAL INVERSION of the two-cell response profile that no parameter setting of either model can reconcile with the other's prediction. T2 and T14 mirror this inversion, ruling out side bias. AXIS 3 \u2014 KNIFE-EDGE AND ISO-MARGIN FAMILIES (T5\u2013T11, T13, T14, T16): five margin-0 trials (T5\u2013T8, T16) pin Tallying to EXACTLY 0.50 regardless of (beta, epsilon) \u2014 a parameter-free prediction \u2014 while reversed TTB predicts 0.61/0.39 splits on every one, at shallow (f5), middle (f3), and deep (f1) cascade depths, i.e., depth-invariant. The iso-margin family {T9, T10, T11, T12} all have margin +2: Tallying predicts IDENTICAL p(A) on all four for any parameters; reversed TTB predicts 0.61, 0.39, 0.39, 0.61 (decider flips between f5, f3, f1). The mirror family {T13, T14} does the same at margin -2, where Tallying prefers B (~0.30 for A) but reversed TTB prefers A on T14 (0.61) \u2014 opposite sides of 0.5. T15 (full tie) is the shared 50/50 control anchoring lapse and side bias. GLOBALLY: reversed TTB's entire 16-cell profile is a two-level step function (\u22480.61 toward the lowest-validity discriminator, \u22480.39 against, 0.50 on the full tie), whereas Tallying predicts a monotone psychometric function of margin with exact 0.5 at m=0 and identical values within margin levels \u2014 two cross-structured profiles that model comparison on the full response profile separates cleanly even after fitting beta and epsilon to each. With 16 unique pairs and K = 6 (96 trials exactly), each cell yields 6 repetitions per subject.",
+  "validities": [
+    0.9,
+    0.8,
+    0.7,
+    0.65,
+    0.6,
+    0.5
+  ],
+  "trial_a_ratings": [
+    [
+      1,
+      1,
+      1,
+      1,
+      1,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      0,
+      1
+    ],
+    [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      1,
+      0,
+      0,
+      0,
+      1
+    ],
+    [
+      1,
+      0,
+      1,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      1,
+      0,
+      1,
+      1,
+      1
+    ],
+    [
+      1,
+      0,
+      1,
+      0,
+      1,
+      1
+    ],
+    [
+      1,
+      1,
+      0,
+      0,
+      1,
+      1
+    ],
+    [
+      1,
+      1,
+      1,
+      1,
+      0,
+      0
+    ],
+    [
+      1,
+      1,
+      1,
+      0,
+      1,
+      1
+    ],
+    [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ],
+    [
+      0,
+      0,
+      1,
+      1,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      1,
+      1
+    ],
+    [
+      1,
+      0,
+      1,
+      0,
+      1,
+      0
+    ],
+    [
+      0,
+      1,
+      1,
+      1,
+      1,
+      1
+    ]
+  ],
+  "trial_b_ratings": [
+    [
+      0,
+      0,
+      0,
+      0,
+      0,
+      1
+    ],
+    [
+      1,
+      1,
+      1,
+      1,
+      1,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ],
+    [
+      1,
+      0,
+      1,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      1,
+      0,
+      0,
+      0,
+      1
+    ],
+    [
+      1,
+      0,
+      1,
+      0,
+      1,
+      1
+    ],
+    [
+      0,
+      1,
+      0,
+      1,
+      1,
+      1
+    ],
+    [
+      0,
+      0,
+      1,
+      1,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      1,
+      1
+    ],
+    [
+      0,
+      0,
+      0,
+      1,
+      1,
+      1
+    ],
+    [
+      0,
+      0,
+      1,
+      1,
+      1,
+      1
+    ],
+    [
+      1,
+      1,
+      0,
+      0,
+      1,
+      1
+    ],
+    [
+      1,
+      1,
+      1,
+      1,
+      0,
+      0
+    ],
+    [
+      1,
+      0,
+      1,
+      0,
+      1,
+      0
+    ],
+    [
+      1,
+      0,
+      1,
+      1,
+      1,
+      1
+    ]
+  ]
+}
+```
+
+## Usage
+
+```json
+{
+  "input_tokens": 4772,
+  "output_tokens": 11920,
+  "reasoning_tokens": 10281,
+  "provider": "Sail Research"
+}
+```

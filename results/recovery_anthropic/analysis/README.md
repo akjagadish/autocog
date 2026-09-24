@@ -21,7 +21,8 @@ effort, 128k output ceiling). Runs live in `results/recovery_anthropic/<family>/
 
 ## Files
 
-- `recovery_mse_model_comparison.{svg,png}` — Fig. 3C-style bars: Gemini @5/10/20 vs Opus 5 @5.
+- `recovery_mse_model_comparison.{svg,png}` — Fig. 3C-style bars: Gemini @5/10/20 vs Opus 5 @5
+  and Opus 5 @10 (single_cue) / @5 (anti_majority) (regenerated 2026-09-21; see addendum).
 - `recovery_mse_model_comparison_5cycles.{svg,png}` — matched 5-cycle comparison only.
 - `recovery_mse_model_comparison_table.csv` — the plotted means/SEMs.
 - `per_model/` — standard per-model figures and `recovery_long.csv` for the Opus runs.
@@ -54,3 +55,22 @@ scanning model (not recovered).
 
 540 LLM calls, 13.9M input / 9.5M output tokens (output includes thinking), ≈ $306 on Opus 5,
 including ≈ $75 lost to the 32k-cap and runaway-loop incidents fixed in `src/llm.py`.
+
+
+## Addendum 2026-09-20: single_cue extended to 10 cycles
+
+All three `single_cue` Opus 5 runs were extended from 5 (run 3: 4 + a half-done 5th) to 10
+cycles with the current pipeline (which, unlike in September, re-proposes in-process when an
+experiment proposal fails schema validation; run 1's 6th cycle crashed on exactly that before
+the client fix and was resumed by hand). `anti_majority` was NOT extended and stays at 5.
+
+- `per_model/single_cue_10cycles_recovery_long.csv` (+ `_recovery_correlation.*`, `_recovery_mse.*`)
+  — single_cue at 10 cycles. `per_model/recovery_long_single_cue10_anti_majority5.csv` merges it
+  with the 5-cycle anti_majority rows for the cross-model figure in
+  `results/recovery_openrouter/analysis/`.
+- Surfaced MSE single_cue @10: 0.084 +/- 0.061 (runs 0.046 / 0.004 / 0.203) vs 0.115 +/- 0.059 @5.
+  Run 2's final theory is a true single-cue rule on the least-valid cue (mechanism recovered);
+  run 1 a doubt-gated one-reason rule with compensatory fallback; run 3 a weighted reason tally
+  whose 10th-cycle replacement is anti-correlated with the ground truth.
+- Cost of the extension (prompt-log tokens at $5 / $25 per M): 316 calls, 15.0M in / 7.2M out,
+  ~$255 for 16 new cycles (~$16/cycle; later cycles carry 30k+ token prompts).

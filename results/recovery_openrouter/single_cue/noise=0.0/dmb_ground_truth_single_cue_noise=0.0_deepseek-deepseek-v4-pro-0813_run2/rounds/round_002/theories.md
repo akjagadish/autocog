@@ -1,0 +1,311 @@
+# Round 2 — Theories
+
+**Verdict:** `new_theory` (slot 1 replaced)
+
+## Starting theories
+
+### slot 1 — `pi_3` — KILLED ✗
+
+**Description:** On each choice, a decision maker probabilistically selects between two comparison strategies. With probability q, centered near 0.25, the choice is made by a one-reason stopping rule: cues are inspected in descending validity order and the first discriminating cue determines the preferred option, with no further cues consulted. With probability 1 - q, the choice is made by full feature-win tallying: each option receives one point for every feature on which it strictly beats the other option, ties contribute nothing, and the option with the larger tally is preferred. Each strategy's preference is passed through its own softmax choice rule, giving nearly deterministic but not perfectly errorless responding, and there is no additional uniform lapse. The mixture probability q is a stable subject-level parameter applied independently on every trial, so the model recovers pure Take The Best when q = 1, pure Tallying when q = 0, and an intermediate strategy mixture when q is near 0.25.
+
+**Rationale:** The previous pure models bracket the human data incorrectly: Take The Best matches the first discriminating cue far too often in Experiment 1 and is far too anti-tallying in Experiment 2, while pure Tallying is too anti-TTB in Experiment 1 and too pro-tallying in Experiment 2. A trial-level mixture is exactly the mechanism needed because the observed values lie between the two pure strategies. Under the mixture, Experiment 1 is composed almost entirely of trials where the first valid cue and the tally point in opposite directions, so the TTB-match rate approximates q; the observed value 0.2487 therefore points to q near 0.25. In Experiment 2, the aggregate second-cue-versus-tally contrast under a noiseless mixture is approximately 0.875 - 1.8125q, which at q = 0.25 is 0.4219, very close to the observed 0.4196. I therefore keep q tightly centered at 0.25 with low between-subject variance. The softmax temperatures are set near 5.25-5.50 rather than the provisional value of 1: with binary win-count margins of one to four, beta near 1 would make the Tallying strategy too likely to choose the losing option and would flatten both behavioral signatures. The nearly deterministic core strategies with zero lapse are required for the mixture algebra to reproduce both observed values simultaneously. This model contains pi_1 as the special case q = 1 and pi_2 as the special case q = 0, but the human data support an intermediate q of about 0.25.
+
+**Parameters:**
+  - `q`: `[0.22, 0.28]`
+  - `beta_tally`: `[5.44, 5.50]`
+  - `beta_ttb`: `[5.22, 5.28]`
+  - `epsilon`: `{0}`
+  - `validities`: `validities`
+
+**`predict(parameters, stimulus, history)`:**
+```python
+def predict(parameters, state, history):
+    def _softmax(scores, beta):
+        z = beta * (scores - np.max(scores))
+        exp_z = np.exp(z)
+        return exp_z / exp_z.sum()
+
+    stim = np.asarray(state, dtype=float)
+    if stim.ndim == 3 and stim.shape[0] == 1:
+        stim = stim[0]
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(f'Expected a (2, n_features) stimulus, got {stim.shape}.')
+
+    n_features = stim.shape[1]
+    a = stim[0]
+    b = stim[1]
+
+    validities = np.asarray(parameters['validities'], dtype=float)
+    if validities.shape[0] == n_features:
+        cue_order = np.argsort(-validities, kind='stable').tolist()
+    else:
+        cue_order = list(range(n_features))
+
+    winner = None
+    for j in cue_order:
+        if a[j] > b[j]:
+            winner = 0
+            break
+        if b[j] > a[j]:
+            winner = 1
+            break
+
+    if winner is None:
+        p_ttb = np.ones(2) / 2.0
+    else:
+        ttb_scores = np.array([1.0, 0.0]) if winner == 0 else np.array([0.0, 1.0])
+        p_ttb = _softmax(ttb_scores, float(parameters['beta_ttb']))
+
+    a_wins = float(np.sum(a > b))
+    b_wins = float(np.sum(b > a))
+    p_tally = _softmax(
+        np.array([a_wins, b_wins]),
+        float(parameters['beta_tally'])
+    )
+
+    q = float(parameters['q'])
+    p = q * p_ttb + (1.0 - q) * p_tally
+
+    epsilon = float(parameters['epsilon'])
+    if epsilon > 0.0:
+        p = (1.0 - epsilon) * p + epsilon * np.ones(2) / 2.0
+
+    p = np.clip(p, 0.0, None)
+    p = p / p.sum()
+    return p
+```
+
+**`policy(probs)`:**
+```python
+def policy(probs):
+    probs = np.asarray(probs, dtype=float)
+    probs = probs / probs.sum()
+    return int(np.random.choice(len(probs), p=probs))
+```
+
+
+### slot 2 — `pi_4` — SURVIVED ✓
+
+**Description:** People choose between two options through a stable, subject-level mixture of three comparison routes: (1) forward lexicographic scanning, inspecting cues in descending validity order and stopping at the first discriminating cue; (2) backward lexicographic scanning, inspecting cues in ascending validity order and stopping at the first discriminating cue in that reversed order; and (3) feature-win tallying, where each option receives one point per feature on which it strictly beats the other and ties contribute nothing. The forward and backward lexicographic weights jointly act as a subject-level polarity parameter for first-validity-cue effects: forward weight supports a positive first-discriminator effect, while backward weight supports a negative one. Each route's preferred option is passed through its own softmax choice rule, so responding is noisy but not controlled by a uniform lapse.
+
+**Rationale:** This edit keeps the prescribed three-route mechanism but fixes the likely scoring failure in the previous candidate. The unresolved/scored-as-missing validity specification is now robustly handled: `parameters` still declares the experiment-defined symbolic `validities`, and `predict` verifies the array shape and falls back to a descending validity vector if needed. I also replaced the tight point-mass ranges with wider intervals around the fitted operating point, so route weights and the forward softmax temperature are genuinely sampled across subjects. The operating point uses a forward lexicographic weight near 0.27, a backward lexicographic weight near 0.48, a low but non-zero forward beta so the forward route contributes a small positive first-cue effect, a moderately deterministic backward route to supply negative first-discriminator contrasts in Experiments 3 and 4, and a tallying route with intermediate noise to keep Experiment 2's tally-minus-second-cue contrast near the observed positive value.
+
+**Parameters:**
+  - `w_forward`: `[0.22, 0.32]`
+  - `w_backward`: `[0.42, 0.54]`
+  - `beta_forward`: `[0.08, 0.20]`
+  - `beta_backward`: `[1.30, 1.70]`
+  - `beta_tally`: `[1.80, 2.60]`
+  - `epsilon`: `{0}`
+  - `validities`: `validities`
+
+**`predict(parameters, stimulus, history)`:**
+```python
+def predict(parameters, state, history):
+    import numpy as np
+
+    stim = np.asarray(state, dtype=float)
+    if stim.ndim == 3 and stim.shape[0] == 1:
+        stim = stim[0]
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(f'Expected a (2, n_features) stimulus, got {stim.shape}.')
+
+    a = stim[0]
+    b = stim[1]
+    n_features = stim.shape[1]
+
+    # Preferred validity vector comes from the experiment.  If the
+    # parameter resolver ever leaves it unresolved, fall back to a
+    # descending validity vector so the model is still scorable.
+    validities = parameters.get('validities')
+    if validities is None:
+        validities = list(np.linspace(0.9, 0.5, n_features))
+    validities = np.asarray(validities, dtype=float)
+    if validities.ndim == 0 or validities.shape[0] != n_features:
+        validities = np.linspace(0.9, 0.5, n_features)
+
+    descending = np.argsort(-validities, kind='stable')
+    ascending = np.argsort(validities, kind='stable')
+
+    def lex_probabilities(order, beta):
+        winner = None
+        for j in order:
+            if a[j] > b[j]:
+                winner = 0
+                break
+            if b[j] > a[j]:
+                winner = 1
+                break
+        if winner is None:
+            return np.ones(2, dtype=float) / 2.0
+
+        z = float(beta) if winner == 0 else -float(beta)
+        p_a = 1.0 / (1.0 + np.exp(-z))
+        return np.array([p_a, 1.0 - p_a], dtype=float)
+
+    beta_forward = float(parameters['beta_forward'])
+    beta_backward = float(parameters['beta_backward'])
+    p_forward = lex_probabilities(descending, beta_forward)
+    p_backward = lex_probabilities(ascending, beta_backward)
+
+    a_wins = float(np.sum(a > b))
+    b_wins = float(np.sum(b > a))
+    tally_scores = np.array([a_wins, b_wins], dtype=float)
+    beta_tally = float(parameters['beta_tally'])
+    z = beta_tally * (tally_scores - np.max(tally_scores))
+    e = np.exp(z)
+    p_tally = e / np.sum(e)
+
+    w_forward = float(parameters['w_forward'])
+    w_backward = float(parameters['w_backward'])
+    w_tally = 1.0 - w_forward - w_backward
+    if w_tally < 0.0:
+        w_tally = 0.0
+    weights = np.array([w_forward, w_backward, w_tally], dtype=float)
+    weights = weights / weights.sum()
+
+    p = weights[0] * p_forward + weights[1] * p_backward + weights[2] * p_tally
+
+    epsilon = float(parameters.get('epsilon', 0.0))
+    if epsilon > 0.0:
+        p = (1.0 - epsilon) * p + epsilon * np.ones(2, dtype=float) / 2.0
+
+    p = np.clip(p, 0.0, None)
+    return p / p.sum()
+```
+
+**`policy(probs)`:**
+```python
+def policy(probs):
+    import numpy as np
+    probs = np.asarray(probs, dtype=float)
+    probs = probs / probs.sum()
+    return int(np.random.choice(len(probs), p=probs))
+```
+
+
+## Replacement
+
+### `pi_5` → slot 1 (via `new_theory`)
+
+**Description:** People compare options through a conflict-gated dual-lexicographic/tallying system. A baseline mixture combines a weak forward Take-The-Best route, a moderate backward lexicographic route, and feature-win tallying. When the highest-validity and lowest-validity cues discriminate in opposite directions and the tally does not oppose the highest cue, the decision maker enters a conflict regime: tallying is suspended and the choice is made with high probability by a strong backward lexicographic scan over ascending validities. Subjects differ substantially in how strongly and deterministically they reverse on such conflict trials.
+
+**Rationale:** Minimal-diff update of the accepted conflict-gated architecture. The conflict parameters are widened from the narrow [0.72, 0.78] / [3.0, 3.4] ranges to [0.40, 1.00] / [2.00, 8.00]. The midpoint of w_conflict_back stays near 0.70, while the higher mean conflict beta saturates the reverse-lexicographic choice rule, so the E5/E6 point estimates remain near the observed strong negative top-cue effects but between-subject variance is substantially increased. Baseline route weights and inverse temperatures are also widened symmetrically around their previous centers: w_forward stays centered at 0.27, w_backward at 0.48, and the maximum possible weight sum remains 0.97 so the tally route never requires truncation. This lifts E1-E3 heterogeneity without changing the overall baseline route balance, preserving the tally advantage in Experiment 2 and the moderate negative cue effects in Experiments 3 and 4.
+
+**Parameters:**
+  - `w_forward`: `[0.17, 0.37]`
+  - `w_backward`: `[0.36, 0.60]`
+  - `beta_forward`: `[0.06, 0.22]`
+  - `beta_backward`: `[1.20, 1.80]`
+  - `beta_tally`: `[1.50, 2.90]`
+  - `w_conflict_back`: `[0.40, 1.00]`
+  - `beta_conflict_back`: `[2.00, 8.00]`
+  - `epsilon`: `{0}`
+  - `validities`: `validities`
+
+**`predict(parameters, stimulus, history)`:**
+```python
+def predict(parameters, state, history):
+    import numpy as np
+
+    stim = np.asarray(state, dtype=float)
+    if stim.ndim == 3 and stim.shape[0] == 1:
+        stim = stim[0]
+    if stim.ndim != 2 or stim.shape[0] != 2:
+        raise ValueError(f'Expected a (2, n_features) stimulus, got {stim.shape}.')
+
+    a = stim[0]
+    b = stim[1]
+    n_features = stim.shape[1]
+
+    validities = parameters.get('validities')
+    if validities is None:
+        validities = list(np.linspace(0.9, 0.5, n_features))
+    validities = np.asarray(validities, dtype=float)
+    if validities.ndim == 0 or validities.shape[0] != n_features:
+        validities = np.linspace(0.9, 0.5, n_features)
+
+    descending = np.argsort(-validities, kind='stable')
+    ascending = np.argsort(validities, kind='stable')
+
+    def lex_probabilities(order, beta):
+        winner = None
+        for j in order:
+            if a[j] > b[j]:
+                winner = 0
+                break
+            if b[j] > a[j]:
+                winner = 1
+                break
+        if winner is None:
+            return np.ones(2, dtype=float) / 2.0
+        z = float(beta) if winner == 0 else -float(beta)
+        p_a = 1.0 / (1.0 + np.exp(-z))
+        return np.array([p_a, 1.0 - p_a], dtype=float)
+
+    beta_forward = float(parameters['beta_forward'])
+    beta_backward = float(parameters['beta_backward'])
+    beta_conflict_backward = float(parameters['beta_conflict_back'])
+
+    p_forward = lex_probabilities(descending, beta_forward)
+    p_backward_base = lex_probabilities(ascending, beta_backward)
+    p_backward_conflict = lex_probabilities(ascending, beta_conflict_backward)
+
+    a_wins = float(np.sum(a > b))
+    b_wins = float(np.sum(b > a))
+    tally_scores = np.array([a_wins, b_wins], dtype=float)
+    beta_tally = float(parameters['beta_tally'])
+    z = beta_tally * (tally_scores - np.max(tally_scores))
+    e = np.exp(z)
+    p_tally = e / np.sum(e)
+
+    w_forward_base = float(parameters['w_forward'])
+    w_backward_base = float(parameters['w_backward'])
+    w_tally_base = 1.0 - w_forward_base - w_backward_base
+    if w_tally_base < 0.0:
+        w_tally_base = 0.0
+        denom = w_forward_base + w_backward_base
+        w_forward_base /= denom
+        w_backward_base /= denom
+
+    j_hi = descending[0]
+    j_lo = ascending[0]
+    hi_dir = 0 if a[j_hi] == b[j_hi] else (1 if a[j_hi] > b[j_hi] else -1)
+    lo_dir = 0 if a[j_lo] == b[j_lo] else (1 if a[j_lo] > b[j_lo] else -1)
+    tally_d = int(a_wins - b_wins)
+
+    extreme_cue_conflict = (hi_dir != 0 and lo_dir != 0 and hi_dir == -lo_dir)
+    live_conflict = extreme_cue_conflict and (tally_d * hi_dir >= 0)
+
+    if live_conflict:
+        w_forward = 1.0 - float(parameters['w_conflict_back'])
+        w_backward = float(parameters['w_conflict_back'])
+        w_tally = 0.0
+        p_backward = p_backward_conflict
+    else:
+        w_forward = w_forward_base
+        w_backward = w_backward_base
+        w_tally = w_tally_base
+        p_backward = p_backward_base
+
+    weights = np.array([w_forward, w_backward, w_tally], dtype=float)
+    weights = weights / weights.sum()
+
+    p = weights[0] * p_forward + weights[1] * p_backward + weights[2] * p_tally
+
+    epsilon = float(parameters.get('epsilon', 0.0))
+    if epsilon > 0.0:
+        p = (1.0 - epsilon) * p + epsilon * np.ones(2, dtype=float) / 2.0
+
+    p = np.clip(p, 0.0, None)
+    return p / p.sum()
+```
+
+**`policy(probs)`:**
+```python
+def policy(probs):
+    import numpy as np
+    probs = np.asarray(probs, dtype=float)
+    probs = probs / probs.sum()
+    return int(np.random.choice(len(probs), p=probs))
+```

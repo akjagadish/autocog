@@ -43,7 +43,7 @@ for run_id in $(seq "$START_RUN" "$END_RUN"); do
     # matches the on-disk path.
     eps_tag="noise=${eps}"
     eps_log="_noise=${eps}"
-    dir="${out_dir}/${GROUND_TRUTH}/${eps_tag}/dmb_ground_truth_${GROUND_TRUTH}_${eps_tag}_${LLM_MODEL}_run${run_id}"
+    dir="${out_dir}/${GROUND_TRUTH}/${eps_tag}/dmb_ground_truth_${GROUND_TRUTH}_${eps_tag}_${LLM_MODEL//\//-}_run${run_id}"
     log="logs/hdm_${GROUND_TRUTH}${eps_log}_run${run_id}.log"
 
     if [ -d "$dir" ]; then

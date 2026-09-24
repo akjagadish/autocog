@@ -1,0 +1,2614 @@
+# generation_iter_06_attempt_00
+
+## System Prompt
+
+You are a renowned cognitive scientist and an expert Python programmer.
+
+Your job is to propose a new theory and its model instantiation in the Decision Making (Binary Features) domain based on the feedback provided by an arbiter. The feedback contains diagnoses of mechanistic failures of the previous theory along with suggestions for a new theory family that overcomes those failures. The newly proposed theory and model should display human-like behavior when simulated on experiment(s). 
+The goal of the theory generation process is to SURFACE theories that are EXPERIMENT-INVARIANT: that is,theories that explain data across the majority of experiments. 
+You will see a list of theories that have been proposed in the past but you should only use them as inspiration and not to choose from them. Propose a new theory that is different. 
+If they fail to do so, you will receive feedback on their performance on the same experiment(s) and you will have to propose another new theory and model that meet the requirements, iterating until you succeed.
+
+If you think the failure to capture human behavior is due to arbiter feedback that is inaccurate or unhelpful, you can propose a new theory and model that ignore the feedback, but you must provide rationale for why you are ignoring it and how your proposal overcomes the identified mechanistic failures.
+
+## ACCEPT GATE & LOSS TRAJECTORY — HOW THE LOOP HANDLES YOUR EDITS
+This propose-loop has a programmatic accept gate: after every iteration the candidate's `aggregate_loss` is compared against the running-best loss; strict improvement -> ACCEPTED (the candidate becomes the new running-best base); otherwise -> REJECTED (the candidate is discarded and the base is unchanged). You do NOT need to manually "revert" a regressed edit — the gate already does that for you.
+
+The block rendered below as `## PREVIOUS CANDIDATE (this loop)` is ALWAYS the running-best (last ACCEPTED) candidate, NEVER your most recent attempt if it was rejected. So:
+  * Treat `## PREVIOUS CANDIDATE` as a known-good base. Build on it.
+  * The `## LOSS TRAJECTORY` block tags every iteration ACCEPTED or REJECTED. Use this as ground truth on which past critic advice actually moved the loop forward and which didn't.
+  * The `## PRIOR FEEDBACK ITERATIONS` block annotates each prior critique with the same ACCEPTED/REJECTED tag of the candidate it elicited. Down-weight critic advice whose previous candidates were REJECTED, and reinforce / extend advice whose candidates were ACCEPTED.
+  * Treat the best ACCEPTED iteration's loss as a soft floor — the next edit should plausibly land at-or-below it, otherwise the gate will reject your attempt and the base stays put.
+
+Each metric value below is shown as `point_estimate (var=X)`, where `point_estimate` is `metric(data)` evaluated on the full pooled dataset and `var` is the population (between-subject) variance of the same metric re-applied per `subject_id`. The point estimate is the canonical scalar; `var` reports how consistent that estimate is across subjects (lower = more consistent). `var=n/a` means the metric could not be applied to a single-subject slice.
+
+## PARAMETER NOTATION
+`parameters` is a JSON object mapping each parameter name (snake_case string) to a *string* value that specifies its domain. Every value MUST be a string — never a bare list, number, tuple, or expression. Use exactly one of these notations per parameter:
+
+1. Continuous interval — square brackets, two numeric bounds:
+   "[min, max]"
+   Examples: "[0, 1]", "[1.0, 10.0]", "[10, 1000]"
+
+2. Discrete set — curly braces, comma-separated values:
+   "{v1, v2, ...}"
+   Example: "{1, 2}"
+
+3. Vector of intervals whose length is set by the experiment — a bracketed tuple repeated by a symbolic length variable:
+   "[(min, max)] * length_var"
+   Example: "[(0, 1)] * n_features"
+
+4. Symbolic reference — a bare variable name (no brackets, no angle brackets), used when the parameter takes its value from an experiment-defined constant rather than a range:
+   "variable_name"
+   Example: "n_features"
+
+Rules:
+- Do not use parentheses for intervals; square brackets only. Tuples `(a, b)` are reserved for the vector-of-intervals notation in (3).
+- Do not mix notations within a single value (e.g., no "[0, 1] or {2, 3}").
+- Do not quote numbers inside the notation (write "[0, 1]", not "['0', '1']").
+- Every parameter referenced by `predict` or `policy` must appear as a key in `parameters`, and vice versa.
+- Notations 3 and 4 may ONLY reference the experiment-defined symbolic identifiers listed under "ALLOWED SYMBOLIC IDENTIFIERS" below. Do not invent new identifier names. If a parameter's shape doesn't fit any of those variables, fall back to a literal interval (notation 1) or discrete set (notation 2). Use these names so the model adapts to any experiment in this domain instead of hardcoding shapes.
+
+## ALLOWED SYMBOLIC IDENTIFIERS (for notations 3 and 4 above)
+- n_features: Number of expert ratings per option (LLM-proposed via `validities` length).
+- validities: Per-expert validities (LLM-proposed; each in [0.5, 1.0]); fixed across all trials.
+
+## AVAILABLE IMPORTS inside `predict` and `policy`
+- numpy as np
+- pandas as pd
+- scipy and its submodules
+- torch and torch.nn.functional as F
+- sklearn and its submodules
+- math, random, and other standard Python libraries
+
+## RUNTIME CONTRACT (function signatures and argument shapes)
+`predict(parameters, state, history) -> np.ndarray`:
+- `parameters`: dict[str, value]. One sample drawn from your declared `parameters` ranges, applied for the entire subject run.
+- `state`: the per-trial input delivered by the experiment (shape is domain-specific — see the experiment description above and the `history` key list below, which mirrors the per-trial variables carried in `state`). Convert to an array with `np.asarray(state)` if you need array ops.
+- `history`: dict-of-lists for past trials in this subject's run, NOT a list-of-dicts. The per-trial keys are:
+  Each value below is a Python list in trial order; entry `i` is the value for trial `i`. On the first trial all lists are empty.
+  - `"option_a_ratings"`: List of n_features binary expert ratings (each 0 or 1) for option A on this trial.
+  - `"option_b_ratings"`: List of n_features binary expert ratings (each 0 or 1) for option B on this trial.
+  - `"response"`: 0 if subject chose A, 1 if subject chose B.
+Iterating `for x in history:` iterates the dict KEYS (strings); to walk trials index the lists in lock-step, e.g. `for i in range(len(next(iter(history.values())))): ...`.
+- Returns: 1-D `np.ndarray` of choice probabilities over the experiment's discrete action set, summing to 1.
+
+`policy(probs) -> int`:
+- Receives the probability vector produced by `predict`.
+- Returns: integer index in `[0, len(probs))` identifying the chosen action. If you sample with `np.random.choice(..., p=probs)`, normalise first (`probs = np.asarray(probs, dtype=np.float64); probs /= probs.sum()`) to avoid the "probabilities do not sum to 1" ValueError from float drift.
+
+
+## User Prompt
+
+## EXPERIMENTAL DOMAIN
+Subjects repeatedly choose between two fictitious products, A and B. Each option is described by a vector of binary expert ratings (each 0 or 1). Every experiment fixes its own feature count (via `validities` length) and per-expert validities; both are LLM-proposed. The validities are communicated to the subject in the instructions. Subjects pick whichever product they believe is of higher quality. There is no trial-by-trial correctness feedback.
+
+Each subject completes ~96 trials in a single block, with order randomized independently per subject. On every trial the subject sees two options A and B, each described by `n_features` binary expert ratings (each 0 or 1). The per-feature validities and n_features are fixed per experiment (design-time choices). Validities are communicated to the subject in the instructions. Both `n_features` and `validities` are exposed to your `predict` via the `parameters` dict. The subject chooses A or B; no correctness feedback is provided after the choice.
+
+## ARBITER GUIDE
+The arbiter labelled this round's two theories in its recommendation as follows:
+- THEORY 1 = `pi_8`
+- THEORY 2 = `pi_9`
+- The recommendation below acts on THEORY 1 (= `pi_8`).
+
+Replace pi_8 with a SMOOTH ANTI-VALIDITY WEIGHTING account that has NO solo release, NO hard mute band and NO chorus amplification \u2014 call it e.g. 'Convex Novelty Weighting (CNW)'. Core commitments:
+
+1. Count gate unchanged and parameter-free: equal feature-wise win counts (including wholly non-discriminating displays) \u21d2 exactly 0.5, no validity tie-break, no take-the-best fallback. (Matches Exp 3 = .474.)
+
+2. Each discriminating cue carries weight that is a CONVEX, monotonically DECREASING function of panel-relative validity: s_j = (v_j \u2212 v_min)/(v_max \u2212 v_min), w_j = (1 \u2212 s_j)^kappa with kappa \u2248 1.5\u20133.0, plus a very small floor-independent baseline b \u2248 0.02\u20130.10. This is the whole 'news' story: the panel's bottom voice has weight \u22481, a mid voice (s \u2248 0.5) retains only 2^\u2212kappa \u2248 0.12\u20130.35 of it, and a star (s \u2248 1) contributes essentially nothing. Weights are strictly non-negative \u2014 a star is ignored, never counted against its own side.
+
+3. Because star weights vanish, ALL-UPPER displays \u2014 solo star, solo mid-high, unopposed upper pair, upper 3-vs-1 \u2014 automatically land near chance at ANY count margin (Exp 1 solo\u2212flat \u2248 0, Exp 2 \u2248 +0.05, Exp 15 = .489, Exp 16 = .489), WITHOUT needing pi_8's solo release or pi_9's step band. Note that this predicts a shallow, monotone but compressed solo ladder, not a flat ceiling line: the model-writer should choose kappa and beta so that solo-star \u2248 .52\u2013.58, solo-mid \u2248 .58\u2013.68, solo-floor \u2248 .85\u2013.92.
+
+4. The floor-voice reversals come out of the WEIGHT ARITHMETIC, not a chorus knee: a lone floor cue (w\u22481) against a mid PAIR (2 \u00d7 ~0.4\u20130.5) nets \u22480 \u21d2 chance (Exp 12 C4 = .478), while the same floor cue against a three-cue UPPER bloc (3 \u00d7 ~0.05\u20130.15) nets strongly positive \u21d2 .80\u2013.90 against the majority (Exp 14 = .145 adherence; Exp 7 = \u2212.76). Calibrate kappa so that these two cells fall on opposite sides of chance simultaneously \u2014 this is the single tightest quantitative constraint in the corpus and it replaces pi_9's alpha/kappa/p_ch knee with one exponent.
+
+5. Integration: E = \u03a3 dir_j \u00b7 w_j, compressed by the number of mutually contradicting cues (E / D^gamma, gamma \u2248 0.6\u20131.1), passed through a logistic with moderate beta (chosen so that plain mixed-panel adherence lands at .70\u2013.80, NOT .85\u2013.90 \u2014 pi_8's persistent over-shoot on Exp 4/5/6 must not be repeated), plus an attention lapse epsilon \u2248 0.08\u20130.15.
+
+6. Capacity: for n > 7 the anti-validity ordering degrades (kappa shrinks toward 1, i.e. weights flatten) AND integration noise rises (divisor \u00d7 (1 + chi\u00b7(n\u22127))), so eight-expert star-backed majorities sit at chance (Exp 10 = .485) and eight-expert tally adherence (.755) is below the six-expert value (.794).
+
+Distinctive, testable contrast with pi_9: CNW is CONTINUOUS in seniority and CHORUS-FREE, so (i) the second- and third-from-bottom experts retain appreciable, graded influence (pi_9 mutes them near-categorically), and (ii) the strength of a floor voice depends only on the summed seniority of what opposes it, not on the COUNT of opposing cues \u2014 so a floor voice opposed by two STARS should already reverse under CNW (stars \u2248 0 weight) while pi_9 needs a three-cue bloc to cross its late knee. Future experiments should target exactly those two cells: (a) a lone second-from-bottom voice opposed by a star pair, and (b) a lone floor voice opposed by exactly two stars versus exactly two mids.
+
+## THEORY LEADERBOARD
+A small set of prior picked theories shown for reference. Overall score is in `[0, 1]`, higher = better, computed as `1 - L2_norm(normalized_per_experiment_distances) / max_L2_norm`. 1.0 means closest to the real value on every experiment+metric pair; 0.0 means farthest. Each entry below carries the same depth of detail as the PREVIOUS MODEL INSTANCE above so you can borrow concrete mechanisms when useful.
+
+### `pi_9` (overall score: 0.915)
+
+**Description**
+**Mute-Band Maverick Arbitration with a HARD (near-step) Band and a Stronger Capacity Noise Term (MBM-PG7).**
+
+People who are told the accuracies of a panel of binary expert ratings do not weight experts *by* accuracy; they weight them by how much *news* a rating carries, and news is a steeply thresholded, panel-relative quantity. Six commitments.
+
+**(1) The count comparator is a parameter-free gate.** Before any expert identity is consulted, an unweighted feature-wise comparison asks a purely ordinal question: does one product win on strictly more attributes? If not — equal win counts, including wholly non-discriminating displays — the display is construed as non-diagnostic and the subject flips a mental coin: exactly 0.5, with NO validity tie-break and NO take-the-best fallback, at every panel composition and size.
+
+**(2) HARD, NEAR-STEP MUTE BAND, CHORUS-INDEPENDENT.** Seniority is read off the *displayed panel*: s_j = (v_j − v_min)/(v_max − v_min). Only voices lying within a narrow band theta (≈12-20% of the panel span) above the panel floor are heard as carrying private, surprising information, and *within* that band the listening function is now strongly convex: m_j = max(0, 1 − s_j/theta)^rho with rho ≈ 1.7-2.5. The maverick construal is therefore close to categorical — only the panel's genuinely idiosyncratic BOTTOM voice speaks with full force; a voice that merely sits low-ish (a fifth to a half of the way into the band) is already nearly as mute as a star. Muting is unconditional: a lone star cue is as mute as a star inside a bloc.
+
+**(3) GRADED, STRONGLY ASYMMETRIC CHORUS AMPLIFICATION WITH A LATE, STEEP KNEE — and the post-knee amplification is DEEP.** A maverick's voice is loud only in proportion to the redundancy it is heard against, and redundancy is *asymmetric*: the bloc a cue CONTRADICTS is the chorus proper, while the bloc a cue sits INSIDE echoes it only weakly and therefore counts at a discount lam_own. For cue j: C_j = (m_opp − 1) + lam_own·(m_own − 1) when the cue is opposed, and C_j = (m_own − 1) when the display is unanimous. Amplification G_j = 1 + alpha·C_j^p/(C_j^p + kappa) with a LATE, STEEP knee (p ≈ 6.4, kappa ≈ 205) and a LARGE post-knee asymptote (alpha ≈ 52). Because (2) is now near-categorical, this large amplification is applied essentially only to true floor voices: a partial, mid-band voice can no longer borrow a 20-30x chorus gain and masquerade as a maverick.
+
+**(4) THE PANEL GRADIENT: the mute band is quiet, not empty, and the listening floor is THIN.** Muted experts do not vanish; each discriminating cue contributes a residual r_j = eta + c·(1 − s_j) — a thin flat listening floor plus an inverse-seniority gradient. Displays in which no voice is inside the mute band hover near chance at any count margin, while the preserved slope still generates the anti-validity contrasts on conflict displays.
+
+**(5) DILUTION AND LAPSE.** Net evidence E = Σ_j dir_j·(G_j·m_j + r_j) is compressed by the number of mutually contradicting cues, D^gamma, and mixed with an attention lapse epsilon.
+
+**(6) CAPACITY IS BOTH A FLATTENING AND A SUBSTANTIAL NOISE SOURCE.** Holding the whole seniority ordering in mind is possible only up to about seven voices. For n > 7 the amplification collapses toward 1 AND integration becomes markedly noisier (divisor × (1 + chi·(n−7)) with chi now appreciably larger), so eight-expert star-backed majorities sit at chance and eight-expert plain tally adherence is systematically LOWER than the six-expert equivalent even though the tally still governs direction.
+
+**Cross-design signature:** exact chance on tally ties at any composition; chance on displays whose every discriminating voice is upper-band, at ANY count margin; only the panel's bottom voice (not the second- or third-from-bottom) can reverse a majority; a lone floor voice opposed by a mere PAIR lands at chance while the same voice opposed by a three-cue bloc reverses it to ≈.15; near-ceiling following of dense unanimous displays and of majorities containing the floor voice; and visibly attenuated, noisy integration on eight-expert panels.
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, state, history):
+    import numpy as np
+
+    # ---------------- parse the stimulus ----------------
+    a = None
+    b = None
+    if isinstance(state, dict):
+        for ka, kb in (('option_a_ratings', 'option_b_ratings'),
+                       ('a_ratings', 'b_ratings'),
+                       ('A', 'B'), ('a', 'b')):
+            if ka in state and kb in state:
+                try:
+                    a = np.asarray(list(state[ka]), dtype=float).ravel()
+                    b = np.asarray(list(state[kb]), dtype=float).ravel()
+                except Exception:
+                    a = None
+                    b = None
+                break
+    if a is None or b is None:
+        try:
+            arr = np.asarray(state, dtype=float).reshape(2, -1)
+            a = np.asarray(arr[0], dtype=float).ravel()
+            b = np.asarray(arr[1], dtype=float).ravel()
+        except Exception:
+            return np.array([0.5, 0.5], dtype=float)
+
+    if a is None or b is None or a.size == 0 or a.size != b.size:
+        return np.array([0.5, 0.5], dtype=float)
+
+    n = int(a.size)
+
+    # ---------- Commitment 1: parameter-free count gate ----------
+    d = np.sign(a - b)
+    iA = np.where(d > 0)[0]
+    iB = np.where(d < 0)[0]
+    mA = int(iA.size)
+    mB = int(iB.size)
+    if mA == mB:                      # includes wholly non-discriminating displays
+        return np.array([0.5, 0.5], dtype=float)
+
+    D = float(mA + mB)
+
+    # ---------------- parameters ----------------
+    def _g(name, default, lo, hi):
+        try:
+            x = float(parameters.get(name, default))
+        except Exception:
+            x = float(default)
+        if not np.isfinite(x):
+            x = float(default)
+        return float(min(max(x, lo), hi))
+
+    theta = _g('theta', 0.16, 0.02, 0.90)
+    rho = _g('rho', 2.1, 0.20, 4.00)
+    eta = _g('eta', 0.23, 0.00, 1.00)
+    c_res = _g('c_res', 2.0, 0.00, 6.00)
+    beta = _g('beta', 0.80, 0.00, 5.00)
+    gamma = _g('gamma', 0.95, 0.00, 2.50)
+    alpha = _g('alpha', 52.0, 0.00, 400.0)
+    kappa = _g('kappa', 205.0, 0.05, 2000.0)
+    p_ch = _g('p_ch', 6.4, 0.50, 12.0)
+    lam_own = _g('lam_own', 0.36, 0.00, 1.00)
+    psi = _g('psi', 0.22, 0.00, 1.00)
+    chi = _g('chi', 0.39, 0.00, 3.00)
+    eps = _g('epsilon', 0.09, 0.00, 0.60)
+
+    # ---------------- stated validities ----------------
+    v = None
+    try:
+        vr = parameters.get('validities', None) if hasattr(parameters, 'get') else None
+        if vr is not None:
+            v = np.asarray(vr, dtype=float).ravel()
+    except Exception:
+        v = None
+    if v is None or v.size != n:
+        v = np.linspace(0.95, 0.55, n) if n > 1 else np.array([0.75], dtype=float)
+
+    v_min = float(np.min(v))
+    v_max = float(np.max(v))
+    span = v_max - v_min
+    if (not np.isfinite(span)) or span <= 1e-9:
+        s = np.zeros(n, dtype=float)
+    else:
+        s = np.clip((v - v_min) / span, 0.0, 1.0)
+
+    # ---------- Commitment 2: hard, near-step, chorus-independent mute band ----------
+    band = np.clip(1.0 - s / max(theta, 1e-6), 0.0, 1.0)
+    mav = np.power(band, rho)                      # maverick strength, 0 outside the band
+
+    # ---------- Commitment 3: GRADED chorus amplification (cue-specific) ----------
+    def _G(base):
+        base = float(max(0.0, base))
+        try:
+            bp = base ** p_ch
+        except Exception:
+            bp = base
+        if (not np.isfinite(bp)) or bp < 0.0:
+            bp = 0.0
+        g = 1.0 + alpha * bp / (bp + kappa)
+        if (not np.isfinite(g)) or g < 1.0:
+            g = 1.0
+        return g
+
+    # the bloc a cue OPPOSES counts fully; the bloc it sits INSIDE counts at
+    # weight lam_own; an unopposed cue hears only the consensus it belongs to.
+    if mB > 0:
+        base_A = (float(mB) - 1.0) + lam_own * (float(mA) - 1.0)
+    else:
+        base_A = (float(mA) - 1.0)
+    if mA > 0:
+        base_B = (float(mA) - 1.0) + lam_own * (float(mB) - 1.0)
+    else:
+        base_B = (float(mB) - 1.0)
+
+    G_A = _G(base_A)
+    G_B = _G(base_B)
+
+    # ---------- Commitment 6: capacity limit past ~7 voices ----------
+    over = max(0.0, float(n) - 7.0)
+    if over > 0.0:
+        shrink = max(0.0, 1.0 - psi * over)
+        G_A = 1.0 + (G_A - 1.0) * shrink
+        G_B = 1.0 + (G_B - 1.0) * shrink
+    noise = 1.0 + chi * over
+    if (not np.isfinite(noise)) or noise <= 0.0:
+        noise = 1.0
+
+    # ---------- Commitment 4: the panel gradient (quiet, not empty) ----------
+    resid = eta + c_res * (1.0 - s)
+
+    w = np.array(resid, dtype=float, copy=True)
+    if iA.size > 0:
+        w[iA] = G_A * mav[iA] + resid[iA]
+    if iB.size > 0:
+        w[iB] = G_B * mav[iB] + resid[iB]
+
+    E = float(np.sum(w[iA]) - np.sum(w[iB]))
+    if not np.isfinite(E):
+        E = 0.0
+
+    # ---------- Commitment 5: dilution by cue count, then lapse ----------
+    den = float(D) ** gamma
+    if (not np.isfinite(den)) or den <= 0.0:
+        den = 1.0
+    den = den * noise
+
+    z = beta * E / den
+    if not np.isfinite(z):
+        z = 0.0
+    z = float(min(max(z, -30.0), 30.0))
+
+    p_a = 1.0 / (1.0 + np.exp(-z))
+    p_a = (1.0 - eps) * p_a + eps * 0.5
+    p_a = float(min(max(p_a, 1e-9), 1.0 - 1e-9))
+
+    p = np.array([p_a, 1.0 - p_a], dtype=float)
+    p = np.clip(p, 1e-12, 1.0)
+    return p / p.sum()
+
+`policy(probs) -> int`:
+def policy(probs):
+    import numpy as np
+    probs = np.asarray(probs, dtype=np.float64)
+    probs = np.clip(probs, 0.0, None)
+    s = probs.sum()
+    if (not np.isfinite(s)) or s <= 0:
+        probs = np.ones_like(probs) / float(len(probs))
+    else:
+        probs = probs / s
+    return int(np.random.choice(len(probs), p=probs))
+
+`parameters`:
+- theta: [0.12, 0.20]
+- rho: [1.7, 2.5]
+- eta: [0.18, 0.28]
+- c_res: [1.7, 2.3]
+- beta: [0.70, 0.90]
+- gamma: [0.88, 1.02]
+- alpha: [46, 58]
+- kappa: [180, 230]
+- p_ch: [6.1, 6.7]
+- lam_own: [0.28, 0.45]
+- psi: [0.10, 0.35]
+- chi: [0.26, 0.52]
+- epsilon: [0.04, 0.14]
+- validities: validities
+
+**Per-experiment fit (real vs this theory's metric value):**
+- Experiment 1: real=0.4738 (var=0.0073) vs this=0.5081 (var=0.0086)
+- Experiment 2: real=0.6538 (var=0.0092) vs this=0.7087 (var=0.0069)
+- Experiment 3: real=0.7937 (var=0.0071) vs this=0.7742 (var=0.0020)
+- Experiment 4: real=0.7546 (var=0.0064) vs this=0.7492 (var=0.0014)
+- Experiment 5: real=-0.7633 (var=0.0200) vs this=-0.6542 (var=0.0050)
+- Experiment 6: real=-0.9375 (var=0.0693) vs this=-0.9213 (var=0.0220)
+- Experiment 7: real=0.6606 (var=0.0038) vs this=0.6750 (var=0.0035)
+- Experiment 8: real=0.4850 (var=0.0085) vs this=0.4931 (var=0.0066)
+- Experiment 9: real=0.4050 (var=0.0022) vs this=0.3756 (var=0.0029)
+- Experiment 10: real=-0.0225 (var=0.0100) vs this=0.0663 (var=0.0326)
+- Experiment 11: real=0.6983 (var=0.0122) vs this=0.6533 (var=0.0064)
+- Experiment 12: real=0.1450 (var=0.0099) vs this=0.0788 (var=0.0054)
+- Experiment 13: real=0.4892 (var=0.0049) vs this=0.5542 (var=0.0056)
+- Experiment 14: real=0.4892 (var=0.0049) vs this=0.4929 (var=0.0046)
+- Experiment 15: real=0.0067 (var=0.0123) vs this=-0.0583 (var=0.0163)
+- Experiment 16: real=0.0517 (var=0.0159) vs this=-0.0381 (var=0.0193)
+
+
+---
+
+### `pi_6` (overall score: 0.563)
+
+**Description**
+**Capacity-Gated Strongly-Saturating Redundancy Validity-Inversion Tallying (GVIT-CAP-S4).**
+
+Five commitments describe how people combine binary expert ratings whose stated validities they have been told.
+
+**(1) The count comparator is a gate, not a weight.** Before any evaluation of *whose* rating is whose, the subject asks a purely ordinal question: does one product win on more attributes than the other? This is answered with unweighted feature-wise comparisons. If the answer is "no" (equal numbers of winning attributes, including displays where nothing discriminates), the display is construed as *non-diagnostic*, no candidate is generated, and the subject flips a mental coin. Stated validities are **never** used as a tie-break. This is a hard, parameter-free prediction: on tally-tied, side-counterbalanced profiles adherence to the most-valid discriminating cue is exactly chance whatever the validity vector.
+
+**(2) When a majority exists, integration uses inverse-informativeness weights.** The subjective news value of a rating is a smooth, panel-relative *decreasing* function of stated validity: s_j = (v_j - v_min)/(v_max - v_min) within the displayed panel, w_j = 1 - lambda_eff*f(s_j). A near-perfect expert is heard as merely restating the obvious consensus quality of the product, so his rating adds almost nothing (and, when lambda_eff*f > 1, is mildly counter-indicative); a barely-diagnostic expert is surprising and is treated as genuine private information carrying full weight. Evidence is the single scalar E = sum_j w_j*sign(a_j - b_j).
+
+**(3) The redundancy construal saturates VERY STRONGLY just above the panel floor.** Redundancy is not judged on a linear scale of stated accuracy: "being one of the accurate ones" is a nearly categorical construal. An expert only has to be slightly above the panel's least-accurate voice before he is already heard as echoing the consensus. Formally the discount is a strongly concave function of panel-relative validity, f(s) = s^omega with omega well below 1 (~0.26-0.42), so the discount rises steeply just above the panel floor and then flattens. Two consequences follow that neither a linear nor a mildly concave inversion produces. (i) A majority carried by *middling* experts (the 2nd-5th most accurate voices) carries almost no subjective evidence: mid-panel support is discounted nearly as heavily as star support, so a mid-backed majority facing a lone star is followed only weakly, close to chance. (ii) Conversely, when the count loser is backed by the panel's genuinely idiosyncratic bottom voices, the anti-count evidence is *strengthened*, sharpening the reversal. So the model separates three displays that a linear inversion renders nearly identical: majority-by-mid-experts (followed barely above chance), majority-by-bottom-voices (followed near ceiling), and star-backed majorities (reversed toward floor).
+
+**(4) Redundancy is comparative; evidence spread over many contradicting cues is compressed.** An expert is discounted only because other experts are heard as echoing him, so the inversion scales with how many voices actually speak on the trial: lambda_eff = lambda_n*(D-1)/((D-1)+kappa_D), where D is the number of discriminating cues; when exactly one expert differentiates the products there is no chorus and his rating is taken at face value. Confidence in E is then compressed by the number of mutually contradicting cues, D^gamma.
+
+**(5) The inversion is a capacity-limited construal: it collapses when the panel exceeds working-memory span.** Discounting the star requires holding the validity ordering of the whole panel in mind, which is possible only up to roughly seven experts. Beyond capacity the ordering blurs, so the redundancy construal washes out toward equal weighting (lambda_n = lambda*(1 - psi*o)) and integration becomes noisier (slope divided by 1 + chi*o), where o = logistic((n - 7.5)/0.2). Finally an attention lapse epsilon replaces the decision by a coin flip.
+
+Cross-design signature: exact chance on tally-tied profiles; strong systematic reversal of star-backed majorities on panels of <=7 experts; near-chance for the same star-backed profiles on panels of 8+ experts, with preserved tally adherence there for broad-mixture majorities; near-ceiling following of a lone discriminating expert; only weakly above-chance following of mid-panel-backed majorities that oppose a lone star; and markedly attenuated confidence whenever the weighted evidence is spread across many mutually contradicting cues.
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, state, history):
+    import numpy as np
+
+    # ---------- parse the stimulus ----------
+    a = None
+    b = None
+    try:
+        if isinstance(state, dict):
+            if 'option_a_ratings' in state and 'option_b_ratings' in state:
+                a = np.asarray(list(state['option_a_ratings']), dtype=float).ravel()
+                b = np.asarray(list(state['option_b_ratings']), dtype=float).ravel()
+    except Exception:
+        a = None
+        b = None
+
+    if a is None or b is None:
+        try:
+            stim = np.asarray(state, dtype=float)
+            if stim.ndim == 1:
+                stim = stim.reshape(2, -1)
+            elif stim.ndim > 2:
+                stim = stim.reshape(2, -1)
+            if stim.shape[0] != 2:
+                stim = stim.reshape(2, -1)
+            a = np.asarray(stim[0], dtype=float).ravel()
+            b = np.asarray(stim[1], dtype=float).ravel()
+        except Exception:
+            return np.array([0.5, 0.5], dtype=float)
+
+    n = int(a.shape[0])
+    if n == 0 or int(b.shape[0]) != n:
+        return np.array([0.5, 0.5], dtype=float)
+
+    # ---------- feature-wise comparison ----------
+    d = np.sign(a - b)                       # +1 A wins cue, -1 B wins cue, 0 tie
+    nA = int(np.sum(d > 0))
+    nB = int(np.sum(d < 0))
+    D = nA + nB
+
+    # ---- Commitment 1: the count comparator is a gate. No majority -> guess.
+    if D == 0 or nA == nB:
+        return np.array([0.5, 0.5], dtype=float)
+
+    # ---------- parameters ----------
+    def _get(name, default):
+        try:
+            return float(parameters.get(name, default))
+        except Exception:
+            return float(default)
+
+    lam = _get('lam', 1.45)
+    beta = _get('beta', 6.7)
+    gamma = _get('gamma', 0.90)
+    kappa_d = _get('kappa_d', 0.10)
+    psi = _get('psi', 0.40)
+    chi = _get('chi', 0.95)
+    eps = _get('epsilon', 0.17)
+    omega = _get('omega', 0.34)              # saturating-redundancy exponent
+
+    lam = float(min(max(lam, 0.0), 2.5))
+    beta = float(min(max(beta, 0.0), 30.0))
+    gamma = float(min(max(gamma, 0.0), 2.5))
+    kappa_d = float(min(max(kappa_d, 1e-6), 3.0))
+    psi = float(min(max(psi, 0.0), 1.0))
+    chi = float(min(max(chi, 0.0), 5.0))
+    eps = float(min(max(eps, 0.0), 0.6))
+    omega = float(min(max(omega, 0.2), 1.5))
+
+    # ---------- stated validities ----------
+    v = None
+    v_raw = parameters.get('validities', None) if hasattr(parameters, 'get') else None
+    if v_raw is not None:
+        try:
+            v = np.asarray(v_raw, dtype=float).ravel()
+        except Exception:
+            v = None
+    if v is None or v.shape[0] != n:
+        v = np.linspace(0.95, 0.55, n) if n > 1 else np.array([0.75], dtype=float)
+
+    v_min = float(np.min(v))
+    v_max = float(np.max(v))
+    rng = v_max - v_min
+    if not np.isfinite(rng) or rng <= 1e-9:
+        s = np.zeros(n, dtype=float)          # no validity contrast in the panel
+    else:
+        s = (v - v_min) / rng                 # panel-relative informativeness, in [0,1]
+
+    # ---- Commitment 3: the redundancy construal SATURATES above the floor ----
+    # strongly concave transform: being appreciably above the panel's least-accurate
+    # voice is already enough to be heard as "one of the accurate ones".
+    s = np.power(np.clip(s, 0.0, 1.0), omega)
+
+    # ---- Commitment 5: capacity overload of the panel (~7 experts) --------
+    N_CAP = 7.5
+    W_CAP = 0.20
+    arg_o = (float(n) - N_CAP) / W_CAP
+    arg_o = float(min(max(arg_o, -60.0), 60.0))
+    o = 1.0 / (1.0 + np.exp(-arg_o))
+
+    lam_n = lam * (1.0 - psi * o)
+    if not np.isfinite(lam_n) or lam_n < 0.0:
+        lam_n = 0.0
+
+    # ---- Commitment 4: redundancy is comparative (needs a chorus) -------
+    lam_eff = lam_n * (float(D) - 1.0) / ((float(D) - 1.0) + kappa_d)
+    if not np.isfinite(lam_eff) or lam_eff < 0.0:
+        lam_eff = 0.0
+
+    # ---- Commitment 2: inverse-informativeness weights ------------------
+    w = 1.0 - lam_eff * s
+    E = float(np.sum(w * d))
+
+    # ---- Commitment 4b: compression by the number of contradicting cues --
+    denom = float(D) ** gamma
+    if not np.isfinite(denom) or denom <= 0.0:
+        denom = 1.0
+    overload_noise = 1.0 + chi * o
+    if not np.isfinite(overload_noise) or overload_noise <= 0.0:
+        overload_noise = 1.0
+    denom = denom * overload_noise
+
+    z = beta * E / denom
+    if z > 30.0:
+        z = 30.0
+    elif z < -30.0:
+        z = -30.0
+
+    p_a = 1.0 / (1.0 + np.exp(-z))
+
+    # ---- attention lapse ------------------------------------------------
+    p_a = (1.0 - eps) * p_a + eps * 0.5
+    p_a = float(min(max(p_a, 1e-9), 1.0 - 1e-9))
+
+    p = np.array([p_a, 1.0 - p_a], dtype=float)
+    p = np.clip(p, 1e-12, 1.0)
+    return p / p.sum()
+
+`policy(probs) -> int`:
+def policy(probs):
+    import numpy as np
+    probs = np.asarray(probs, dtype=np.float64)
+    probs = np.clip(probs, 0.0, None)
+    s = probs.sum()
+    if not np.isfinite(s) or s <= 0:
+        probs = np.ones_like(probs) / float(len(probs))
+    else:
+        probs = probs / s
+    return int(np.random.choice(len(probs), p=probs))
+
+`parameters`:
+- lam: [1.10, 1.80]
+- beta: [5.8, 7.6]
+- gamma: [0.74, 1.06]
+- kappa_d: [0.01, 0.45]
+- psi: [0.32, 0.48]
+- chi: [0.75, 1.15]
+- epsilon: [0.07, 0.27]
+- omega: [0.26, 0.42]
+- validities: validities
+
+**Per-experiment fit (real vs this theory's metric value):**
+- Experiment 1: real=0.4738 (var=0.0073) vs this=0.5106 (var=0.0056)
+- Experiment 2: real=0.6538 (var=0.0092) vs this=0.7025 (var=0.0100)
+- Experiment 3: real=0.7937 (var=0.0071) vs this=0.7831 (var=0.0039)
+- Experiment 4: real=0.7546 (var=0.0064) vs this=0.7175 (var=0.0042)
+- Experiment 5: real=-0.7633 (var=0.0200) vs this=-0.7525 (var=0.0071)
+- Experiment 6: real=-0.9375 (var=0.0693) vs this=-0.9162 (var=0.0494)
+- Experiment 7: real=0.6606 (var=0.0038) vs this=0.6775 (var=0.0023)
+- Experiment 8: real=0.4850 (var=0.0085) vs this=0.4919 (var=0.0121)
+- Experiment 9: real=0.4050 (var=0.0022) vs this=0.3791 (var=0.0043)
+- Experiment 10: real=-0.0225 (var=0.0100) vs this=0.3338 (var=0.0282)
+- Experiment 11: real=0.6983 (var=0.0122) vs this=0.5292 (var=0.0060)
+- Experiment 12: real=0.1450 (var=0.0099) vs this=0.2562 (var=0.0218)
+- Experiment 13: real=0.4892 (var=0.0049) vs this=0.3654 (var=0.0148)
+- Experiment 14: real=0.4892 (var=0.0049) vs this=0.2792 (var=0.0159)
+- Experiment 15: real=0.0067 (var=0.0123) vs this=0.3375 (var=0.0364)
+- Experiment 16: real=0.0517 (var=0.0159) vs this=0.4219 (var=0.0362)
+
+
+---
+
+### `pi_8` (overall score: 0.472)
+
+**Description**
+**Consensus-Graded Validity Inversion with a Non-Negative News Floor (CG-VI-2).**
+
+People told the stated accuracies of a panel of binary expert ratings do not weight experts *by* accuracy; they weight them by how much *news* a rating carries. Six commitments.
+
+**(1) The count comparator is a gate, not a weight.** Before any expert identity is consulted, an unweighted feature-wise comparison asks a purely ordinal question: does one product win on strictly more attributes? If not — equal win counts, including wholly non-discriminating displays — the display is construed as non-diagnostic and the subject flips a mental coin: exactly 0.5, with NO validity tie-break and NO take-the-best fallback. Parameter-free at every panel composition (Exp 1, Exp 3's tied cells, Exp 7's tied cells, Exp 10's C3 cell).
+
+**(2) When a count winner exists, weights are inverse in stated validity, measured against the panel's least-accurate voice and strongly SATURATING.** s_j = (v_j - v_min)/(v_max - v_min); news value w_j = 1 - lambda_eff * s_j^omega with omega well below 1 (~0.3-0.4). Because the transform is strongly concave, *any* expert appreciably above the panel floor is already heard as "one of the accurate ones" — merely restating the obvious consensus quality of the product — while the panel's genuinely idiosyncratic bottom voice is heard as private, surprising information and keeps full credit.
+
+**(3) THE NEW COMMITMENT — news value is bounded below at ZERO: a redundant expert is IGNORED, never counted against his own side.** w_j = max(0, 1 - lambda_eff*s_j^omega). Redundancy is a reason to stop listening, not a reason to believe the opposite. This is what generates the signature pattern that no signed-inversion model produces: *the side holding the panel's least-accurate voice wins, and when neither side holds it the plain tally decides*. A majority made of stars plus the maverick is followed near ceiling (the stars are mute, the maverick speaks for the majority), whereas the numerically identical majority made of mid-panel experts is rejected when the maverick sits in the minority. It also stops dense, unanimous, high-validity displays from being actively rejected (they merely lose force and drift toward chance), which preserves plain-tally adherence.
+
+**(4) The redundancy construal is graded by how big and how lopsided the visible consensus is, and it saturates sharply.** The subjective chorus is read off the display as CH = max(m_A, m_B) + |m_A - m_B| - 2, i.e. the size of the larger bloc *plus* the net excess of same-direction voices. lambda_eff = lambda * CH^q/(CH^q + kappa) with q ~ 3.4-4.5 and kappa ~ 1.4-2.0. Hence: a solitary discriminating voice (CH = 0) is heard at full face value; a 2-vs-1 display (CH = 1) is only weakly discounted, so a mid pair opposed by a lone floor voice lands essentially at chance; a 3-vs-2, 2-vs-0 or 3-vs-1 display (CH >= 2) is discounted almost maximally, so the floor voice takes over; and everything denser is saturated.
+
+**(5) Confidence is compressed by the sheer number of discriminating cues (D^gamma) and capped by an attention lapse epsilon.** Evidence spread across many mutually contradicting attributes is subjectively weaker than the same net weight carried by a sparse clean split.
+
+**(6) The inversion needs the whole validity ordering in mind, so it degrades past working-memory span (~7 voices).** For n > 7 the discount shrinks (lambda scaled by 1 - psi*(n-7)) and integration gets noisier (divisor multiplied by 1 + chi*(n-7)), so eight-expert star-backed majorities sit at chance rather than being reversed, while plain tally adherence there is preserved.
+
+**Cross-design signature:** exact chance on tally ties at any validity composition; the panel's least-accurate discriminating voice decides whenever it is present on exactly one side, at every panel size up to seven; near-chance for 2-vs-1 mid-versus-floor displays but decisive rejection of 3-cue majorities opposed by the same floor voice; near-ceiling following of majorities that themselves contain the floor voice; lone voices taken at face value; unanimous all-star displays drifting to chance rather than reversing; and markedly attenuated inversion on eight-expert panels.
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, state, history):
+    import numpy as np
+
+    # ---------------- parse the stimulus ----------------
+    a = None
+    b = None
+    if isinstance(state, dict):
+        for ka, kb in (('option_a_ratings', 'option_b_ratings'),
+                       ('a_ratings', 'b_ratings'),
+                       ('A', 'B'), ('a', 'b')):
+            if ka in state and kb in state:
+                try:
+                    a = np.asarray(list(state[ka]), dtype=float).ravel()
+                    b = np.asarray(list(state[kb]), dtype=float).ravel()
+                except Exception:
+                    a = None
+                    b = None
+                break
+    if a is None or b is None:
+        try:
+            arr = np.asarray(state, dtype=float)
+            arr = arr.reshape(2, -1)
+            a = np.asarray(arr[0], dtype=float).ravel()
+            b = np.asarray(arr[1], dtype=float).ravel()
+        except Exception:
+            return np.array([0.5, 0.5], dtype=float)
+
+    if a is None or b is None or a.size == 0 or a.size != b.size:
+        return np.array([0.5, 0.5], dtype=float)
+
+    n = int(a.size)
+
+    # ------------- Commitment 1: parameter-free count gate -------------
+    d = np.sign(a - b)
+    iA = np.where(d > 0)[0]
+    iB = np.where(d < 0)[0]
+    mA = int(iA.size)
+    mB = int(iB.size)
+    if mA == mB:                       # includes wholly non-discriminating displays
+        return np.array([0.5, 0.5], dtype=float)
+
+    D = float(mA + mB)
+    M = float(abs(mA - mB))            # net consensus margin
+    c_side = float(max(mA, mB))        # size of the larger bloc
+    CH = c_side + M - 2.0              # visible chorus argument
+    if (not np.isfinite(CH)) or CH < 0.0:
+        CH = 0.0
+
+    # ---------------- parameters ----------------
+    def _g(name, default, lo, hi):
+        try:
+            x = float(parameters.get(name, default))
+        except Exception:
+            x = float(default)
+        if not np.isfinite(x):
+            x = float(default)
+        return float(min(max(x, lo), hi))
+
+    lam = _g('lam', 1.75, 0.0, 4.0)
+    omega = _g('omega', 0.34, 0.10, 1.50)
+    q_m = _g('q_m', 3.95, 0.50, 8.00)
+    kappa_m = _g('kappa_m', 1.70, 0.05, 8.00)
+    beta = _g('beta', 11.0, 0.0, 40.0)
+    gamma = _g('gamma', 0.90, 0.0, 2.5)
+    psi = _g('psi', 0.50, 0.0, 1.0)
+    chi = _g('chi', 0.85, 0.0, 4.0)
+    eps = _g('epsilon', 0.12, 0.0, 0.6)
+
+    # ---------------- stated validities ----------------
+    v = None
+    try:
+        vr = parameters.get('validities', None) if hasattr(parameters, 'get') else None
+        if vr is not None:
+            v = np.asarray(vr, dtype=float).ravel()
+    except Exception:
+        v = None
+    if v is None or v.size != n:
+        v = np.linspace(0.95, 0.55, n) if n > 1 else np.array([0.75], dtype=float)
+
+    # ------------- Commitment 2: saturating inverse-validity news value -------------
+    v_min = float(np.min(v))
+    v_max = float(np.max(v))
+    span = v_max - v_min
+    if (not np.isfinite(span)) or span <= 1e-9:
+        s = np.zeros(n, dtype=float)
+    else:
+        s = np.clip((v - v_min) / span, 0.0, 1.0)
+    f = np.power(np.clip(s, 0.0, 1.0), omega)
+
+    # ------------- Commitment 6: capacity-limited construal (n > 7) -------------
+    over = max(0.0, float(n) - 7.0)
+    lam_n = lam * max(0.0, 1.0 - psi * over)
+    if (not np.isfinite(lam_n)) or lam_n < 0.0:
+        lam_n = 0.0
+
+    # ------------- Commitment 4: chorus(size+margin)-graded redundancy -------------
+    try:
+        CHq = float(CH) ** q_m
+    except Exception:
+        CHq = float(CH)
+    if (not np.isfinite(CHq)) or CHq < 0.0:
+        CHq = float(CH)
+    lam_eff = lam_n * CHq / (CHq + kappa_m)
+    if (not np.isfinite(lam_eff)) or lam_eff < 0.0:
+        lam_eff = 0.0
+
+    # ------------- Commitment 3: news value is floored at ZERO -------------
+    w = np.maximum(0.0, 1.0 - lam_eff * f)
+
+    E = float(np.sum(w[iA]) - np.sum(w[iB]))
+    if not np.isfinite(E):
+        E = 0.0
+
+    # ------------- Commitment 5: dilution by cue count, plus overload noise -------------
+    den = float(D) ** gamma
+    if (not np.isfinite(den)) or den <= 0.0:
+        den = 1.0
+    den = den * (1.0 + chi * over)
+    if (not np.isfinite(den)) or den <= 0.0:
+        den = 1.0
+
+    z = beta * E / den
+    if not np.isfinite(z):
+        z = 0.0
+    z = float(min(max(z, -30.0), 30.0))
+
+    p_a = 1.0 / (1.0 + np.exp(-z))
+
+    # attention lapse
+    p_a = (1.0 - eps) * p_a + eps * 0.5
+    p_a = float(min(max(p_a, 1e-9), 1.0 - 1e-9))
+
+    p = np.array([p_a, 1.0 - p_a], dtype=float)
+    p = np.clip(p, 1e-12, 1.0)
+    return p / p.sum()
+
+`policy(probs) -> int`:
+def policy(probs):
+    import numpy as np
+    probs = np.asarray(probs, dtype=np.float64)
+    probs = np.clip(probs, 0.0, None)
+    s = probs.sum()
+    if (not np.isfinite(s)) or s <= 0:
+        probs = np.ones_like(probs) / float(len(probs))
+    else:
+        probs = probs / s
+    return int(np.random.choice(len(probs), p=probs))
+
+`parameters`:
+- lam: [1.60, 1.90]
+- omega: [0.28, 0.40]
+- q_m: [3.40, 4.50]
+- kappa_m: [1.40, 2.00]
+- beta: [9.5, 12.5]
+- gamma: [0.80, 1.00]
+- psi: [0.42, 0.58]
+- chi: [0.60, 1.10]
+- epsilon: [0.08, 0.18]
+- validities: validities
+
+**Per-experiment fit (real vs this theory's metric value):**
+- Experiment 1: real=0.4738 (var=0.0073) vs this=0.5075 (var=0.0083)
+- Experiment 2: real=0.6538 (var=0.0092) vs this=0.7425 (var=0.0058)
+- Experiment 3: real=0.7937 (var=0.0071) vs this=0.8994 (var=0.0010)
+- Experiment 4: real=0.7546 (var=0.0064) vs this=0.8350 (var=0.0023)
+- Experiment 5: real=-0.7633 (var=0.0200) vs this=-0.7063 (var=0.0049)
+- Experiment 6: real=-0.9375 (var=0.0693) vs this=-1.0012 (var=0.0482)
+- Experiment 7: real=0.6606 (var=0.0038) vs this=0.6572 (var=0.0028)
+- Experiment 8: real=0.4850 (var=0.0085) vs this=0.4850 (var=0.0181)
+- Experiment 9: real=0.4050 (var=0.0022) vs this=0.3950 (var=0.0035)
+- Experiment 10: real=-0.0225 (var=0.0100) vs this=-0.0162 (var=0.0372)
+- Experiment 11: real=0.6983 (var=0.0122) vs this=0.6917 (var=0.0064)
+- Experiment 12: real=0.1450 (var=0.0099) vs this=0.1375 (var=0.0089)
+- Experiment 13: real=0.4892 (var=0.0049) vs this=0.6446 (var=0.0042)
+- Experiment 14: real=0.4892 (var=0.0049) vs this=0.5913 (var=0.0058)
+- Experiment 15: real=0.0067 (var=0.0123) vs this=0.4275 (var=0.0123)
+- Experiment 16: real=0.0517 (var=0.0159) vs this=0.4408 (var=0.0102)
+
+
+## LOSS TRAJECTORY (this propose-loop)
+Aggregate loss across iterations of THIS propose-loop (lower = better, 0 = perfect, `+inf` = unscorable). The ACCEPTED / REJECTED tag is the loop's programmatic accept-gate decision — only ACCEPTED candidates have ever been used as the base for a subsequent iteration. Use this together with PRIOR FEEDBACK ITERATIONS below to grade which past critic advice actually paid off.
+
+- iter 1: loss=0.1129 -> ACCEPTED
+- iter 2: loss=0.1006 -> ACCEPTED
+- iter 3: loss=0.0692 -> ACCEPTED
+- iter 4: loss=0.0680 -> ACCEPTED
+- iter 5: loss=0.0669 -> ACCEPTED
+- iter 6: loss=0.0773 -> REJECTED
+Running-best (last ACCEPTED) base: iter 5 at loss=0.0669 — this is the source shown verbatim below under `## PREVIOUS CANDIDATE (this loop)`. Push the next edit's loss strictly below that floor or the gate will reject it.
+
+## EXPERIMENTAL RESULTS
+### Experiment 1
+**Design**
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 1, 1]
+  A=[0, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 1]  B=[0, 1, 1, 1, 0]
+  A=[0, 1, 1, 1, 0]  B=[1, 0, 0, 0, 1]
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 1, 0, 1]
+  A=[0, 1, 1, 0, 1]  B=[1, 0, 0, 0, 0]
+  A=[1, 0, 0, 0, 0]  B=[0, 1, 0, 0, 0]
+  A=[0, 1, 0, 0, 0]  B=[1, 0, 0, 0, 0]
+  A=[1, 0, 1, 0, 0]  B=[0, 1, 0, 1, 0]
+  A=[0, 1, 0, 1, 0]  B=[1, 0, 1, 0, 0]
+  A=[1, 1, 0, 0, 0]  B=[1, 0, 1, 1, 1]
+  A=[1, 0, 1, 1, 1]  B=[1, 1, 0, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    validities = [0.95, 0.85, 0.75, 0.62, 0.55]
+    hits = []
+    for a_raw, b_raw, r in zip(data['option_a_ratings'],
+                               data['option_b_ratings'],
+                               data['response']):
+        a = np.asarray(list(a_raw), dtype=float)
+        b = np.asarray(list(b_raw), dtype=float)
+        n = a.shape[0]
+        if b.shape[0] != n or n == 0:
+            continue
+        if n == len(validities):
+            v = np.asarray(validities, dtype=float)
+        else:
+            # fall back: assume features already ordered by descending validity
+            v = np.arange(n, 0, -1).astype(float)
+        order = np.argsort(-v, kind='stable')
+
+        a_wins = float(np.sum(a > b))
+        b_wins = float(np.sum(b > a))
+        if a_wins != b_wins:
+            continue  # only tally-tie trials
+
+        winner = None
+        for j in order:
+            if a[j] > b[j]:
+                winner = 0
+                break
+            if b[j] > a[j]:
+                winner = 1
+                break
+        if winner is None:
+            continue  # no discriminating cue at all
+
+        try:
+            resp = int(r)
+        except Exception:
+            continue
+        hits.append(1.0 if resp == winner else 0.0)
+
+    if len(hits) == 0:
+        return 0.5
+    return float(np.mean(hits))
+```
+
+**Observed (real) value:** 0.4738 (var=0.0073)
+**Previous candidate values (this loop):**
+  - iter 1: 0.4944 (var=0.0092) (Δ vs real +0.0206)
+  - iter 2: 0.4944 (var=0.0082) (Δ vs real +0.0206)
+  - iter 3: 0.4944 (var=0.0093) (Δ vs real +0.0206)
+  - iter 4: 0.4944 (var=0.0062) (Δ vs real +0.0206)
+  - iter 5: 0.4838 (var=0.0062) (Δ vs real +0.0100)
+  - iter 6 (most recent): 0.5069 (var=0.0063) (Δ vs real +0.0331)
+**Other theories' values on this metric (for reference):**
+- pi_1: 0.8988 (var=0.0090)
+- pi_2: 0.4988 (var=0.0068)
+- pi_3: 0.5125 (var=0.0055)
+- pi_4: 0.4913 (var=0.0090)
+- pi_5: 0.5169 (var=0.0089)
+- pi_6: 0.5106 (var=0.0056)
+- pi_7: 0.4819 (var=0.0066)
+- pi_8: 0.5075 (var=0.0083)
+- pi_9: 0.5081 (var=0.0086)
+
+### Experiment 2
+**Design**
+  A=[1, 0, 0, 0, 0, 0]  B=[0, 0, 1, 1, 1, 1]
+  A=[0, 0, 1, 1, 1, 1]  B=[1, 0, 0, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0]  B=[0, 1, 0, 1, 1, 1]
+  A=[0, 1, 0, 1, 1, 1]  B=[1, 1, 1, 0, 0, 0]
+  A=[1, 0, 1, 0, 0, 1]  B=[0, 1, 0, 1, 1, 0]
+  A=[0, 1, 0, 1, 1, 0]  B=[1, 0, 1, 0, 0, 1]
+  A=[1, 0, 1, 0, 1, 1]  B=[0, 1, 0, 1, 0, 0]
+  A=[0, 1, 0, 1, 0, 0]  B=[1, 0, 1, 0, 1, 1]
+  A=[1, 1, 1, 0, 1, 1]  B=[0, 0, 0, 1, 0, 0]
+  A=[0, 0, 0, 1, 0, 0]  B=[1, 1, 1, 0, 1, 1]
+  A=[1, 0, 1, 1, 0, 0]  B=[1, 1, 0, 1, 1, 1]
+  A=[1, 1, 0, 1, 1, 1]  B=[1, 0, 1, 1, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    val = np.array([0.93, 0.57, 0.79, 0.86, 0.62, 0.71], dtype=float)
+    hits = []
+    for a_raw, b_raw, r in zip(data['option_a_ratings'],
+                               data['option_b_ratings'],
+                               data['response']):
+        a = np.asarray(list(a_raw), dtype=float)
+        b = np.asarray(list(b_raw), dtype=float)
+        n = a.shape[0]
+        if b.shape[0] != n or n == 0:
+            continue
+        if val.shape[0] == n:
+            order = np.argsort(-val, kind='stable')
+        else:
+            order = np.arange(n)
+        # tally margin (A wins minus B wins)
+        margin = int(np.sum(a > b) - np.sum(b > a))
+        if abs(margin) < 2:
+            continue
+        tally_winner = 0 if margin > 0 else 1
+        # take-the-best winner
+        ttb_winner = None
+        for j in order:
+            if a[j] > b[j]:
+                ttb_winner = 0
+                break
+            if b[j] > a[j]:
+                ttb_winner = 1
+                break
+        if ttb_winner is None:
+            continue
+        if ttb_winner == tally_winner:
+            continue  # keep only conflict trials
+        try:
+            resp = int(r)
+        except Exception:
+            continue
+        hits.append(1.0 if resp == tally_winner else 0.0)
+    if len(hits) == 0:
+        return 0.5
+    return float(np.mean(hits))
+```
+
+**Observed (real) value:** 0.6538 (var=0.0092)
+**Previous candidate values (this loop):**
+  - iter 1: 0.7887 (var=0.0058) (Δ vs real +0.1350)
+  - iter 2: 0.8194 (var=0.0047) (Δ vs real +0.1656)
+  - iter 3: 0.8037 (var=0.0064) (Δ vs real +0.1500)
+  - iter 4: 0.7438 (var=0.0048) (Δ vs real +0.0900)
+  - iter 5: 0.7581 (var=0.0093) (Δ vs real +0.1044)
+  - iter 6 (most recent): 0.7169 (var=0.0061) (Δ vs real +0.0631)
+**Other theories' values on this metric (for reference):**
+- pi_2: 0.8525 (var=0.0139)
+- pi_1: 0.1431 (var=0.0111)
+- pi_3: 0.6669 (var=0.0098)
+- pi_4: 0.6469 (var=0.0093)
+- pi_5: 0.9281 (var=0.0024)
+- pi_6: 0.7025 (var=0.0100)
+- pi_7: 0.7050 (var=0.0185)
+- pi_8: 0.7425 (var=0.0058)
+- pi_9: 0.7087 (var=0.0069)
+
+### Experiment 3
+**Design**
+  A=[1, 1, 0, 1, 0, 1]  B=[0, 1, 0, 1, 0, 1]
+  A=[0, 1, 0, 1, 0, 1]  B=[1, 1, 0, 1, 0, 1]
+  A=[1, 1, 1, 0, 1, 0]  B=[0, 1, 0, 1, 0, 1]
+  A=[0, 1, 0, 1, 0, 1]  B=[1, 1, 1, 0, 1, 0]
+  A=[1, 0, 1, 0, 1, 1]  B=[0, 0, 1, 0, 0, 1]
+  A=[0, 0, 1, 0, 0, 1]  B=[1, 0, 1, 0, 1, 1]
+  A=[1, 1, 1, 0, 1, 0]  B=[0, 0, 0, 1, 0, 1]
+  A=[0, 0, 0, 1, 0, 1]  B=[1, 1, 1, 0, 1, 0]
+  A=[1, 1, 1, 0, 1, 1]  B=[0, 0, 1, 0, 0, 1]
+  A=[0, 0, 1, 0, 0, 1]  B=[1, 1, 1, 0, 1, 1]
+  A=[1, 0, 0, 1, 1, 1]  B=[0, 0, 1, 0, 0, 0]
+  A=[0, 0, 1, 0, 0, 0]  B=[1, 0, 0, 1, 1, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    hits = []
+    a_col = data['option_a_ratings'].tolist()
+    b_col = data['option_b_ratings'].tolist()
+    r_col = data['response'].tolist()
+    for a, b, r in zip(a_col, b_col, r_col):
+        av = np.asarray(a, dtype=float).ravel()
+        bv = np.asarray(b, dtype=float).ravel()
+        if av.size == 0 or av.size != bv.size:
+            continue
+        nA = float(np.sum(av > bv))
+        nB = float(np.sum(bv > av))
+        if nA == nB:
+            continue
+        winner = 0 if nA > nB else 1
+        try:
+            resp = int(r)
+        except Exception:
+            continue
+        hits.append(1.0 if resp == winner else 0.0)
+    if len(hits) == 0:
+        return float('nan')
+    return float(np.mean(hits))
+
+```
+
+**Observed (real) value:** 0.7937 (var=0.0071)
+**Previous candidate values (this loop):**
+  - iter 1: 0.7998 (var=0.0028) (Δ vs real +0.0060)
+  - iter 2: 0.8125 (var=0.0018) (Δ vs real +0.0188)
+  - iter 3: 0.8256 (var=0.0017) (Δ vs real +0.0319)
+  - iter 4: 0.8175 (var=0.0019) (Δ vs real +0.0238)
+  - iter 5: 0.8100 (var=0.0015) (Δ vs real +0.0163)
+  - iter 6 (most recent): 0.7767 (var=0.0017) (Δ vs real -0.0171)
+**Other theories' values on this metric (for reference):**
+- pi_3: 0.6379 (var=0.0030)
+- pi_2: 0.8494 (var=0.0069)
+- pi_1: 0.8731 (var=0.0059)
+- pi_4: 0.7781 (var=0.0023)
+- pi_5: 0.8167 (var=0.0020)
+- pi_6: 0.7831 (var=0.0039)
+- pi_7: 0.7769 (var=0.0024)
+- pi_8: 0.8994 (var=0.0010)
+- pi_9: 0.7742 (var=0.0020)
+
+### Experiment 4
+**Design**
+  A=[1, 1, 0, 1, 1, 0, 1, 0]  B=[0, 1, 0, 1, 0, 0, 1, 0]
+  A=[0, 1, 0, 1, 0, 0, 1, 0]  B=[1, 1, 0, 1, 1, 0, 1, 0]
+  A=[1, 1, 0, 0, 1, 1, 0, 1]  B=[0, 0, 1, 0, 1, 1, 0, 0]
+  A=[0, 0, 1, 0, 1, 1, 0, 0]  B=[1, 1, 0, 0, 1, 1, 0, 1]
+  A=[1, 1, 1, 0, 0, 0, 1, 1]  B=[0, 0, 0, 1, 1, 1, 0, 0]
+  A=[0, 0, 0, 1, 1, 1, 0, 0]  B=[1, 1, 1, 0, 0, 0, 1, 1]
+  A=[1, 0, 1, 0, 1, 1, 1, 1]  B=[0, 0, 1, 0, 0, 0, 0, 1]
+  A=[0, 0, 1, 0, 0, 0, 0, 1]  B=[1, 0, 1, 0, 1, 1, 1, 1]
+  A=[1, 1, 1, 1, 1, 0, 1, 0]  B=[0, 0, 1, 0, 0, 1, 0, 0]
+  A=[0, 0, 1, 0, 0, 1, 0, 0]  B=[1, 1, 1, 1, 1, 0, 1, 0]
+  A=[1, 1, 1, 0, 1, 1, 0, 1]  B=[0, 0, 0, 1, 0, 0, 1, 0]
+  A=[0, 0, 0, 1, 0, 0, 1, 0]  B=[1, 1, 1, 0, 1, 1, 0, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    """Adherence to the full-profile tally winner.
+
+    For every trial we recompute the global feature-wise win counts
+    nA = #(A > B) and nB = #(B > A) over ALL features, identify the
+    option favoured by the complete tally, and score whether the subject
+    chose it. The returned scalar is the proportion of such trials on
+    which the subject followed the complete-tally winner.
+
+    Works identically on the pooled DataFrame and on a single subject's
+    slice.
+    """
+    a_col = data['option_a_ratings'].tolist()
+    b_col = data['option_b_ratings'].tolist()
+    r_col = data['response'].tolist()
+
+    hits = []
+    for a_raw, b_raw, r in zip(a_col, b_col, r_col):
+        a = np.asarray(a_raw, dtype=float).ravel()
+        b = np.asarray(b_raw, dtype=float).ravel()
+        if a.shape[0] != b.shape[0] or a.shape[0] == 0:
+            continue
+        nA = float(np.sum(a > b))
+        nB = float(np.sum(b > a))
+        if nA == nB:
+            continue  # undiagnostic (no complete-tally winner)
+        winner = 0 if nA > nB else 1
+        try:
+            resp = int(r)
+        except (TypeError, ValueError):
+            continue
+        if resp not in (0, 1):
+            continue
+        hits.append(1.0 if resp == winner else 0.0)
+
+    if len(hits) == 0:
+        return float('nan')
+    return float(np.mean(hits))
+```
+
+**Observed (real) value:** 0.7546 (var=0.0064)
+**Previous candidate values (this loop):**
+  - iter 1: 0.7146 (var=0.0038) (Δ vs real -0.0400)
+  - iter 2: 0.7060 (var=0.0030) (Δ vs real -0.0485)
+  - iter 3: 0.7071 (var=0.0022) (Δ vs real -0.0475)
+  - iter 4: 0.7087 (var=0.0023) (Δ vs real -0.0458)
+  - iter 5: 0.7006 (var=0.0033) (Δ vs real -0.0540)
+  - iter 6 (most recent): 0.6963 (var=0.0027) (Δ vs real -0.0583)
+**Other theories' values on this metric (for reference):**
+- pi_2: 0.8538 (var=0.0068)
+- pi_3: 0.6565 (var=0.0039)
+- pi_1: 0.8571 (var=0.0084)
+- pi_4: 0.7438 (var=0.0061)
+- pi_5: 0.7783 (var=0.0043)
+- pi_6: 0.7175 (var=0.0042)
+- pi_7: 0.7642 (var=0.0035)
+- pi_8: 0.8350 (var=0.0023)
+- pi_9: 0.7492 (var=0.0014)
+
+### Experiment 5
+**Design**
+  A=[1, 0, 1, 1, 0, 1]  B=[0, 1, 0, 1, 0, 1]
+  A=[0, 1, 0, 1, 0, 1]  B=[1, 0, 1, 1, 0, 1]
+  A=[0, 1, 0, 1, 1, 0]  B=[1, 0, 0, 0, 1, 0]
+  A=[1, 0, 0, 0, 1, 0]  B=[0, 1, 0, 1, 1, 0]
+  A=[1, 0, 1, 0, 1, 1]  B=[0, 1, 0, 0, 1, 0]
+  A=[0, 1, 0, 0, 1, 0]  B=[1, 0, 1, 0, 1, 1]
+  A=[0, 1, 1, 1, 1, 0]  B=[1, 0, 1, 0, 0, 0]
+  A=[1, 0, 1, 0, 0, 0]  B=[0, 1, 1, 1, 1, 0]
+  A=[1, 0, 1, 0, 1, 1]  B=[0, 1, 0, 1, 0, 0]
+  A=[0, 1, 0, 1, 0, 0]  B=[1, 0, 1, 0, 1, 1]
+  A=[0, 1, 0, 1, 1, 1]  B=[1, 0, 1, 0, 0, 0]
+  A=[1, 0, 1, 0, 0, 0]  B=[0, 1, 0, 1, 1, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+
+    validities = np.array([0.94, 0.57, 0.86, 0.62, 0.70, 0.78], dtype=float)
+
+    coh_hit = 0.0
+    coh_n = 0.0
+    con_hit = 0.0
+    con_n = 0.0
+
+    for a_raw, b_raw, resp in zip(data['option_a_ratings'],
+                                  data['option_b_ratings'],
+                                  data['response']):
+        a = np.asarray(list(a_raw), dtype=float)
+        b = np.asarray(list(b_raw), dtype=float)
+        n = a.shape[0]
+        if n == 0:
+            continue
+        if validities.shape[0] == n:
+            v = validities
+        else:
+            v = np.linspace(0.95, 0.55, n) if n > 1 else np.array([0.75])
+
+        a_win = a > b
+        b_win = b > a
+        nA = int(a_win.sum())
+        nB = int(b_win.sum())
+        if nA == nB:
+            continue  # no count winner; excluded
+        winner = 0 if nA > nB else 1
+
+        disc = a_win | b_win
+        if not disc.any():
+            continue
+        # highest-validity discriminating cue
+        idx = int(np.argmax(np.where(disc, v, -np.inf)))
+        top_owner = 0 if a_win[idx] else 1
+        coherent = (top_owner == winner)
+
+        try:
+            r = int(resp)
+        except Exception:
+            continue
+        hit = 1.0 if r == winner else 0.0
+
+        if coherent:
+            coh_hit += hit
+            coh_n += 1.0
+        else:
+            con_hit += hit
+            con_n += 1.0
+
+    if coh_n == 0.0 or con_n == 0.0:
+        return 0.0
+    return float(coh_hit / coh_n - con_hit / con_n)
+
+```
+
+**Observed (real) value:** -0.7633 (var=0.0200)
+**Previous candidate values (this loop):**
+  - iter 1: -0.7704 (var=0.0071) (Δ vs real -0.0071)
+  - iter 2: -0.7913 (var=0.0073) (Δ vs real -0.0279)
+  - iter 3: -0.7675 (var=0.0058) (Δ vs real -0.0042)
+  - iter 4: -0.7600 (var=0.0055) (Δ vs real +0.0033)
+  - iter 5: -0.7579 (var=0.0072) (Δ vs real +0.0054)
+  - iter 6 (most recent): -0.7312 (var=0.0053) (Δ vs real +0.0321)
+**Other theories' values on this metric (for reference):**
+- pi_3: -0.0042 (var=0.0075)
+- pi_4: 0.1438 (var=0.0077)
+- pi_1: 0.6683 (var=0.0558)
+- pi_2: 0.0062 (var=0.0039)
+- pi_5: -0.7671 (var=0.0062)
+- pi_6: -0.7525 (var=0.0071)
+- pi_7: -0.7733 (var=0.0093)
+- pi_8: -0.7063 (var=0.0049)
+- pi_9: -0.6542 (var=0.0050)
+
+### Experiment 6
+**Design**
+  A=[1, 1, 1, 0, 1, 0, 0]  B=[0, 1, 0, 0, 1, 0, 1]
+  A=[0, 1, 0, 0, 1, 0, 1]  B=[1, 1, 1, 0, 1, 0, 0]
+  A=[0, 1, 1, 0, 0, 1, 1]  B=[1, 0, 1, 0, 0, 1, 0]
+  A=[1, 0, 1, 0, 0, 1, 0]  B=[0, 1, 1, 0, 0, 1, 1]
+  A=[1, 0, 1, 0, 1, 1, 1]  B=[0, 1, 0, 1, 0, 0, 1]
+  A=[0, 1, 0, 1, 0, 0, 1]  B=[1, 0, 1, 0, 1, 1, 1]
+  A=[0, 1, 0, 1, 1, 0, 1]  B=[1, 0, 1, 0, 0, 0, 0]
+  A=[1, 0, 1, 0, 0, 0, 0]  B=[0, 1, 0, 1, 1, 0, 1]
+  A=[1, 0, 1, 1, 1, 0, 1]  B=[1, 0, 0, 1, 0, 0, 1]
+  A=[1, 0, 0, 1, 0, 0, 1]  B=[1, 0, 1, 1, 1, 0, 1]
+  A=[1, 1, 1, 1, 0, 1, 1]  B=[0, 1, 1, 0, 0, 0, 0]
+  A=[0, 1, 1, 0, 0, 0, 0]  B=[1, 1, 1, 1, 0, 1, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+
+    V = np.array([0.94, 0.58, 0.86, 0.63, 0.72, 0.80, 0.55], dtype=float)
+
+    coh_hit = 0.0; coh_n = 0
+    con_hit = 0.0; con_n = 0
+    us_hit = 0.0; us_n = 0
+    ud_hit = 0.0; ud_n = 0
+
+    a_col = data['option_a_ratings'].tolist()
+    b_col = data['option_b_ratings'].tolist()
+    r_col = data['response'].tolist()
+
+    for a_raw, b_raw, resp in zip(a_col, b_col, r_col):
+        try:
+            a = np.asarray(a_raw, dtype=float).ravel()
+            b = np.asarray(b_raw, dtype=float).ravel()
+        except Exception:
+            continue
+        n = int(a.size)
+        if n == 0 or int(b.size) != n:
+            continue
+        if n == int(V.size):
+            w = V - 0.5
+        elif n > 1:
+            w = np.linspace(0.95, 0.55, n) - 0.5
+        else:
+            w = np.array([0.25])
+
+        aw = a > b
+        bw = b > a
+        nA = int(np.sum(aw))
+        nB = int(np.sum(bw))
+        if nA == nB:
+            continue
+        winner = 0 if nA > nB else 1
+        try:
+            r = int(resp)
+        except Exception:
+            continue
+        if r not in (0, 1):
+            continue
+        hit = 1.0 if r == winner else 0.0
+        D = nA + nB
+        if winner == 0:
+            Ww = float(np.sum(w[aw])); Wl = float(np.sum(w[bw])); n_lose = nB
+        else:
+            Ww = float(np.sum(w[bw])); Wl = float(np.sum(w[aw])); n_lose = nA
+
+        if n_lose == 0:
+            # unanimous profiles: sparse (few discriminating cues) vs dense
+            if D <= 2:
+                us_hit += hit; us_n += 1
+            else:
+                ud_hit += hit; ud_n += 1
+        else:
+            if Ww > Wl:
+                coh_hit += hit; coh_n += 1
+            elif Ww < Wl:
+                con_hit += hit; con_n += 1
+
+    if coh_n > 0 and con_n > 0:
+        d1 = coh_hit / coh_n - con_hit / con_n
+    else:
+        d1 = 0.0
+    if us_n > 0 and ud_n > 0:
+        d2 = us_hit / us_n - ud_hit / ud_n
+    else:
+        d2 = 0.0
+
+    return float(d1 + d2)
+
+```
+
+**Observed (real) value:** -0.9375 (var=0.0693)
+**Previous candidate values (this loop):**
+  - iter 1: -0.9463 (var=0.0324) (Δ vs real -0.0088)
+  - iter 2: -0.8469 (var=0.0229) (Δ vs real +0.0906)
+  - iter 3: -0.8294 (var=0.0319) (Δ vs real +0.1081)
+  - iter 4: -0.8100 (var=0.0314) (Δ vs real +0.1275)
+  - iter 5: -0.7612 (var=0.0294) (Δ vs real +0.1763)
+  - iter 6 (most recent): -0.7144 (var=0.0317) (Δ vs real +0.2231)
+**Other theories' values on this metric (for reference):**
+- pi_4: 0.1587 (var=0.0237)
+- pi_3: -0.0675 (var=0.0417)
+- pi_1: 0.7206 (var=0.0361)
+- pi_2: -0.0038 (var=0.0345)
+- pi_5: -0.8519 (var=0.0288)
+- pi_6: -0.9162 (var=0.0494)
+- pi_7: -0.8237 (var=0.0280)
+- pi_8: -1.0012 (var=0.0482)
+- pi_9: -0.9213 (var=0.0220)
+
+### Experiment 7
+**Design**
+  A=[1, 1, 0, 1, 0, 1]  B=[0, 1, 0, 1, 0, 1]
+  A=[0, 1, 0, 1, 0, 1]  B=[1, 1, 0, 1, 0, 1]
+  A=[1, 1, 1, 0, 1, 0]  B=[1, 0, 1, 0, 1, 0]
+  A=[1, 0, 1, 0, 1, 0]  B=[1, 1, 1, 0, 1, 0]
+  A=[0, 1, 1, 0, 0, 1]  B=[1, 0, 1, 0, 0, 1]
+  A=[1, 0, 1, 0, 0, 1]  B=[0, 1, 1, 0, 0, 1]
+  A=[0, 1, 0, 1, 1, 0]  B=[1, 1, 1, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0]  B=[0, 1, 0, 1, 1, 0]
+  A=[1, 1, 1, 0, 0, 1]  B=[0, 1, 0, 1, 1, 0]
+  A=[0, 1, 0, 1, 1, 0]  B=[1, 1, 1, 0, 0, 1]
+  A=[0, 1, 0, 1, 1, 1]  B=[1, 0, 1, 0, 0, 1]
+  A=[1, 0, 1, 0, 0, 1]  B=[0, 1, 0, 1, 1, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+
+    # Design validities (fixed by the experiment): [0.95, 0.57, 0.88, 0.60, 0.66, 0.83]
+    # Median split -> STAR tier (high validity)  = features 0, 2, 5
+    #              -> MARGINAL tier (low validity) = features 1, 3, 4
+    validities = np.array([0.95, 0.57, 0.88, 0.60, 0.66, 0.83], dtype=float)
+
+    hits = 0.0
+    n = 0.0
+
+    for _, row in data.iterrows():
+        try:
+            a = np.asarray(list(row['option_a_ratings']), dtype=float).ravel()
+            b = np.asarray(list(row['option_b_ratings']), dtype=float).ravel()
+        except Exception:
+            continue
+        if a.size != b.size or a.size == 0:
+            continue
+        m = a.size
+        if validities.size == m:
+            v = validities
+        else:
+            v = np.linspace(0.95, 0.55, m)
+        order = np.argsort(-v, kind='stable')
+        k = m // 2
+        star_idx = order[:k]
+        marg_idx = order[k:]
+
+        d = np.sign(a - b)  # +1 A wins the cue, -1 B wins the cue, 0 tie
+        star_score = float(np.sum(d[star_idx]))
+        marg_score = float(np.sum(d[marg_idx]))
+
+        # keep only trials where BOTH tiers discriminate and they DISAGREE
+        if star_score == 0.0 or marg_score == 0.0:
+            continue
+        if np.sign(star_score) == np.sign(marg_score):
+            continue
+
+        resp = row['response']
+        try:
+            resp = int(resp)
+        except Exception:
+            continue
+        if resp not in (0, 1):
+            continue
+
+        marginal_preferred = 0 if marg_score > 0 else 1  # 0 = A, 1 = B
+        hits += 1.0 if resp == marginal_preferred else 0.0
+        n += 1.0
+
+    if n == 0.0:
+        return 0.5
+    return float(hits / n)
+```
+
+**Observed (real) value:** 0.6606 (var=0.0038)
+**Previous candidate values (this loop):**
+  - iter 1: 0.6831 (var=0.0034) (Δ vs real +0.0225)
+  - iter 2: 0.7047 (var=0.0030) (Δ vs real +0.0441)
+  - iter 3: 0.6666 (var=0.0031) (Δ vs real +0.0059)
+  - iter 4: 0.6800 (var=0.0030) (Δ vs real +0.0194)
+  - iter 5: 0.6778 (var=0.0024) (Δ vs real +0.0172)
+  - iter 6 (most recent): 0.6884 (var=0.0028) (Δ vs real +0.0278)
+**Other theories' values on this metric (for reference):**
+- pi_5: 0.9059 (var=0.0023)
+- pi_4: 0.4641 (var=0.0042)
+- pi_1: 0.1278 (var=0.0098)
+- pi_2: 0.4997 (var=0.0029)
+- pi_3: 0.4981 (var=0.0037)
+- pi_6: 0.6775 (var=0.0023)
+- pi_7: 0.7197 (var=0.0017)
+- pi_8: 0.6572 (var=0.0028)
+- pi_9: 0.6750 (var=0.0035)
+
+### Experiment 8
+**Design**
+  A=[0, 1, 0, 1, 1, 0, 1, 0]  B=[1, 0, 1, 0, 0, 1, 1, 0]
+  A=[1, 0, 1, 0, 0, 1, 1, 0]  B=[0, 1, 0, 1, 1, 0, 1, 0]
+  A=[0, 1, 1, 0, 1, 0, 1, 0]  B=[1, 0, 1, 0, 1, 1, 0, 0]
+  A=[1, 0, 1, 0, 1, 1, 0, 0]  B=[0, 1, 1, 0, 1, 0, 1, 0]
+  A=[1, 1, 1, 0, 0, 1, 0, 1]  B=[0, 1, 0, 1, 1, 0, 0, 0]
+  A=[0, 1, 0, 1, 1, 0, 0, 0]  B=[1, 1, 1, 0, 0, 1, 0, 1]
+  A=[0, 1, 1, 1, 1, 0, 1, 0]  B=[1, 0, 1, 0, 0, 1, 0, 0]
+  A=[1, 0, 1, 0, 0, 1, 0, 0]  B=[0, 1, 1, 1, 1, 0, 1, 0]
+  A=[1, 0, 1, 1, 0, 1, 0, 1]  B=[0, 0, 1, 1, 0, 0, 0, 1]
+  A=[0, 0, 1, 1, 0, 0, 0, 1]  B=[1, 0, 1, 1, 0, 1, 0, 1]
+  A=[1, 1, 1, 0, 0, 1, 1, 0]  B=[0, 1, 0, 0, 1, 0, 1, 0]
+  A=[0, 1, 0, 0, 1, 0, 1, 0]  B=[1, 1, 1, 0, 0, 1, 1, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+
+    # Design-time validities (fixed by the experiment), used only to define the
+    # median-split 'star' tier structurally.
+    v = np.array([0.95, 0.56, 0.85, 0.60, 0.65, 0.90, 0.53, 0.80], dtype=float)
+    n = v.shape[0]
+    order = np.argsort(-v, kind='stable')
+    star = set(int(i) for i in order[: n // 2])
+
+    hits = []
+    for a_raw, b_raw, resp in zip(data['option_a_ratings'],
+                                  data['option_b_ratings'],
+                                  data['response']):
+        try:
+            a = np.asarray(list(a_raw), dtype=float).ravel()
+            b = np.asarray(list(b_raw), dtype=float).ravel()
+        except Exception:
+            continue
+        if a.shape[0] != n or b.shape[0] != n:
+            continue
+        d = np.sign(a - b)
+        nA = int(np.sum(d > 0))
+        nB = int(np.sum(d < 0))
+        D = nA + nB
+        # dense / mid displays only (D >= 4), with a strict count winner
+        if D < 4 or nA == nB:
+            continue
+        winner = 0 if nA > nB else 1
+        if winner == 0:
+            win_idx = set(int(i) for i in np.where(d > 0)[0])
+            lose_idx = set(int(i) for i in np.where(d < 0)[0])
+        else:
+            win_idx = set(int(i) for i in np.where(d < 0)[0])
+            lose_idx = set(int(i) for i in np.where(d > 0)[0])
+        # keep only STAR-BACKED majorities: the count winner's wins are all
+        # high-validity (star) experts, the count loser's wins are all
+        # low-validity (marginal) experts.
+        if not win_idx.issubset(star):
+            continue
+        if len(lose_idx & star) > 0:
+            continue
+        try:
+            r = int(resp)
+        except Exception:
+            continue
+        hits.append(1.0 if r == winner else 0.0)
+
+    if len(hits) == 0:
+        return 0.5
+    return float(np.mean(hits))
+```
+
+**Observed (real) value:** 0.4850 (var=0.0085)
+**Previous candidate values (this loop):**
+  - iter 1: 0.4662 (var=0.0049) (Δ vs real -0.0187)
+  - iter 2: 0.4181 (var=0.0082) (Δ vs real -0.0669)
+  - iter 3: 0.4844 (var=0.0081) (Δ vs real -0.0006)
+  - iter 4: 0.4750 (var=0.0087) (Δ vs real -0.0100)
+  - iter 5: 0.4944 (var=0.0073) (Δ vs real +0.0094)
+  - iter 6 (most recent): 0.5019 (var=0.0100) (Δ vs real +0.0169)
+**Other theories' values on this metric (for reference):**
+- pi_4: 0.7144 (var=0.0105)
+- pi_5: 0.1506 (var=0.0044)
+- pi_1: 0.8488 (var=0.0147)
+- pi_2: 0.8550 (var=0.0140)
+- pi_3: 0.5913 (var=0.0076)
+- pi_6: 0.4919 (var=0.0121)
+- pi_7: 0.4775 (var=0.0150)
+- pi_8: 0.4850 (var=0.0181)
+- pi_9: 0.4931 (var=0.0066)
+
+### Experiment 9
+**Design**
+  A=[1, 0, 0, 1, 0, 1]  B=[1, 1, 0, 1, 0, 0]
+  A=[1, 1, 0, 1, 0, 0]  B=[1, 0, 0, 1, 0, 1]
+  A=[0, 1, 0, 1, 1, 0]  B=[1, 1, 1, 0, 0, 0]
+  A=[1, 1, 1, 0, 0, 0]  B=[0, 1, 0, 1, 1, 0]
+  A=[1, 1, 0, 0, 1, 1]  B=[1, 0, 0, 1, 0, 1]
+  A=[1, 0, 0, 1, 0, 1]  B=[1, 1, 0, 0, 1, 1]
+  A=[1, 0, 1, 1, 0, 1]  B=[0, 1, 0, 0, 1, 0]
+  A=[0, 1, 0, 0, 1, 0]  B=[1, 0, 1, 1, 0, 1]
+  A=[1, 0, 1, 1, 0, 0]  B=[0, 0, 1, 1, 0, 0]
+  A=[0, 0, 1, 1, 0, 0]  B=[1, 0, 1, 1, 0, 0]
+  A=[1, 1, 0, 1, 0, 1]  B=[1, 1, 0, 0, 0, 1]
+  A=[1, 1, 0, 0, 0, 1]  B=[1, 1, 0, 1, 0, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+
+    # Design validities (fixed by the experiment): [f0..f5]
+    val = np.array([0.95, 0.78, 0.82, 0.55, 0.76, 0.80], dtype=float)
+    n_feat = val.shape[0]
+    order = np.argsort(-val, kind='stable')
+    marginal_idx = [int(j) for j in order[n_feat // 2:]]  # bottom-half tier: f1, f4, f3
+
+    hits = 0.0
+    tot = 0.0
+
+    a_col = data['option_a_ratings'].tolist()
+    b_col = data['option_b_ratings'].tolist()
+    r_col = data['response'].tolist()
+
+    for a_raw, b_raw, r in zip(a_col, b_col, r_col):
+        try:
+            a = np.asarray(list(a_raw), dtype=float).ravel()
+            b = np.asarray(list(b_raw), dtype=float).ravel()
+        except Exception:
+            continue
+        if a.shape[0] != n_feat or b.shape[0] != n_feat:
+            continue
+        d = np.sign(a - b)
+        D = int(np.sum(d != 0))
+        if D < 2:
+            continue  # drop the solo-cue cells (K5/K6), where the two theories nearly agree
+        net_marg = float(np.sum(d[marginal_idx]))
+        if net_marg == 0.0:
+            continue
+        pred = 0 if net_marg > 0 else 1  # 0 = chose A, 1 = chose B
+        try:
+            rr = int(r)
+        except Exception:
+            continue
+        hits += 1.0 if rr == pred else 0.0
+        tot += 1.0
+
+    if tot <= 0:
+        return float('nan')
+    return float(hits / tot)
+```
+
+**Observed (real) value:** 0.4050 (var=0.0022)
+**Previous candidate values (this loop):**
+  - iter 1: 0.3588 (var=0.0036) (Δ vs real -0.0463)
+  - iter 2: 0.3650 (var=0.0040) (Δ vs real -0.0400)
+  - iter 3: 0.3653 (var=0.0026) (Δ vs real -0.0397)
+  - iter 4: 0.3791 (var=0.0050) (Δ vs real -0.0259)
+  - iter 5: 0.3606 (var=0.0028) (Δ vs real -0.0444)
+  - iter 6 (most recent): 0.3744 (var=0.0041) (Δ vs real -0.0306)
+**Other theories' values on this metric (for reference):**
+- pi_5: 0.8438 (var=0.0038)
+- pi_6: 0.3791 (var=0.0043)
+- pi_1: 0.3253 (var=0.0042)
+- pi_2: 0.4994 (var=0.0020)
+- pi_3: 0.4828 (var=0.0041)
+- pi_4: 0.5244 (var=0.0029)
+- pi_7: 0.3969 (var=0.0046)
+- pi_8: 0.3950 (var=0.0035)
+- pi_9: 0.3756 (var=0.0029)
+
+### Experiment 10
+**Design**
+  A=[1, 0, 1, 0, 1, 1, 0]  B=[0, 1, 1, 0, 0, 1, 0]
+  A=[0, 1, 1, 0, 0, 1, 0]  B=[1, 0, 1, 0, 1, 1, 0]
+  A=[0, 0, 1, 1, 0, 1, 1]  B=[0, 1, 0, 1, 0, 0, 1]
+  A=[0, 1, 0, 1, 0, 0, 1]  B=[0, 0, 1, 1, 0, 1, 1]
+  A=[1, 0, 1, 0, 1, 1, 0]  B=[1, 1, 0, 0, 1, 0, 1]
+  A=[1, 1, 0, 0, 1, 0, 1]  B=[1, 0, 1, 0, 1, 1, 0]
+  A=[1, 1, 0, 1, 1, 0, 0]  B=[0, 1, 0, 1, 0, 1, 0]
+  A=[0, 1, 0, 1, 0, 1, 0]  B=[1, 1, 0, 1, 1, 0, 0]
+  A=[0, 1, 1, 1, 0, 1, 0]  B=[0, 0, 1, 1, 0, 1, 0]
+  A=[0, 0, 1, 1, 0, 1, 0]  B=[0, 1, 1, 1, 0, 1, 0]
+  A=[1, 0, 0, 1, 1, 1, 1]  B=[1, 0, 0, 1, 1, 0, 1]
+  A=[1, 0, 0, 1, 1, 0, 1]  B=[1, 0, 0, 1, 1, 1, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+
+    # Cell C3 (tally-tied 2v2, tier-mismatched): discriminating cues {f1,f2,f5,f6};
+    #   one option is backed by the two BOTTOM experts {f2(.55), f5(.52)},
+    #   the other by the two STARS {f1(.95), f6(.90)}.
+    # Cell C4 (mid-pair vs floor): discriminating cues {f0,f4,f5};
+    #   one option is backed by the mid pair {f0(.74), f4(.70)},
+    #   the other only by the floor expert {f5(.52)}.
+    C3_ALL = frozenset([1, 2, 5, 6])
+    C3_BOTTOM = frozenset([2, 5])
+    C4_ALL = frozenset([0, 4, 5])
+    C4_FLOOR = frozenset([5])
+
+    c3_hits = 0
+    c3_n = 0
+    c4_hits = 0
+    c4_n = 0
+
+    for _, row in data.iterrows():
+        try:
+            a = [int(x) for x in list(row['option_a_ratings'])]
+            b = [int(x) for x in list(row['option_b_ratings'])]
+            resp = int(row['response'])
+        except Exception:
+            continue
+        if len(a) != len(b) or len(a) < 7:
+            continue
+        pos = frozenset([i for i in range(len(a)) if a[i] > b[i]])
+        neg = frozenset([i for i in range(len(a)) if b[i] > a[i]])
+        allset = frozenset(pos | neg)
+
+        if allset == C3_ALL:
+            # which side is the bottom-expert-backed one?
+            if pos == C3_BOTTOM:
+                target = 0  # A
+            elif neg == C3_BOTTOM:
+                target = 1  # B
+            else:
+                target = None
+            if target is not None:
+                c3_n += 1
+                if resp == target:
+                    c3_hits += 1
+
+        elif allset == C4_ALL:
+            # which side is backed only by the floor expert f5?
+            if pos == C4_FLOOR:
+                target = 0
+            elif neg == C4_FLOOR:
+                target = 1
+            else:
+                target = None
+            if target is not None:
+                c4_n += 1
+                if resp == target:
+                    c4_hits += 1
+
+    if c3_n == 0 or c4_n == 0:
+        return float('nan')
+
+    p_c4_floor = c4_hits / float(c4_n)
+    p_c3_bottom = c3_hits / float(c3_n)
+    return float(p_c4_floor - p_c3_bottom)
+
+```
+
+**Observed (real) value:** -0.0225 (var=0.0100)
+**Previous candidate values (this loop):**
+  - iter 1: 0.0925 (var=0.0404) (Δ vs real +0.1150)
+  - iter 2: 0.0687 (var=0.0233) (Δ vs real +0.0912)
+  - iter 3: 0.0200 (var=0.0388) (Δ vs real +0.0425)
+  - iter 4: 0.1038 (var=0.0388) (Δ vs real +0.1262)
+  - iter 5: 0.0287 (var=0.0288) (Δ vs real +0.0512)
+  - iter 6 (most recent): 0.0713 (var=0.0241) (Δ vs real +0.0938)
+**Other theories' values on this metric (for reference):**
+- pi_6: 0.3338 (var=0.0282)
+- pi_5: -0.7275 (var=0.0246)
+- pi_1: -0.0050 (var=0.0123)
+- pi_2: -0.3575 (var=0.0255)
+- pi_3: -0.1062 (var=0.0243)
+- pi_4: -0.2200 (var=0.0268)
+- pi_7: -0.0475 (var=0.0412)
+- pi_8: -0.0162 (var=0.0372)
+- pi_9: 0.0663 (var=0.0326)
+
+### Experiment 11
+**Design**
+  A=[1, 0, 0, 1, 1, 1]  B=[0, 1, 1, 0, 1, 0]
+  A=[0, 1, 1, 0, 1, 0]  B=[1, 0, 0, 1, 1, 1]
+  A=[1, 0, 0, 1, 1, 0]  B=[0, 0, 1, 0, 1, 0]
+  A=[0, 0, 1, 0, 1, 0]  B=[1, 0, 0, 1, 1, 0]
+  A=[1, 0, 1, 1, 0, 1]  B=[0, 1, 1, 0, 0, 1]
+  A=[0, 1, 1, 0, 0, 1]  B=[1, 0, 1, 1, 0, 1]
+  A=[0, 1, 1, 1, 1, 0]  B=[1, 0, 0, 1, 0, 1]
+  A=[1, 0, 0, 1, 0, 1]  B=[0, 1, 1, 1, 1, 0]
+  A=[1, 0, 1, 0, 0, 1]  B=[0, 1, 0, 0, 1, 0]
+  A=[0, 1, 0, 0, 1, 0]  B=[1, 0, 1, 0, 0, 1]
+  A=[1, 1, 0, 1, 1, 1]  B=[0, 1, 0, 0, 1, 0]
+  A=[0, 1, 0, 0, 1, 0]  B=[1, 1, 0, 1, 1, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+
+    cells = {}
+    for _, row in data.iterrows():
+        try:
+            a = [int(x) for x in row['option_a_ratings']]
+            b = [int(x) for x in row['option_b_ratings']]
+        except Exception:
+            continue
+        if len(a) != len(b) or len(a) == 0:
+            continue
+        ai = frozenset([i for i in range(len(a)) if a[i] > b[i]])
+        bi = frozenset([i for i in range(len(a)) if b[i] > a[i]])
+        if len(ai) == len(bi):
+            continue
+        try:
+            resp = int(row['response'])
+        except Exception:
+            continue
+        if len(ai) > len(bi):
+            maj, mino = ai, bi
+            follow = 1.0 if resp == 0 else 0.0
+        else:
+            maj, mino = bi, ai
+            follow = 1.0 if resp == 1 else 0.0
+        key = (maj, mino)
+        if key not in cells:
+            cells[key] = []
+        cells[key].append(follow)
+
+    def rate(maj, mino):
+        k = (frozenset(maj), frozenset(mino))
+        v = cells.get(k)
+        if v is None or len(v) == 0:
+            return None
+        return float(np.mean(v))
+
+    # cells identified by which expert indices each side wins
+    # validities = [0.78, 0.95, 0.68, 0.84, 0.90, 0.72]
+    d3 = rate({0, 3}, {1})          # mid-pair majority vs LONE STAR (.95)
+    c2 = rate({0, 3}, {2})          # same majority vs LONE FLOOR (.68)
+    e4 = rate({1, 2, 4}, {0, 5})    # star+star+floor majority vs mid-pair
+    a1 = rate({0, 3, 5}, {1, 2})    # mid-trio majority vs star+floor
+
+    terms = []
+    if (d3 is not None) and (c2 is not None):
+        terms.append(d3 - c2)
+    if e4 is not None:
+        terms.append(e4)
+    if a1 is not None:
+        terms.append(1.0 - a1)
+
+    if len(terms) == 0:
+        return float('nan')
+    return float(np.mean(terms))
+```
+
+**Observed (real) value:** 0.6983 (var=0.0122)
+**Previous candidate values (this loop):**
+  - iter 1: 0.5954 (var=0.0114) (Δ vs real -0.1029)
+  - iter 2: 0.5379 (var=0.0057) (Δ vs real -0.1604)
+  - iter 3: 0.6312 (var=0.0040) (Δ vs real -0.0671)
+  - iter 4: 0.6296 (var=0.0064) (Δ vs real -0.0687)
+  - iter 5: 0.6575 (var=0.0045) (Δ vs real -0.0408)
+  - iter 6 (most recent): 0.5946 (var=0.0058) (Δ vs real -0.1037)
+**Other theories' values on this metric (for reference):**
+- pi_7: 0.1512 (var=0.0062)
+- pi_6: 0.5292 (var=0.0060)
+- pi_1: 0.3317 (var=0.0037)
+- pi_2: 0.3525 (var=0.0038)
+- pi_3: 0.3254 (var=0.0065)
+- pi_4: 0.3283 (var=0.0079)
+- pi_5: 0.2325 (var=0.0054)
+- pi_8: 0.6917 (var=0.0064)
+- pi_9: 0.6533 (var=0.0064)
+
+### Experiment 12
+**Design**
+  A=[1, 0, 1, 0, 1, 1]  B=[0, 1, 1, 0, 1, 0]
+  A=[0, 1, 1, 0, 1, 0]  B=[1, 0, 1, 0, 1, 1]
+  A=[1, 1, 0, 1, 0, 1]  B=[0, 1, 0, 1, 1, 0]
+  A=[0, 1, 0, 1, 1, 0]  B=[1, 1, 0, 1, 0, 1]
+  A=[1, 0, 1, 1, 0, 1]  B=[0, 1, 0, 1, 0, 0]
+  A=[0, 1, 0, 1, 0, 0]  B=[1, 0, 1, 1, 0, 1]
+  A=[1, 0, 1, 1, 0, 1]  B=[0, 0, 0, 1, 1, 0]
+  A=[0, 0, 0, 1, 1, 0]  B=[1, 0, 1, 1, 0, 1]
+  A=[1, 1, 0, 1, 0, 1]  B=[0, 1, 0, 1, 0, 0]
+  A=[0, 1, 0, 1, 0, 0]  B=[1, 1, 0, 1, 0, 1]
+  A=[1, 0, 1, 1, 1, 0]  B=[1, 0, 0, 1, 0, 0]
+  A=[1, 0, 0, 1, 0, 0]  B=[1, 0, 1, 1, 1, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+
+    hits = 0
+    tot = 0
+    a_col = data['option_a_ratings'].tolist()
+    b_col = data['option_b_ratings'].tolist()
+    r_col = data['response'].tolist()
+
+    for a_raw, b_raw, r in zip(a_col, b_col, r_col):
+        try:
+            a = np.asarray([float(x) for x in list(a_raw)])
+            b = np.asarray([float(x) for x in list(b_raw)])
+        except Exception:
+            continue
+        if a.size != b.size or a.size < 5:
+            continue
+        d = np.sign(a - b)
+        iA = np.where(d > 0)[0]
+        iB = np.where(d < 0)[0]
+        try:
+            resp = int(r)
+        except Exception:
+            continue
+        # K4-type displays: a 3-cue majority opposed by exactly ONE cue,
+        # and that lone opposing cue is the panel's floor expert (index 4, v=0.52).
+        if iA.size == 3 and iB.size == 1 and int(iB[0]) == 4:
+            tot += 1
+            if resp == 0:
+                hits += 1
+        elif iB.size == 3 and iA.size == 1 and int(iA[0]) == 4:
+            tot += 1
+            if resp == 1:
+                hits += 1
+
+    if tot == 0:
+        return 0.5
+    return float(hits) / float(tot)
+
+```
+
+**Observed (real) value:** 0.1450 (var=0.0099)
+**Previous candidate values (this loop):**
+  - iter 1: 0.5238 (var=0.0200) (Δ vs real +0.3788)
+  - iter 2: 0.1625 (var=0.0131) (Δ vs real +0.0175)
+  - iter 3: 0.1537 (var=0.0085) (Δ vs real +0.0088)
+  - iter 4: 0.0938 (var=0.0050) (Δ vs real -0.0512)
+  - iter 5: 0.1125 (var=0.0061) (Δ vs real -0.0325)
+  - iter 6 (most recent): 0.1113 (var=0.0072) (Δ vs real -0.0337)
+**Other theories' values on this metric (for reference):**
+- pi_6: 0.2562 (var=0.0218)
+- pi_7: 0.9187 (var=0.0063)
+- pi_1: 0.8500 (var=0.0170)
+- pi_2: 0.8438 (var=0.0149)
+- pi_3: 0.5925 (var=0.0166)
+- pi_4: 0.7612 (var=0.0210)
+- pi_5: 0.8588 (var=0.0103)
+- pi_8: 0.1375 (var=0.0089)
+- pi_9: 0.0788 (var=0.0054)
+
+### Experiment 13
+**Design**
+  A=[1, 1, 0, 1, 1, 0]  B=[0, 1, 0, 0, 1, 0]
+  A=[0, 1, 0, 0, 1, 0]  B=[1, 1, 0, 1, 1, 0]
+  A=[0, 1, 1, 0, 1, 1]  B=[0, 0, 1, 0, 0, 1]
+  A=[0, 0, 1, 0, 0, 1]  B=[0, 1, 1, 0, 1, 1]
+  A=[1, 0, 0, 1, 1, 1]  B=[0, 0, 1, 0, 1, 1]
+  A=[0, 0, 1, 0, 1, 1]  B=[1, 0, 0, 1, 1, 1]
+  A=[1, 0, 1, 0, 0, 1]  B=[1, 1, 0, 0, 0, 0]
+  A=[1, 1, 0, 0, 0, 0]  B=[1, 0, 1, 0, 0, 1]
+  A=[0, 0, 1, 1, 1, 1]  B=[0, 1, 0, 1, 0, 0]
+  A=[0, 1, 0, 1, 0, 0]  B=[0, 0, 1, 1, 1, 1]
+  A=[1, 1, 0, 1, 0, 1]  B=[0, 1, 1, 0, 0, 0]
+  A=[0, 1, 1, 0, 0, 0]  B=[1, 1, 0, 1, 0, 1]
+  A=[1, 1, 0, 1, 1, 0]  B=[0, 0, 1, 0, 1, 1]
+  A=[0, 0, 1, 0, 1, 1]  B=[1, 1, 0, 1, 1, 0]
+  A=[1, 0, 1, 0, 1, 1]  B=[1, 0, 0, 1, 1, 0]
+  A=[1, 0, 0, 1, 1, 0]  B=[1, 0, 1, 0, 1, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+
+    # stated validities of the six experts in screen order (design-time constant)
+    V = np.array([0.88, 0.55, 0.72, 0.95, 0.63, 0.80], dtype=float)
+    THR = 0.70  # 'upper panel' voices: 0.72, 0.80, 0.88, 0.95
+
+    hits = 0
+    tot = 0
+
+    a_col = data['option_a_ratings'].tolist()
+    b_col = data['option_b_ratings'].tolist()
+    r_col = data['response'].tolist()
+
+    for a_raw, b_raw, r_raw in zip(a_col, b_col, r_col):
+        try:
+            a = np.asarray([float(x) for x in a_raw], dtype=float)
+            b = np.asarray([float(x) for x in b_raw], dtype=float)
+            r = int(r_raw)
+        except Exception:
+            continue
+        if a.size == 0 or a.size != b.size:
+            continue
+        if a.size == V.size:
+            v = V
+        else:
+            v = np.full(a.size, 1.0, dtype=float)
+
+        d = np.sign(a - b)
+        idx = np.nonzero(d)[0]
+        if idx.size == 0:
+            continue
+        nA = int(np.sum(d > 0))
+        nB = int(np.sum(d < 0))
+        if nA == nB:
+            continue  # no strict count winner: both theories predict chance
+        # keep only displays where EVERY discriminating voice is an upper-panel expert
+        if np.any(v[idx] < THR):
+            continue
+
+        winner = 0 if nA > nB else 1  # 0 == chose A, 1 == chose B
+        tot += 1
+        if r == winner:
+            hits += 1
+
+    if tot == 0:
+        return 0.5
+    return float(hits) / float(tot)
+```
+
+**Observed (real) value:** 0.4892 (var=0.0049)
+**Previous candidate values (this loop):**
+  - iter 1: 0.5583 (var=0.0030) (Δ vs real +0.0692)
+  - iter 2: 0.5371 (var=0.0042) (Δ vs real +0.0479)
+  - iter 3: 0.5767 (var=0.0067) (Δ vs real +0.0875)
+  - iter 4: 0.5483 (var=0.0057) (Δ vs real +0.0592)
+  - iter 5: 0.5737 (var=0.0051) (Δ vs real +0.0846)
+  - iter 6 (most recent): 0.5733 (var=0.0045) (Δ vs real +0.0842)
+**Other theories' values on this metric (for reference):**
+- pi_8: 0.6446 (var=0.0042)
+- pi_6: 0.3654 (var=0.0148)
+- pi_1: 0.6813 (var=0.0037)
+- pi_2: 0.8667 (var=0.0111)
+- pi_3: 0.5975 (var=0.0056)
+- pi_4: 0.7529 (var=0.0048)
+- pi_5: 0.4121 (var=0.0048)
+- pi_7: 0.0892 (var=0.0030)
+- pi_9: 0.5542 (var=0.0056)
+
+### Experiment 14
+**Design**
+  A=[1, 0, 1, 1, 0, 1]  B=[0, 0, 0, 1, 0, 1]
+  A=[0, 0, 0, 1, 0, 1]  B=[1, 0, 1, 1, 0, 1]
+  A=[1, 1, 0, 1, 1, 0]  B=[1, 0, 0, 0, 1, 0]
+  A=[1, 0, 0, 0, 1, 0]  B=[1, 1, 0, 1, 1, 0]
+  A=[1, 1, 1, 0, 1, 0]  B=[0, 1, 0, 0, 1, 1]
+  A=[0, 1, 0, 0, 1, 1]  B=[1, 1, 1, 0, 1, 0]
+  A=[1, 0, 1, 1, 0, 1]  B=[0, 1, 0, 1, 0, 1]
+  A=[0, 1, 0, 1, 0, 1]  B=[1, 0, 1, 1, 0, 1]
+  A=[0, 0, 1, 0, 1, 1]  B=[1, 0, 1, 0, 0, 0]
+  A=[1, 0, 1, 0, 0, 0]  B=[0, 0, 1, 0, 1, 1]
+  A=[0, 1, 0, 1, 1, 1]  B=[1, 0, 0, 0, 1, 1]
+  A=[1, 0, 0, 0, 1, 1]  B=[0, 1, 0, 1, 1, 1]
+  A=[1, 0, 1, 1, 1, 0]  B=[0, 0, 0, 1, 0, 1]
+  A=[0, 0, 0, 1, 0, 1]  B=[1, 0, 1, 1, 1, 0]
+  A=[1, 1, 1, 1, 0, 0]  B=[0, 1, 0, 0, 1, 1]
+  A=[0, 1, 0, 0, 1, 1]  B=[1, 1, 1, 1, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+
+    # Target cells: displays where the TALLY-MAJORITY side is carried by the two
+    # most valid experts (features 0 = .92 and 2 = .84).
+    # C1: majority wins {0,2}, minority wins {}        (unopposed star pair, 2v0)
+    # C3: majority wins {0,2}, minority wins {5}       (star pair vs lone mid, 2v1)
+    # C4: majority wins {0,2}, minority wins {1}       (star pair vs lone low, 2v1)
+    # C7: majority wins {0,2,4}, minority wins {5}     (all-upper 3v1)
+    targets = {
+        (frozenset([0, 2]), frozenset()),
+        (frozenset([0, 2]), frozenset([5])),
+        (frozenset([0, 2]), frozenset([1])),
+        (frozenset([0, 2, 4]), frozenset([5])),
+    }
+
+    hits = []
+    for _, row in data.iterrows():
+        try:
+            a = [int(x) for x in row['option_a_ratings']]
+            b = [int(x) for x in row['option_b_ratings']]
+        except Exception:
+            continue
+        if len(a) != len(b) or len(a) == 0:
+            continue
+        idxA = frozenset([i for i in range(len(a)) if a[i] > b[i]])
+        idxB = frozenset([i for i in range(len(a)) if b[i] > a[i]])
+        if len(idxA) == len(idxB):
+            continue
+        if len(idxA) > len(idxB):
+            maj_set, min_set, maj_resp = idxA, idxB, 0  # A is count winner
+        else:
+            maj_set, min_set, maj_resp = idxB, idxA, 1  # B is count winner
+        if (maj_set, min_set) not in targets:
+            continue
+        try:
+            r = int(row['response'])
+        except Exception:
+            continue
+        hits.append(1.0 if r == maj_resp else 0.0)
+
+    if len(hits) == 0:
+        return 0.5
+    return float(np.mean(hits))
+
+```
+
+**Observed (real) value:** 0.4892 (var=0.0049)
+**Previous candidate values (this loop):**
+  - iter 1: 0.4867 (var=0.0061) (Δ vs real -0.0025)
+  - iter 2: 0.3987 (var=0.0039) (Δ vs real -0.0904)
+  - iter 3: 0.4888 (var=0.0059) (Δ vs real -0.0004)
+  - iter 4: 0.5050 (var=0.0057) (Δ vs real +0.0158)
+  - iter 5: 0.5029 (var=0.0041) (Δ vs real +0.0137)
+  - iter 6 (most recent): 0.5017 (var=0.0054) (Δ vs real +0.0125)
+**Other theories' values on this metric (for reference):**
+- pi_6: 0.2792 (var=0.0159)
+- pi_8: 0.5913 (var=0.0058)
+- pi_1: 0.8583 (var=0.0102)
+- pi_2: 0.8646 (var=0.0075)
+- pi_3: 0.6125 (var=0.0071)
+- pi_4: 0.7679 (var=0.0054)
+- pi_5: 0.2533 (var=0.0084)
+- pi_7: 0.0717 (var=0.0021)
+- pi_9: 0.4929 (var=0.0046)
+
+### Experiment 15
+**Design**
+  A=[1, 1, 0, 1, 0, 1, 0]  B=[1, 0, 0, 1, 0, 1, 0]
+  A=[1, 0, 0, 1, 0, 1, 0]  B=[1, 1, 0, 1, 0, 1, 0]
+  A=[1, 0, 1, 0, 1, 0, 1]  B=[0, 0, 1, 0, 1, 0, 1]
+  A=[0, 0, 1, 0, 1, 0, 1]  B=[1, 0, 1, 0, 1, 0, 1]
+  A=[0, 1, 1, 0, 1, 1, 0]  B=[0, 1, 1, 0, 0, 1, 0]
+  A=[0, 1, 1, 0, 0, 1, 0]  B=[0, 1, 1, 0, 1, 1, 0]
+  A=[1, 0, 1, 1, 0, 1, 1]  B=[0, 0, 1, 1, 0, 0, 1]
+  A=[0, 0, 1, 1, 0, 0, 1]  B=[1, 0, 1, 1, 0, 1, 1]
+  A=[1, 0, 1, 1, 0, 1, 0]  B=[0, 1, 0, 1, 0, 0, 0]
+  A=[0, 1, 0, 1, 0, 0, 0]  B=[1, 0, 1, 1, 0, 1, 0]
+  A=[0, 1, 0, 1, 1, 0, 1]  B=[0, 0, 1, 0, 1, 0, 0]
+  A=[0, 0, 1, 0, 1, 0, 0]  B=[0, 1, 0, 1, 1, 0, 1]
+  A=[1, 0, 1, 0, 1, 1, 0]  B=[0, 1, 0, 0, 1, 1, 0]
+  A=[0, 1, 0, 0, 1, 1, 0]  B=[1, 0, 1, 0, 1, 1, 0]
+  A=[0, 1, 0, 1, 0, 1, 1]  B=[0, 0, 1, 1, 0, 1, 0]
+  A=[0, 0, 1, 1, 0, 1, 0]  B=[0, 1, 0, 1, 0, 1, 1]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+    import pandas as pd
+
+    # Canonical (order-free) keys for the four diagnostic cells.
+    # SOLO cells: exactly one discriminating expert, and it is NOT the panel floor
+    #   C1 = solo .95 star, C2 = solo .75 mid
+    SOLO = {
+        ("1001010", "1101010"),   # C1 (trials 1/2)
+        ("0010101", "1010101"),   # C2 (trials 3/4)
+    }
+    # FLAT cells: CH >= 2 displays whose every discriminating voice is upper-band
+    #   C4 = unopposed .79/.75 pair (2 vs 0), C5 = low trio vs lone .95 (3 vs 1)
+    FLAT = {
+        ("0011001", "1011011"),   # C4 (trials 7/8)
+        ("0101000", "1011010"),   # C5 (trials 9/10)
+    }
+
+    solo_hits = 0.0
+    solo_n = 0.0
+    flat_hits = 0.0
+    flat_n = 0.0
+
+    for _, row in data.iterrows():
+        try:
+            a = [int(x) for x in list(row['option_a_ratings'])]
+            b = [int(x) for x in list(row['option_b_ratings'])]
+        except Exception:
+            continue
+        if len(a) != len(b) or len(a) == 0:
+            continue
+        ka = ''.join([str(x) for x in a])
+        kb = ''.join([str(x) for x in b])
+        key = tuple(sorted((ka, kb)))
+
+        if key in SOLO:
+            grp = 0
+        elif key in FLAT:
+            grp = 1
+        else:
+            continue
+
+        mA = sum(1 for i in range(len(a)) if a[i] > b[i])
+        mB = sum(1 for i in range(len(a)) if b[i] > a[i])
+        if mA == mB:
+            continue
+        winner = 0 if mA > mB else 1
+
+        try:
+            resp = int(row['response'])
+        except Exception:
+            continue
+        hit = 1.0 if resp == winner else 0.0
+
+        if grp == 0:
+            solo_hits += hit
+            solo_n += 1.0
+        else:
+            flat_hits += hit
+            flat_n += 1.0
+
+    if solo_n == 0.0 or flat_n == 0.0:
+        return float('nan')
+
+    return float(solo_hits / solo_n - flat_hits / flat_n)
+```
+
+**Observed (real) value:** 0.0067 (var=0.0123)
+**Previous candidate values (this loop):**
+  - iter 1: -0.1050 (var=0.0218) (Δ vs real -0.1117)
+  - iter 2: -0.0283 (var=0.0173) (Δ vs real -0.0350)
+  - iter 3: -0.0242 (var=0.0178) (Δ vs real -0.0308)
+  - iter 4: -0.0117 (var=0.0170) (Δ vs real -0.0183)
+  - iter 5: -0.0017 (var=0.0250) (Δ vs real -0.0083)
+  - iter 6 (most recent): 0.0108 (var=0.0128) (Δ vs real +0.0042)
+**Other theories' values on this metric (for reference):**
+- pi_8: 0.4275 (var=0.0123)
+- pi_9: -0.0583 (var=0.0163)
+- pi_1: 0.3392 (var=0.0260)
+- pi_2: -0.0092 (var=0.0081)
+- pi_3: -0.0492 (var=0.0130)
+- pi_4: 0.1650 (var=0.0092)
+- pi_5: -0.1375 (var=0.0105)
+- pi_6: 0.3375 (var=0.0364)
+- pi_7: 0.2758 (var=0.0115)
+
+### Experiment 16
+**Design**
+  A=[1, 0, 1, 1, 0, 1, 0]  B=[1, 0, 0, 1, 0, 1, 0]
+  A=[1, 0, 0, 1, 0, 1, 0]  B=[1, 0, 1, 1, 0, 1, 0]
+  A=[0, 1, 1, 1, 1, 0, 1]  B=[0, 1, 1, 0, 1, 0, 1]
+  A=[0, 1, 1, 0, 1, 0, 1]  B=[0, 1, 1, 1, 1, 0, 1]
+  A=[1, 1, 0, 0, 1, 1, 0]  B=[1, 0, 0, 0, 1, 1, 0]
+  A=[1, 0, 0, 0, 1, 1, 0]  B=[1, 1, 0, 0, 1, 1, 0]
+  A=[1, 0, 1, 1, 1, 0, 1]  B=[0, 0, 1, 0, 1, 0, 1]
+  A=[0, 0, 1, 0, 1, 0, 1]  B=[1, 0, 1, 1, 1, 0, 1]
+  A=[0, 1, 1, 0, 1, 1, 0]  B=[0, 1, 0, 0, 0, 1, 0]
+  A=[0, 1, 0, 0, 0, 1, 0]  B=[0, 1, 1, 0, 1, 1, 0]
+  A=[1, 0, 0, 1, 1, 1, 0]  B=[0, 0, 1, 0, 1, 0, 0]
+  A=[0, 0, 1, 0, 1, 0, 0]  B=[1, 0, 0, 1, 1, 1, 0]
+  A=[1, 1, 1, 0, 1, 0, 1]  B=[1, 1, 0, 1, 0, 0, 1]
+  A=[1, 1, 0, 1, 0, 0, 1]  B=[1, 1, 1, 0, 1, 0, 1]
+  A=[0, 1, 0, 1, 0, 0, 0]  B=[0, 0, 1, 1, 1, 0, 1]
+  A=[0, 0, 1, 1, 1, 0, 1]  B=[0, 1, 0, 1, 0, 0, 0]
+
+**Metric**
+```python
+def metric(data: pd.DataFrame) -> float:
+    import numpy as np
+
+    # cell accumulators: hits / total
+    hits = {}
+    tot = {}
+
+    for _, row in data.iterrows():
+        try:
+            a = [int(x) for x in row['option_a_ratings']]
+            b = [int(x) for x in row['option_b_ratings']]
+        except Exception:
+            continue
+        if len(a) != len(b) or len(a) == 0:
+            continue
+        winsA = [i for i in range(len(a)) if a[i] > b[i]]
+        winsB = [i for i in range(len(a)) if b[i] > a[i]]
+        mA, mB = len(winsA), len(winsB)
+        if mA == mB:
+            continue
+        if mA > mB:
+            win_idx, lose_idx, winner_is_A = set(winsA), set(winsB), True
+        else:
+            win_idx, lose_idx, winner_is_A = set(winsB), set(winsA), False
+        D = mA + mB
+
+        cell = None
+        if D == 1:
+            j = list(win_idx)[0]
+            if j == 2:
+                cell = 'C1'      # solo star (v=.95)
+            elif j == 3:
+                cell = 'C2'      # solo low-upper (v=.78)
+        elif D == 2 and len(lose_idx) == 0:
+            if win_idx == {0, 3}:
+                cell = 'C4'      # unopposed low pair
+            elif win_idx == {2, 4}:
+                cell = 'C5'      # unopposed senior pair
+        elif D == 4 and win_idx == {0, 3, 5} and lose_idx == {2}:
+            cell = 'C6'          # all-upper 3v1
+
+        if cell is None:
+            continue
+
+        try:
+            resp = int(row['response'])
+        except Exception:
+            continue
+        chose_A = (resp == 0)
+        follow = 1.0 if (chose_A == winner_is_A) else 0.0
+
+        hits[cell] = hits.get(cell, 0.0) + follow
+        tot[cell] = tot.get(cell, 0.0) + 1.0
+
+    def rate(c):
+        if tot.get(c, 0.0) <= 0:
+            return None
+        return hits[c] / tot[c]
+
+    g1 = [r for r in (rate('C1'), rate('C2')) if r is not None]
+    g2 = [r for r in (rate('C4'), rate('C5'), rate('C6')) if r is not None]
+
+    if len(g1) == 0 or len(g2) == 0:
+        return 0.0
+    return float(np.mean(g1) - np.mean(g2))
+```
+
+**Observed (real) value:** 0.0517 (var=0.0159)
+**Previous candidate values (this loop):**
+  - iter 1: -0.0469 (var=0.0179) (Δ vs real -0.0986)
+  - iter 2: -0.0044 (var=0.0198) (Δ vs real -0.0561)
+  - iter 3: 0.0414 (var=0.0160) (Δ vs real -0.0103)
+  - iter 4: 0.0481 (var=0.0183) (Δ vs real -0.0036)
+  - iter 5: 0.0217 (var=0.0123) (Δ vs real -0.0300)
+  - iter 6 (most recent): 0.0503 (var=0.0154) (Δ vs real -0.0014)
+**Other theories' values on this metric (for reference):**
+- pi_9: -0.0381 (var=0.0193)
+- pi_8: 0.4408 (var=0.0102)
+- pi_1: 0.2372 (var=0.0099)
+- pi_2: -0.0078 (var=0.0092)
+- pi_3: -0.0428 (var=0.0142)
+- pi_4: 0.1047 (var=0.0067)
+- pi_5: -0.0139 (var=0.0137)
+- pi_6: 0.4219 (var=0.0362)
+- pi_7: 0.5256 (var=0.0124)
+
+## PREVIOUS CANDIDATE (this loop)
+The RUNNING-BEST (last ACCEPTED) candidate in this critique loop — i.e. the source the loop's accept gate kept as the best base so far. If your most recent attempt was REJECTED by the gate, this is NOT that attempt; it is the previously-accepted base the gate rolled back to. Iterate on this source — the next critic feedback should be applied on top of it.
+
+**Description**
+**Chorus-Threshold Novelty Weighting, Balanced-Gradient variant (CTN-BG).**
+
+People told the accuracies of a panel of binary expert ratings do not weight a rating by its accuracy; they weight it by how much *news* it carries, and news is loud only when it stands against a genuine CHORUS. Six commitments, all smooth and continuous (no mute band, no solo release, no discrete count switch).
+
+**(1) The count comparator is a parameter-free gate.** Before any expert identity is consulted, an unweighted feature-wise comparison asks: does one product win on strictly more attributes? If not — equal win counts, including wholly non-discriminating displays — the display is non-diagnostic and the subject flips a mental coin: exactly 0.5, with NO validity tie-break and NO take-the-best fallback, at every panel composition and size.
+
+**(2) Seniority is panel-relative; novelty is a smooth convex, monotonically DECREASING function of it, and the descent is STEEP.** s_j = (v_j − v_min)/(v_max − v_min); nov_j = (1 − s_j)^kappa with kappa ≈ 14–16.5. Nothing is muted by fiat and nothing is released by fiat, but the curve is sharp: only the panel's genuinely idiosyncratic BOTTOM voice speaks with nov ≈ 1; the second-from-bottom voice retains a real but small share; a mid voice essentially nothing; a star nothing at all. Novelty is never negative — a star is ignored, never counted against its own side.
+
+**(3) THE CORE CLAIM — a novel voice is loud only in proportion to the CHORUS it speaks into, and a chorus is measured in *mid-expert equivalents*.** Each other discriminating voice contributes a subjective unit u_i = (1 + tau·s_i)/(1 + tau/2): a mid-panel voice counts as exactly one unit, a star ≈ 1.4, a bottom voice ≈ 0.6. The chorus a cue j faces is Q_j = Σ_{opposing} u_i + lam_own·Σ_{own side, i≠j} u_i — voices it contradicts counted in full, voices it merely stands beside echoed at a discount. Loudness is a smooth logistic of that chorus, g_j = Gmax·σ((Q_j − q0)/wid), with a narrow but continuous threshold at roughly two-and-a-half mid-equivalents. BOTH how many voices and how senior they are matter, in one scalar: two mid voices are not yet a chorus, two stars just barely are, three upper voices fully are.
+
+**(4) The ungated panel gradient is THIN and only MILDLY convex — a bare ordinal pull that does not, by itself, give the panel's bottom voice an edge over a pair of mid voices.** Every discriminating cue contributes r_j = eta + c·(1 − s_j)^nu with small eta, small c and a moderate exponent nu ≈ 1.7–2.05. The scale is small enough that all-upper displays drift near chance at any count margin, and the exponent is flat enough that a single floor cue's residual is worth about the same as two mid cues' residuals — so a floor voice opposed by a mid PAIR is a dead heat (it needs the chorus gate, not the gradient, to win), while a floor voice opposed by a three-cue upper bloc is carried past chance by the gate.
+
+**(5) Integration is Luce-like and saturating.** w_j = r_j + nov_j·g_j; E = Σ dir_j w_j; z = beta·E/((c_n + Σ_j w_j)·D^gamma). Evidence is judged relative to the total weight of evidence on the table plus a constant of indecision, and is diluted by the number of mutually discriminating attributes with gamma ≈ 1, so a lone cue and an unopposed pair of the same tier feel about equally compelling. An attention lapse epsilon mixes the result with a coin flip.
+
+**(6) Capacity is a near-total collapse of the chorus construal past ~7 voices, with only mild extra noise.** For n > 7 the amplification essentially vanishes (Gmax × (1 − psi·(n−7))) while integration noise grows only slightly, so eight-expert star-backed majorities sit near chance rather than being reversed, and eight-expert plain tally adherence survives on the residual gradient.
+
+**Cross-design signature:** exact chance on tally ties at any composition; near-chance on displays whose every discriminating voice is upper-band, at every margin; moderate (not ceiling) adherence to majorities containing no bottom voice; a bottom voice facing two MID voices lands at chance, facing two STARS reverses substantially, facing a three-cue upper bloc reverses to ≈.12–.18; near-ceiling following of majorities that contain the bottom voice; attenuated integration on eight-expert panels.
+
+`predict(parameters, state, history) -> np.ndarray`:
+def predict(parameters, state, history):
+    import numpy as np
+
+    # ---------------- parse the stimulus ----------------
+    a = None
+    b = None
+    if isinstance(state, dict):
+        for ka, kb in (('option_a_ratings', 'option_b_ratings'),
+                       ('a_ratings', 'b_ratings'),
+                       ('A', 'B'), ('a', 'b')):
+            if ka in state and kb in state:
+                try:
+                    a = np.asarray(list(state[ka]), dtype=float).ravel()
+                    b = np.asarray(list(state[kb]), dtype=float).ravel()
+                except Exception:
+                    a = None
+                    b = None
+                break
+    if a is None or b is None:
+        try:
+            arr = np.asarray(state, dtype=float).reshape(2, -1)
+            a = np.asarray(arr[0], dtype=float).ravel()
+            b = np.asarray(arr[1], dtype=float).ravel()
+        except Exception:
+            return np.array([0.5, 0.5], dtype=float)
+
+    if a is None or b is None or a.size == 0 or a.size != b.size:
+        return np.array([0.5, 0.5], dtype=float)
+
+    n = int(a.size)
+
+    # ---------- Commitment 1: parameter-free count gate ----------
+    d = np.sign(a - b)
+    iA = np.where(d > 0)[0]
+    iB = np.where(d < 0)[0]
+    mA = int(iA.size)
+    mB = int(iB.size)
+    if mA == mB:                      # includes wholly non-discriminating displays
+        return np.array([0.5, 0.5], dtype=float)
+
+    D = float(mA + mB)
+
+    # ---------------- parameters ----------------
+    def _g(name, default, lo, hi):
+        try:
+            x = float(parameters.get(name, default))
+        except Exception:
+            x = float(default)
+        if not np.isfinite(x):
+            x = float(default)
+        return float(min(max(x, lo), hi))
+
+    eta = _g('eta', 0.040, 0.0, 0.5)
+    c_res = _g('c_res', 0.12, 0.0, 1.5)
+    nu = _g('nu', 1.88, 0.5, 5.0)
+    kappa = _g('kappa', 15.0, 1.0, 30.0)
+    tau = _g('tau', 1.2, 0.0, 4.0)
+    lam_own = _g('lam_own', 0.60, 0.0, 1.0)
+    gmax = _g('gmax', 1.90, 0.0, 5.0)
+    q0 = _g('q0', 2.45, 0.20, 8.0)
+    wid = _g('wid', 0.14, 0.02, 1.0)
+    c_n = _g('c_n', 2.9, 0.10, 12.0)
+    beta = _g('beta', 41.0, 0.0, 150.0)
+    gamma = _g('gamma', 0.96, 0.0, 2.0)
+    eps = _g('epsilon', 0.12, 0.0, 0.6)
+    psi = _g('psi', 0.88, 0.0, 1.0)
+    chi = _g('chi', 0.05, 0.0, 3.0)
+
+    # ---------------- stated validities ----------------
+    v = None
+    try:
+        vr = parameters.get('validities', None) if hasattr(parameters, 'get') else None
+        if vr is not None:
+            v = np.asarray(vr, dtype=float).ravel()
+    except Exception:
+        v = None
+    if v is None or v.size != n:
+        v = np.linspace(0.95, 0.55, n) if n > 1 else np.array([0.75], dtype=float)
+
+    v_min = float(np.min(v))
+    v_max = float(np.max(v))
+    span = v_max - v_min
+    if (not np.isfinite(span)) or span <= 1e-9:
+        s = np.zeros(n, dtype=float)
+    else:
+        s = np.clip((v - v_min) / span, 0.0, 1.0)
+
+    one_minus = np.clip(1.0 - s, 0.0, 1.0)
+
+    # ---------- Commitment 2: smooth convex novelty, steep descent ----------
+    nov = np.power(one_minus, kappa)
+    nov = np.where(np.isfinite(nov), nov, 0.0)
+
+    # ---------- Commitment 4: THIN, mildly convex panel gradient ----------
+    resid = eta + c_res * np.power(one_minus, nu)
+    resid = np.where(np.isfinite(resid), resid, eta)
+
+    # ---------- Commitment 3: chorus measured in MID-EXPERT EQUIVALENTS ----------
+    denom_u = 1.0 + 0.5 * tau
+    if (not np.isfinite(denom_u)) or denom_u <= 0.0:
+        denom_u = 1.0
+    u = (1.0 + tau * s) / denom_u        # mid voice == 1 unit, star ~1.4, floor ~0.6
+    u = np.where(np.isfinite(u), u, 1.0)
+
+    U_A = float(np.sum(u[iA])) if mA > 0 else 0.0
+    U_B = float(np.sum(u[iB])) if mB > 0 else 0.0
+
+    Q = np.zeros(n, dtype=float)
+    if mA > 0:
+        Q[iA] = U_B + lam_own * (U_A - u[iA])
+    if mB > 0:
+        Q[iB] = U_A + lam_own * (U_B - u[iB])
+    Q = np.clip(Q, 0.0, None)
+
+    # ---------- Commitment 6: capacity limit past ~7 voices ----------
+    over = max(0.0, float(n) - 7.0)
+    gmax_eff = gmax * max(0.0, 1.0 - psi * over)
+    noise = 1.0 + chi * over
+    if (not np.isfinite(noise)) or noise <= 0.0:
+        noise = 1.0
+
+    # smooth logistic threshold in the chorus size
+    xg = (Q - q0) / max(wid, 1e-6)
+    xg = np.clip(xg, -60.0, 60.0)
+    gate = gmax_eff / (1.0 + np.exp(-xg))
+    gate = np.where(np.isfinite(gate), gate, 0.0)
+
+    # ---------- weights ----------
+    w = resid + nov * gate
+    w = np.where(np.isfinite(w), w, 0.0)
+    w = np.clip(w, 0.0, None)
+
+    E = 0.0
+    if mA > 0:
+        E += float(np.sum(w[iA]))
+    if mB > 0:
+        E -= float(np.sum(w[iB]))
+    if not np.isfinite(E):
+        E = 0.0
+
+    W_tot = 0.0
+    if mA > 0:
+        W_tot += float(np.sum(w[iA]))
+    if mB > 0:
+        W_tot += float(np.sum(w[iB]))
+    if (not np.isfinite(W_tot)) or W_tot < 0.0:
+        W_tot = 0.0
+
+    # ---------- Commitment 5: Luce-like saturating integration ----------
+    den = (c_n + W_tot) * (float(D) ** gamma) * noise
+    if (not np.isfinite(den)) or den <= 0.0:
+        den = 1.0
+
+    z = beta * E / den
+    if not np.isfinite(z):
+        z = 0.0
+    z = float(min(max(z, -30.0), 30.0))
+
+    p_a = 1.0 / (1.0 + np.exp(-z))
+    p_a = (1.0 - eps) * p_a + eps * 0.5
+    p_a = float(min(max(p_a, 1e-9), 1.0 - 1e-9))
+
+    p = np.array([p_a, 1.0 - p_a], dtype=float)
+    p = np.clip(p, 1e-12, 1.0)
+    return p / p.sum()
+
+`policy(probs) -> int`:
+def policy(probs):
+    import numpy as np
+    probs = np.asarray(probs, dtype=np.float64)
+    probs = np.clip(probs, 0.0, None)
+    s = probs.sum()
+    if (not np.isfinite(s)) or s <= 0:
+        probs = np.ones_like(probs) / float(len(probs))
+    else:
+        probs = probs / s
+    return int(np.random.choice(len(probs), p=probs))
+
+`parameters`:
+- eta: [0.030, 0.048]
+- c_res: [0.10, 0.14]
+- nu: [1.70, 2.05]
+- kappa: [14.0, 16.5]
+- tau: [1.0, 1.5]
+- lam_own: [0.50, 0.70]
+- gmax: [1.70, 2.10]
+- q0: [2.38, 2.52]
+- wid: [0.11, 0.17]
+- c_n: [2.70, 3.05]
+- beta: [34, 48]
+- gamma: [0.88, 1.05]
+- epsilon: [0.09, 0.15]
+- psi: [0.80, 0.95]
+- chi: [0.02, 0.08]
+- validities: validities
+
+`rationale`: **Minimal diff: four parameter ranges changed (c_res, nu, kappa, c_n) plus the matching in-code defaults; every equation, name and structural line is byte-identical to the accepted iter-4 base.**
+
+**1. Primary fix — joint (c_res, nu) move exactly as the critic specified: c_res 0.14–0.20 → 0.10–0.14 AND nu 2.0–2.8 → 1.70–2.05.** This is not a third uniform scale cut; the scale comes down while the exponent comes *back down* too, which is the unique combination that shrinks the FLOOR residual without further shrinking MID residuals. Check on the Exp-10 panel (v_floor=.52, mids .70/.74, v_max=.95, so s_floor=0, s≈.419/.512): current (c_res=.17, nu=2.4) gives floor r = .04+.17 = .210 versus mids .04+.17·.581^2.4 = .0866 and .04+.17·.488^2.4 = .0719, sum .159 — a +.051 floor edge that drives C4 to ≈.60. Proposed (c_res=.12, nu=1.88): floor r = .160, mids .04+.12·.581^1.88 = .0838 and .04+.12·.488^1.88 = .0722, sum .156 — edge ≈ +.004, i.e. a dead heat, so C4 should fall to ≈.50–.53 against a real ≈.478 and the Exp-10 metric from +0.104 into the target [−0.06, +0.04]. Because the sub-threshold gate leak on that 1-vs-2 display is small and unchanged (Q for the floor cue ≈ 1.95 mid-equivalents, far below q0≈2.45), no gate knob is touched.
+
+**2. Why this does NOT re-inflate Exp 2 or Exp 13.** On Exp 2's 4-vs-1 conflict trial the majority is made of non-floor voices whose s sits in the .1–.6 band; the flatter exponent hands back to those mid/low-mid cues almost exactly what the smaller scale takes away (e.g. s=.139: .152 → .137; s=.389: .111 → .099; s=.556: .096 → .087), so the B-side residual mass changes by only ≈4%. Exp 13's all-upper displays are likewise near-neutral (their cues sit at s≥.42, where the two curves cross within .003). So Exp 2 should stay ≈.73–.75 and Exp 13 ≈.54–.55 rather than regressing, while Exp 10 gains ≈.13.
+
+**3. Secondary — Exp 12-K4 is over-reversed (.094 vs real .145) and this edit corrects it in the right direction.** The floor cue's absolute weight drops from .210+gate to .160+gate while the three opposing upper residuals barely move, so net evidence for the floor shrinks slightly and K4 should rise toward ≈.11–.15, inside the guard-rail [.11,.18]. I deliberately did NOT raise gmax (the critic made it conditional on Exp 6 *and* on K4 not falling below .10 — K4 is already low, so raising gmax is the wrong sign there).
+
+**4. Compensation — c_n 2.9–3.5 → 2.70–3.05, as instructed.** Cutting the floor residual shaves the floor-containing, under-driven cells (Exp 4 .709 vs .755, Exp 9 .379 vs .405, Exp 11 .630 vs .698, Exp 6 −0.810 vs −0.938). Lowering the constant of indecision raises z most where W_tot is small — exactly the sparse eight-expert tally displays of Exp 4/9 and the low-mass cells of Exp 6/11 — and least where W_tot is already large (Exp 2's dense 4-vs-1, whose residual mass I showed is unchanged), so it is the compensator with the smallest Exp-2 side effect. The move is deliberately modest (≈8% on the denominator, ≈+.02–.03 on Exp 4) so it cannot swamp the Exp-10 gain.
+
+**5. kappa held, per instruction: 12.5–17.0 → 14.0–16.5.** The critic asked me not to push kappa further and to hold it at 14–16; I narrowed the range onto that band rather than raising its top, which keeps the second-from-bottom voice (the cue Exp 6 and Exp 11 depend on) from being suppressed any further while removing the low tail that let some subjects over-weight mid voices in Exp 2.
+
+**6. Untouched, per instruction:** eta (holds the Exp 15/16 solo-vs-flat sign), gamma, epsilon, psi (pins Exp 8 at data), gmax, q0, wid, tau, lam_own, chi, and the entire parameter-free count gate — which continues to deliver exact chance on every tally tie, the one experiment-invariant prediction no competitor family makes as cleanly.
+
+## PRIOR FEEDBACK ITERATIONS
+The critic's verdicts on each previous in-loop candidate, in order. Each block ends with an **Outcome of this advice** line saying whether the candidate the proposer produced AFTER this advice was ACCEPTED (loss strictly beat the running best) or REJECTED (the gate discarded it). Address the most recent iteration's feedback in your next edit, but down-weight past advice whose candidates were REJECTED.
+
+### Iteration 1
+Verdict: regenerate
+Interpretation: The candidate is a faithful instantiation of the arbiter's family in spirit (parameter-free count gate, smooth convex anti-validity novelty, no solo release, no hard mute band, no count-keyed chorus), and it wins on a broad set of cells: Exp 1 (.494 vs .474), Exp 3 (.800 vs .794), Exp 5 (	a-0.770 vs -0.763, the best of any theory), Exp 6 (-0.946 vs -0.938), Exp 7 (.683 vs .661), Exp 8 (.466 vs .485), Exp 9 (.359 vs .405), Exp 14 (.487 vs .489). Those are real, experiment-invariant successes and the low aggregate loss reflects them.
+
+But the single cell the arbiter identified as the tightest quantitative constraint in the corpus is catastrophically missed. Exp 12 K4 (lone FLOOR voice vs a three-cue upper bloc) is real .145 adherence; the candidate simulates .524 	a-- essentially chance, a 0.38 miss, and far worse than pi_8 (.1375) and pi_9 (.0788) on the same cell. The rationale's own hand calculation for this cell predicted ~.14, so the implementation is not doing what the prose says: either the design validity vector is not being aligned with feature index inside `predict` for this panel (the fallback `np.linspace(0.95,0.55,n)` would put the panel floor at index 5, not index 4, and would zero out the floor voice's novelty), or the saturating gate Q^p/(Q^p+q_half^p) is not firing there. Crucially, the model's whole claim is that Exp 10-C4 (floor vs mid PAIR, real .478) and Exp 12-K4 (floor vs upper TRIO, real .145) fall on opposite sides of chance; in simulation they do not separate at all 	a-- Exp 10-C4 comes out around .59 (metric +0.0925 vs real -0.0225, since C3 is pinned at .5 by the gate) and Exp 12-K4 at .52. The contradiction-mass mechanism is therefore currently inert in exactly the contrast it was introduced to explain.
+
+A second, cleaner calibration failure: the solo-vs-flat contrasts have the wrong SIGN. Exp 15 real +0.007, sim -0.105; Exp 16 real +0.052, sim -0.047. This is a direct consequence of gamma being set to 0.40-0.62 (below the arbiter's prescribed 0.6-1.1): with den 	a 3 D^gamma, an unopposed upper PAIR (two residuals, D=2, divisor 1.41) beats a SOLO upper cue (one residual, D=1, divisor 1.0), so flat displays draw more adherence than solos. The same under-dilution inflates Exp 13 (all-upper displays, .558 vs .489) and Exp 2 conflict adherence (.789 vs .654). Meanwhile Exp 4 (eight-expert tally, .715 vs .755) and Exp 11 (.595 vs .698) undershoot.
+Rationale: Stay inside the prescribed family 	a-- count gate, smooth convex anti-validity novelty, seniority-mass (not count) modulation. Do NOT redesign. Three targeted in-family fixes:
+
+1. DEBUG THE FLOOR-VOICE PATH FOR EXP 12 (highest priority). The prose predicts .14 for K4 and the simulation returns .52. Verify inside `predict` that the design validity vector is being received and indexed in FEATURE ORDER (the `v.size != n` fallback `linspace(0.95,0.55,n)` silently re-ranks experts and would strip novelty from a floor expert that is not the last feature 	a-- add an assertion/trace rather than a silent fallback). Then re-check the gate numerically on the two flanking cells and choose q_half / p_gate / gmax so that they STRADDLE chance simultaneously: Exp 12-K4 adherence .12-.20 (floor beats an upper trio) and Exp 10-C4 floor-choice .45-.52 (floor merely ties a mid pair). As written, both cells land ~.52-.59, i.e. the contradiction-mass knee is doing no work; likely q_half is too high relative to the realized Q of an upper trio, or gmax is being swamped by the (c_n + W_tot) Luce denominator. Lowering c_n to ~2.0-2.5 and/or raising gmax to ~1.6-1.9 while keeping q_half near 1.2 is the natural knob.
+
+2. RAISE gamma INTO THE PRESCRIBED RANGE. Set gamma 	a 0.85-1.05 (arbiter asked for 0.6-1.1; the candidate used 0.40-0.62). At gamma 	a 1 a solo cue and an unopposed pair of the same tier become roughly equally compelling, which flips Exp 15/16 from -0.10/-0.05 to the observed slightly-positive values and pulls Exp 13 from .558 toward .489.
+
+3. COMPENSATE THE TALLY CELLS. Raising gamma will drag Exp 3/4 down, and Exp 4 already undershoots. Offset with a modest beta increase (to ~18-24) or c_n decrease, checking that Exp 2 conflict adherence lands .65-.72 (currently .79) and Exp 3 stays ~.79, Exp 4 ~.75. Exp 11 (.595 vs .698) should improve once the own-side echo term (lam_own) actually makes the floor voice loud when it stands AMONG stars 	a- consider lam_own near the top of its range (0.80-0.85).
+
+Do not touch what already works: Exp 1/5/6/7/8/9/14 are at or near the data and should be re-verified after each change so the fix for Exp 12 does not break the Exp 5/6 coherent-conflicting reversals.
+
+**Outcome of this advice:** iter 1 candidate loss=0.1129 -> iter 2 candidate loss=0.1006 -> the gate marked it ACCEPTED.
+
+### Iteration 2
+Verdict: regenerate
+Interpretation: The iter-2 candidate is a clear improvement over iter-1 and was accepted by the gate (0.1129 -> 0.1006). The mid-equivalent chorus scalar Q fixed exactly the cell I flagged as fatal last round: Exp 12-K4 went from .524 to .1625 against a real .145 
+inety percent of the way there, and it did so without destroying the Exp 5/6 coherent-vs-conflicting reversals (-0.791 vs -0.763; -0.847 vs -0.938). Raising gamma into the prescribed band also fixed the SIGN error on the solo-vs-flat contrasts: Exp 15 went -0.105 -> -0.028 (real +0.007) and Exp 16 -0.047 -> -0.004 (real +0.052), and Exp 13 came down from .558 to .537 (real .489). The parameter-free count gate continues to nail Exp 1 (.494 vs .474). So the prescribed family (count gate + smooth convex anti-validity weighting + seniority-mass-not-count modulation) is being implemented faithfully and is carrying most of the corpus.
+
+What the fix cost, however, is visible in four cells, and they are now the dominant contributors to the residual loss:
+(a) Exp 2 is the single worst cell: sim .819 vs real .654 (+0.166), and it got WORSE than iter 1 (.789). On tally-vs-TTB conflict displays the model follows the low-validity majority far too slavishly; the star's voice has been zeroed out too completely (eta was dropped to 0.015-0.035 this round, which is exactly the knob that lets a star pull back against a low-tier majority).
+(b) Exp 11 regressed from .595 to .538 (real .698, and both pi_8 = .692 and pi_9 = .653 beat it). The cells that metric rewards are precisely 'a floor voice standing AMONG stars makes its majority compelling' (e4) and 'a star+floor minority beats a mid trio' (1-a1) 
+inety the own-side echo term lam_own is the natural lever and is currently mid-range.
+(c) The chorus threshold is now firing slightly too eagerly on 2-cue opposition. Exp 10's floor-vs-mid-pair cell simulates ~.57 floor-choice where real is ~.478 (metric +0.069 vs real -0.023), and Exp 14 fell to .399 vs real .489 (worse than iter 1's .487), i.e. a lone low voice opposed by a STAR PAIR now reverses the majority more strongly than subjects do.
+(d) Exp 4 (eight-expert tally) still undershoots (.706 vs .755) and Exp 8 over-reverses (.418 vs .485), suggesting the capacity term is now shaving a bit too much drive at n=8 while the chorus gate still bites there.
+
+None of this requires leaving the family; it is pure calibration of eta, q0/wid, lam_own, epsilon and psi.
+Rationale: Stay inside the arbiter's family exactly as implemented (parameter-free count gate, smooth convex anti-validity novelty, mid-equivalent chorus scalar, Luce-like saturating integration, capacity term). Do NOT redesign, and do NOT touch gamma again 
+inety my last two-step on gamma (0.4-0.6 -> 0.88-1.05) was ACCEPTED and has fixed the Exp 15/16 sign; leave it where it is. Four targeted knob moves, in priority order:
+
+1. RAISE eta BACK (highest leverage, and it reverses a change that hurt). Exp 2 went .789 -> .819 against a real .654 when eta was cut to 0.015-0.035. Put eta back to ~0.045-0.075. A star that carries a small ungated residual can still pull back against a low-tier majority, which is exactly what tally-vs-TTB conflict trials require. Check the side effects: Exp 3 should stay ~.79 (currently .813, so a small drop is welcome), Exp 12-K4 should not rise above ~.20 (three upper residuals at 0.06 only cost ~0.18 against a floor weight of ~1.6), Exp 7 should land .65-.70 (currently .705).
+
+2. NUDGE THE CHORUS THRESHOLD UP SLIGHTLY, not down. Two MID voices must remain sub-threshold and two STARS must be only marginally supra-threshold. Currently the 2-cue cells fire too hard: Exp 10 floor-vs-mid-pair simulates ~.57 (target .45-.52) and Exp 14 sits at .399 (target ~.49). Move q0 to ~2.45-2.60 and/or widen wid to 0.13-0.18 so the star-pair cell yields a partial (not near-maximal) gate. Guard-rail: Exp 12-K4 (three-cue upper bloc, Q~2.9) must stay in .12-.20 and Exp 5/6 must keep their strong negative values (-0.72 to -0.82 and -0.88 to -0.95).
+
+3. PUSH lam_own TO THE TOP OF ITS RANGE (0.75-0.90) to recover Exp 11 (.538 -> target .65-.70). The two Exp-11 cells that are failing both involve a low voice standing BESIDE senior voices rather than against them (star+star+floor majority; star+floor minority vs a mid trio). A larger own-side echo makes those low voices loud without touching any opposition-side arithmetic, so it should leave Exp 5/6/12 essentially unchanged.
+
+4. MILD GLOBAL SOFTENING + CAPACITY RE-BALANCE. Move epsilon to ~0.11-0.17; this simultaneously pulls Exp 2 (.819), Exp 3 (.813), Exp 7 (.705), Exp 8 (.418), Exp 9 (.365) and Exp 14 (.399) toward their data values. Because that also drags Exp 4 (already low at .706 vs .755), compensate on the eight-expert side by lowering psi to ~0.50-0.70 and chi to ~0.05-0.20 so that n=8 tally adherence recovers to ~.75 while Exp 8's star-backed majorities still sit near .48 (they are currently .418, i.e. over-reversed, so both moves point the same way).
+
+Re-verify after each edit that the untouched successes hold: Exp 1 ~.47-.50, Exp 5 ~-0.76, Exp 6 ~-0.90, Exp 12 ~.14-.19, Exp 15/16 in [-0.02, +0.06]. The aim is to trade ~0.08 of Exp-2 error and ~0.12 of Exp-11 error for at most ~0.03 elsewhere.
+
+**Outcome of this advice:** iter 2 candidate loss=0.1006 -> iter 3 candidate loss=0.0692 -> the gate marked it ACCEPTED.
+
+### Iteration 3
+Verdict: regenerate
+Interpretation: Iter 3 is a large, genuine win (0.1006 \u2192 0.0692) and it is faithful to the arbiter's family: the count gate is still parameter-free (Exp 1 = .494 vs .474), weights stay non-negative, seniority is continuous, and the chorus scalar is measured in mid-equivalents rather than counts. The knob moves I asked for and the proposer's own kappa move both paid off exactly where predicted: Exp 8 went .418 \u2192 .484 (real .485), Exp 14 .399 \u2192 .489 (real .489), Exp 11 .538 \u2192 .631 (real .698), Exp 10 +0.069 \u2192 +0.020 (real \u22120.023), Exp 16 \u22120.004 \u2192 +0.041 (real +0.052), Exp 7 .705 \u2192 .667 (real .661), Exp 5 \u22120.791 \u2192 \u22120.768 (real \u22120.763), and Exp 12-K4 stays locked at .154 (real .145) \u2014 the corpus's tightest constraint. Nothing that was working has broken.
+
+The residual loss is now dominated by a single, coherent direction: the model FOLLOWS COUNT MAJORITIES TOO MUCH when the majority contains no true floor voice. Exp 2 is the worst cell in the corpus by a factor of two (.804 vs .654, +0.150) and barely moved despite kappa going 6.5 \u2192 13.5; Exp 13 (all-upper displays) got worse this round (.537 \u2192 .577 vs real .489, +0.088); Exp 3 also drifted up (.800 \u2192 .826 vs .794). All three are driven by the same term: the 'thin' convex residual gradient r_j = eta + c_res\u00b7(1\u2212s)^nu is not thin. With c_res \u2248 .22 and nu \u2248 1.5 a second-from-bottom voice carries r \u2248 .22 and a mid voice r \u2248 .09\u2013.14, so in Exp 2's 4-vs-1 and 3-vs-1 conflict displays the low-ish majority accumulates ~.5\u2013.8 of ungated weight against a star's bare eta \u2248 .04, and the logistic saturates at ~.80. My hand-check of Exp 2 trial 1 gives z \u2248 1.5 (p \u2248 .78 post-lapse); halving c_res to \u2248 .12 drops z to \u2248 0.7 and lands the cell at \u2248 .65, i.e. exactly the data. The same cut pulls Exp 13's all-upper displays toward chance (their entire drive is residual, since nov \u2248 0 for every cue there) and shaves Exp 3 by the ~.03 it needs. Raising kappa further cannot do this job \u2014 kappa only touches nov, and in Exp 2 and Exp 13 nov is already near zero; the over-adherence is pure residual arithmetic.
+
+Secondary, smaller residuals: Exp 4 (eight-expert tally, .707 vs .755) still undershoots and Exp 11 (.631 vs .698) still undershoots; Exp 6 drifted from \u22120.946 (iter 1) to \u22120.829 (real \u22120.938) as gmax and kappa rose, though its between-subject variance (.069) makes it the noisiest cell in the set.
+Rationale: Stay inside the prescribed family exactly as implemented (parameter-free count gate, smooth convex anti-validity novelty, mid-equivalent chorus scalar Q with a logistic threshold, Luce-like saturating integration, capacity term). No redesign. One primary knob and two compensations:
+
+1. THIN THE RESIDUAL GRADIENT: c_res 0.18\u20130.28 \u2192 0.10\u20130.16 (highest leverage; this is a DIFFERENT knob from eta, which I asked you to raise last round and which was ACCEPTED \u2014 keep eta at 0.030\u20130.048, it is what fixed the Exp 15/16 solo-vs-flat sign, and do NOT cut it). The residual is supposed to be a thin ordinal pull; at c_res \u2248 .22 it is the main driver of every all-upper / no-floor-voice majority. Targets after the cut: Exp 2 \u2192 .64\u2013.70 (now .804), Exp 13 \u2192 .49\u2013.53 (now .577), Exp 3 \u2192 .78\u2013.80 (now .826). Guard-rails that must NOT move: Exp 12-K4 stays .12\u2013.19 (its drive is nov\u00b7gate, not residual), Exp 14 stays .46\u2013.51, Exp 8 stays .46\u2013.50, Exp 5 stays \u22120.74 to \u22120.80, Exp 1 stays .47\u2013.50.
+
+2. COMPENSATE THE PURE-TALLY CELLS WITHOUT RE-INFLATING EXP 2. Thinning c_res will drag Exp 4 (already low at .707 vs .755) and Exp 9 (.365 vs .405). Do the compensation with c_n (3.0\u20133.8 \u2192 2.4\u20133.1) rather than beta: lowering the constant of indecision boosts z most where total weight on the table is small (sparse, low-margin tally displays like Exp 4/9) and least where W_tot is already large, so it recovers Exp 4 without undoing the Exp 2 gain. Also set chi to 0.02\u20130.08 (its only effect is the n=8 divisor, worth ~+0.01\u20130.02 on Exp 4) but leave psi at 0.80\u20130.95 \u2014 psi is what currently pins Exp 8 at .484 vs real .485, so touching it will re-open the over-reversal I flagged last round.
+
+3. EXP 11 \u2014 SMALL STEP ONLY, AND NOT VIA lam_own. Last round the proposer showed lam_own is inert in the Exp-11 cells (their floor voice is already far supra-threshold) and harmful in Exp 2's near-threshold cell; I accept that and withdraw the lam_own push. The residual \u22120.067 on Exp 11 is a drive problem in the e4 and (1\u2212a1) cells. Nudge gmax only slightly (1.70\u20132.10 \u2192 1.85\u20132.20) AFTER the c_res cut is verified, and re-check Exp 6 (which fell from \u22120.946 to \u22120.829 as gmax/kappa rose; target \u22120.87 to \u22120.94) and Exp 12-K4 (must not go below .10). If Exp 6 or Exp 12 degrade, revert gmax and accept Exp 11 at ~.63.
+
+Priority order: do (1) first and report Exp 2/13/3 before touching anything else; (2) and (3) are only there to keep the tally cells from slipping. The target is to convert ~0.09 of Exp-2 error and ~0.06 of Exp-13 error into at most ~0.02 elsewhere.
+
+**Outcome of this advice:** iter 3 candidate loss=0.0692 -> iter 4 candidate loss=0.0680 -> the gate marked it ACCEPTED.
+
+### Iteration 4
+Verdict: regenerate
+Interpretation: Iter 4 is the running best (0.0692 \u2192 0.0680) and the gain came exactly where I asked: the targeted residual thinning (c_res 0.22\u21920.17, nu 1.5\u21922.4) plus the small kappa bump pulled Exp 2 from .804 to .744 (real .654) and Exp 13 from .577 to .548 (real .489), and Exp 3 stayed close (.818 vs .794). The corpus-wide successes are intact: Exp 1 .494 (real .474), Exp 5 \u22120.760 (real \u22120.763, best of any theory), Exp 7 .680 (.661), Exp 8 .475 (.485), Exp 14 .505 (.489), Exp 16 +0.048 (+0.052), Exp 15 \u22120.012 (+0.007), Exp 9 .379 (.405). The parameter-free count gate continues to pin every tally tie at exactly chance, which no competitor family does as cleanly.
+
+The cost of the thinning is now visible and it is concentrated in one arithmetic cell that the arbiter named as the corpus's tightest constraint. Exp 10 REGRESSED from +0.020 to +0.104 (real \u22120.023): since the C3 half is pinned at .5 by the gate, this means the simulated floor-vs-mid-PAIR cell (C4) is at \u2248.604 where humans are at \u2248.478. Hand-arithmetic on that cell shows why: with eta=.04, c_res=.17, nu=2.4 the floor voice carries r\u2248.21 while the two mids (s\u2248.42/.51) carry only \u2248.086/.071 \u2192 net \u2248+.05 for the floor plus a small sub-threshold gate leak, i.e. a systematic floor advantage where the data say dead heat. Raising nu made the floor's residual EDGE over a mid pair larger, not smaller. Symmetrically, Exp 12-K4 has now overshot in the other direction (.094 vs real .145), so the floor voice is globally a touch too loud.
+
+Second, a slow monotone leak: Exp 6 has drifted \u22120.946 \u2192 \u22120.847 \u2192 \u22120.829 \u2192 \u22120.810 against a real \u22120.938 across the four iterations, tracking each successive residual cut \u2014 the conflicting (low-voice-majority) cells need more drive than the thinned gradient now supplies. Exp 11 (.630 vs .698) and Exp 4 (.709 vs .755) undershoot for the same reason. So the corpus now splits cleanly: cells whose majorities contain NO floor voice (Exp 2, 13, 3, 10-C4) are still over-followed, while cells whose drive comes from a low voice standing among or against seniors (Exp 6, 11, 4, 12) are slightly under-driven. Further uniform scaling of c_res cannot fix both; the two need to be separated by SHAPE and by the gated term.
+
+Faithfulness note: the implementation keeps the count gate parameter-free, weights non-negative, and modulation keyed to summed seniority mass rather than cue COUNT, so the arbiter's distinctive continuous-in-seniority signature survives. It does, however, run kappa\u224815 and a narrow logistic knee, which is well outside the prescribed kappa\u22481.5\u20133 'chorus-free' letter of CNW. Because the gate has been repeatedly validated by the accept gate (it is what pins Exp 12-K4 and Exp 8), I am not asking for its removal \u2014 only flagging that the prose/parameter ranges have drifted from the recommendation and should not drift further toward a count-keyed or discrete-band rule.
+Rationale: The candidate was ACCEPTED but the margin was tiny (0.0692\u21920.0680) and one cell actively regressed, so there is a concrete, low-risk move left. Stay strictly inside the current implementation (parameter-free count gate, smooth convex anti-validity novelty, seniority-mass scalar Q with a smooth threshold, Luce-like saturating integration, capacity term). Do NOT redesign, do NOT touch gamma or epsilon (both are currently what hold Exp 15/16 sign and Exp 1/8 at data), and do NOT cut c_res uniformly again \u2014 that lever has now been pushed twice and its remaining head-room goes straight into Exp 6/11/4.
+
+1. PRIMARY \u2014 RE-BALANCE THE GRADIENT SHAPE TO FIX EXP 10-C4 WITHOUT RE-INFLATING EXP 2. Move BOTH knobs together: c_res 0.14\u20130.20 \u2192 0.10\u20130.14 AND nu 2.0\u20132.8 \u2192 1.7\u20132.05. This is not a repeat of the pure scale cut and not a reversal of the convexity move; it is the combination that shrinks the FLOOR residual while leaving MID residuals essentially where they are. Worked example on the Exp-10 panel (v_floor=.52, mids .70/.74, v_max=.95): current (c_res=.17, nu=2.4) gives floor r=.210 vs mids .086+.071=.157 (floor edge +.053 \u21d2 sim .604); proposed (c_res=.12, nu=1.85) gives floor r=.160 vs mids .085+.073=.158 (edge \u2248.00 \u21d2 C4 lands .50\u2013.54, real .478). Crucially the same substitution is near-neutral on Exp 2: I recompute the B-side residual mass on its 4-vs-1 conflict trial as .529 vs .548 now, because the flatter exponent gives back to the mid voices roughly what the smaller scale takes away. Target after the edit: Exp 10 metric in [\u22120.06, +0.04], Exp 12-K4 in [.11, .18], Exp 2 \u2264 .74, Exp 13 \u2264 .55.
+
+2. COMPENSATE THE UNDER-DRIVEN, FLOOR-CONTAINING CELLS WITH THE GATED TERM, NOT THE RESIDUAL. The floor residual cut in (1) will shave Exp 4/9/11/6. Offset with a small c_n reduction (3.2 \u2192 2.8\u20133.1; I asked for a bigger cut in iter 3 and the proposer's objection \u2014 that it multiplies z on small-W_tot displays \u2014 is now LESS binding because Exp 2's residual mass is unchanged and Exp 13 is being handled by (1)). If Exp 6 is still above \u22120.86 after (1)+(2), nudge gmax 1.70\u20132.10 \u2192 1.85\u20132.15, but ONLY while checking that Exp 12-K4 does not fall below .10 (it is already over-reversed at .094) \u2014 if it does, revert gmax and accept Exp 6 at \u2248\u22120.82 given its between-subject variance of .069 makes it the noisiest cell in the set.
+
+3. DO NOT push kappa further. It was raised 13.5\u219215 last round and, together with the residual change, bought Exp 2; another raise now costs Exp 6 (whose second-from-bottom voice f1 at s=.077 is exactly the cue kappa suppresses) and Exp 11, both of which are already under-magnitude. If anything, hold kappa at 14\u201316.
+
+Guard-rails to re-verify after every edit (these are the experiment-invariant wins that must not move): Exp 1 .47\u2013.50, Exp 5 \u22120.74 to \u22120.80, Exp 7 .65\u2013.70, Exp 8 .46\u2013.50, Exp 14 .46\u2013.52, Exp 15 in [\u22120.03,+0.04], Exp 16 in [+0.02,+0.07], Exp 3 .78\u2013.82. The goal is to convert the 0.126 Exp-10 error and ~0.03 of Exp-2/13 error into at most ~0.02 on Exp 4/9.
+
+**Outcome of this advice:** iter 4 candidate loss=0.0680 -> iter 5 candidate loss=0.0669 -> the gate marked it ACCEPTED.
+
+### Iteration 5
+Verdict: regenerate
+Interpretation: Iter 5 is again the running best (0.0680 \u2192 0.0669) and the gain landed exactly where I asked: the joint (c_res, nu) re-balance pulled Exp 10 from +0.104 back to +0.051 (real \u22120.023) and nudged Exp 12-K4 from .094 up to .1125 (real .145), while the corpus-wide wins held \u2014 Exp 1 .484 (real .474), Exp 5 \u22120.758 (\u22120.763), Exp 7 .678 (.661), Exp 8 .494 (.485), Exp 14 .503 (.489), Exp 15 \u22120.002 (+0.007), Exp 16 +0.022 (+0.052), Exp 3 .810 (.794). The parameter-free count gate still pins every tally tie at chance, which remains the cleanest experiment-invariant signature in the set, and weights are still non-negative with modulation keyed to summed seniority mass rather than cue count, so the arbiter's continuous-in-seniority family is intact (with the standing caveat, flagged in iter 4, that kappa\u224815 plus a narrow knee is far from the letter of CNW's kappa\u22481.5\u20133 \u2014 it should not drift further toward a discrete/count-keyed rule).
+
+The residual loss is now concentrated in exactly two cells, and they are large: Exp 6 (\u22120.761 vs real \u22120.938, error 0.176 \u2014 now the single worst in the corpus, and it has drifted monotonically \u22120.946 \u2192 \u22120.847 \u2192 \u22120.829 \u2192 \u22120.810 \u2192 \u22120.761 across every residual/scale cut) and Exp 2 (.758 vs .654, error 0.104, which actually moved the WRONG way this round, .744 \u2192 .758). Exp 13 also crept back up (.548 \u2192 .574 vs .489). Behind Exp 2 there is a specific, diagnosable arithmetic fault rather than a generic scale problem. On its dominant conflict display (A wins only the star f0; B wins f2,f3,f4,f5) the low voice f4 (s=.139, nov\u2248.11) is NOT opposed by a chorus \u2014 it faces a single star, u\u22481.38, well below q0=2.45 \u2014 yet it still gets a full gate because the OWN-SIDE echo lam_own\u00b7\u03a3u_own adds \u22481.94, pushing Q to \u22483.3. In other words the model is amplifying a low voice for standing beside its own majority, which inflates precisely the cells (Exp 2, and to a lesser degree Exp 13's denser displays) where humans do not follow the low-tier majority that hard. Crucially, the cells that DO need the gate survive without the echo: in Exp 6's conflicting displays the floor voice f6 faces two upper voices (\u03a3u\u22482.60 > q0) on opposition mass alone, Exp 12-K4's floor voice faces three upper cues, and Exp 7's marginal cues face two stars. So there is a clean differential knob available that has never been pushed in this direction.
+Rationale: The candidate was ACCEPTED, but the two largest errors (Exp 6 = 0.176, Exp 2 = 0.104) are still worth ~0.28 of pooled error and one of them (Exp 2) regressed this round, so one more targeted in-family pass is justified. Stay strictly inside the current implementation (parameter-free count gate, smooth convex anti-validity novelty, mid-equivalent seniority-mass scalar Q with a smooth threshold, Luce-like saturating integration, capacity term). No redesign; do NOT touch gamma, epsilon, eta, nu, kappa, q0 or wid \u2014 gamma/epsilon hold the Exp 15/16 sign and Exp 1/8 at data, eta/nu were just re-balanced successfully, and widening wid or lowering q0 both re-inflate Exp 10-C4 (I checked: q0\u21922.30 or wid\u21920.22 each put a .14\u2013.18 leak on the lone floor voice and push C4 back above .60).
+
+1. PRIMARY \u2014 CUT THE OWN-SIDE ECHO: lam_own 0.50\u20130.70 \u2192 0.20\u20130.35. Note this is a NEW direction, not a reversal: in iter 2 I pushed lam_own UP, the proposer declined on the grounds that it was inert in Exp 11 and harmful in Exp 2's near-threshold cell \u2014 that argument is exactly the case for cutting it now. Worked numbers at lam_own=0.25 with the current settings: Exp 2's f4 gets Q = 1.375 + 0.25\u00b73.23 = 2.18 \u21d2 gate \u2248 0.25 (was \u22481.9), removing \u2248.18 of spurious majority weight \u21d2 z drops \u22481.23 \u2192 \u22480.83 \u21d2 cell \u2248 .67\u2013.68 against a real .654. Meanwhile the cells that matter are untouched because their gate is carried by OPPOSITION mass: Exp 6's f6 Q = 2.60 + 0.25\u00b72.41 = 3.20 (full gate), Exp 12-K4's floor voice has no own side at all (stays .11\u2013.15), Exp 7's f3 Q \u2248 2.81 (full gate), Exp 10-C4's floor voice is unchanged (Q = 1.95, sub-threshold). This is the only knob I can find that separates 'low voice inside its own majority' (over-followed) from 'low voice against a senior bloc' (under-driven).
+
+2. COMPENSATION \u2014 SMALL c_n CUT: 2.70\u20133.05 \u2192 2.45\u20132.80. The echo cut will shave the one Exp-11 cell that genuinely uses it (e4: floor f2 among two stars, Q falls 3.21 \u2192 2.29, gate \u22480.46 instead of full), and Exp 4/6/9/11 are all under-driven already. Lowering the constant of indecision raises z most where W_tot is small, which is where those cells live, and least where Exp 2's dense 4-vs-1 display sits. Targets after (1)+(2): Exp 2 in [.64, .70], Exp 6 at \u22120.82 or stronger (it must NOT drift further toward zero \u2014 treat \u22120.761 as a hard floor), Exp 11 \u2265 .62, Exp 4 \u2265 .71.
+
+3. DO NOT try to fix Exp 13 (+0.085) by re-raising nu or cutting c_res a third time. Exp 13 is pure residual arithmetic (nov\u22480 for every cue there), and both of those levers now feed straight into Exp 10-C4 / Exp 6 / Exp 4. If you want a shot at it, the only safe move is a joint 'residual down, beta up' rescale that leaves gated cells' drive intact \u2014 e.g. eta and c_res both \u00d70.8 with beta \u00d71.1, which reduces residual-only cells (Exp 13, 3, 2) by \u224812% while raising gate-driven cells (Exp 6, 11, 12, 5) by \u224810%. Try this ONLY as a second, separately verified step after (1)+(2), and abandon it if Exp 4 falls below .69 or Exp 9 below .35.
+
+Guard-rails to re-verify after every edit (the experiment-invariant wins that must not move): Exp 1 .47\u2013.50, Exp 3 .78\u2013.82, Exp 5 \u22120.74 to \u22120.80, Exp 7 .65\u2013.70, Exp 8 .46\u2013.51, Exp 10 metric in [\u22120.06, +0.05], Exp 12 .11\u2013.18, Exp 14 .46\u2013.52, Exp 15 in [\u22120.03, +0.04], Exp 16 in [+0.01, +0.07]. The goal is to convert \u22480.08 of Exp-2 error and \u22480.03 of Exp-6 drift into at most \u22480.03 on Exp 11.
+
+**Outcome of this advice:** iter 5 candidate loss=0.0669 -> iter 6 candidate loss=0.0773 -> the gate marked it REJECTED.
+
+### Iteration 6 (most recent — address this)
+Verdict: regenerate
+Interpretation: The iter-6 candidate implemented my iter-5 primary recommendation (own-side echo cut, lam_own 0.60 \u2192 0.27, plus a small c_n cut) and the accept gate rejected it (0.0669 \u2192 0.0773). The trade it made was real but lopsided: Exp 2 improved as predicted (.758 \u2192 .717 against real .654, \u22120.04 of error) and Exp 3 moved through the target (.810 \u2192 .777 vs .794), but four cells paid more than that: Exp 6 drifted further toward zero (\u22120.761 \u2192 \u22120.714 vs real \u22120.938 \u2014 it broke the hard floor I explicitly set), Exp 11 fell back to .595 (vs .698, undoing two iterations of gain), Exp 10 re-inflated (+0.029 \u2192 +0.071 vs real \u22120.023), Exp 5 weakened (\u22120.758 \u2192 \u22120.731), and Exp 4 slipped again (.701 \u2192 .696 vs .755). So the own-side echo is NOT the spurious term I diagnosed: a meaningful fraction of the corpus's low-voice drive (Exp 11 e4, Exp 6's conflicting cells, Exp 5) comes from a low voice standing *inside* a majority, not only from one speaking into opposition. My iter-5 diagnosis was wrong on that point and should not be repeated.
+
+On the unchanged accepted base (iter 5), the error structure is now very clear and, importantly, it splits by MECHANISM rather than by experiment: cells whose drive is purely the ungated residual gradient are over-followed (Exp 13 all-upper displays .573 vs .489; Exp 2 .758 vs .654; Exp 3 .810 vs .794), while cells whose drive is the gated novelty term are under-driven (Exp 6 \u22120.761 vs \u22120.938; Exp 11 .658 vs .698; Exp 12-K4 .113 vs .145 is the one gated cell that is slightly over-driven). I verified the Exp-13 arithmetic on the base parameters: with every cue upper-band, nov \u2248 0 for all of them, residuals run .040\u2013.083, and a 2-vs-1 display yields z \u2248 0.3\u20130.5 \u21d2 p \u2248 .54\u2013.56 post-lapse \u2014 i.e. the residual gradient alone is still strong enough to make all-upper count majorities followable, which is exactly the .085 error. Six further uniform cuts to c_res are off the table (I have pushed that lever twice and it feeds straight into Exp 4/6/9/10-C4), but a JOINT rescale that shrinks the residual while raising beta moves residual-only and gated cells in opposite directions \u2014 this is the one in-family knob combination that has never been tried, and it is aimed squarely at the two largest remaining errors simultaneously.
+
+Faithfulness: the implementation keeps the parameter-free count gate (Exp 1 pinned at chance, the cleanest experiment-invariant signature in the corpus), non-negative weights, continuous seniority, and modulation keyed to summed seniority MASS rather than cue count. It still runs kappa \u2248 15 with a narrow knee, well outside CNW's literal kappa \u2248 1.5\u20133, but the accept gate has validated that repeatedly; it should not drift further toward any discrete or count-keyed rule.
+Rationale: The candidate was REJECTED by the gate, so the base reverts to iter 5. Build on iter 5 and do NOT re-apply the lam_own cut \u2014 my iter-5 advice in that direction was wrong and the gate discarded it; Exp 11/6/5/10 all depend on the own-side echo. If anything, leave lam_own exactly at the iter-5 setting (0.50\u20130.70); at most trim it to 0.45\u20130.60 (a value between my two flanking recommendations), and only if Exp 2 is still above .75 after step 1.
+
+1. PRIMARY \u2014 JOINT 'RESIDUAL DOWN, BETA UP' RESCALE (the step-3 option I flagged last round but that was never attempted). Scale the ungated gradient down and the logistic slope up together: eta 0.030\u20130.048 \u2192 0.022\u20130.036, c_res 0.10\u20130.14 \u2192 0.075\u20130.108, beta 34\u201348 \u2192 44\u201358 (roughly residual \u00d70.75, beta \u00d71.25). Because z \u2248 beta\u00b7E/((c_n + W_tot)\u00b7D^gamma) and c_n dominates W_tot on sparse displays, residual-ONLY cells (where nov \u2248 0 for every cue) move by \u2248\u00d70.94 while GATED cells (where the floor voice carries nov\u00b7gate \u2248 1.7\u20132.1, unscaled) move by \u2248\u00d71.25. Expected: Exp 13 .573 \u2192 .53\u2013.55, Exp 2 .758 \u2192 .72\u2013.74, Exp 3 stays .78\u2013.81, while Exp 6 \u2192 \u22120.83 or stronger, Exp 11 \u2192 .68\u2013.71, Exp 5 \u2192 \u22120.78\u2013\u22120.80. Do NOT change nu, kappa, gamma, epsilon, q0, wid or lam_own in this step \u2014 the whole point is to move the residual/gate BALANCE, not the shapes that currently hold Exp 15/16's sign and Exp 10-C4's dead heat.
+
+2. GUARD THE ONE GATED CELL THAT IS ALREADY OVER-DRIVEN. Exp 12-K4 sits at .113 vs real .145 and the beta increase will push it down. If it falls below .095, do NOT fix it with q0/wid (both re-inflate Exp 10-C4); instead trim gmax by ~5% (1.70\u20132.10 \u2192 1.62\u20132.00), which pulls back gated drive uniformly but leaves the residual/gate ratio you just bought intact. Accept Exp 12 anywhere in [.10, .18].
+
+3. SECOND-ORDER \u2014 THE n=8 CELLS. Exp 4 (.701 vs .755) is the third-largest error and is mostly carried by the residual at n=8 because psi \u2248 0.88 kills 88% of the gate there. The beta increase already helps it; if it is still below .72 after step 1, reduce psi modestly (0.80\u20130.95 \u2192 0.68\u20130.85) so eight-expert panels retain a little more novelty drive. Side-effect check: Exp 8 is currently .494 against a real .485, i.e. a small DROP is welcome, so this move is safe up to Exp 8 \u2265 .46. Do not touch chi.
+
+Guard-rails to re-verify after every edit (the experiment-invariant wins that must not move): Exp 1 .47\u2013.50 (the count gate must stay parameter-free \u2014 exact chance on every tally tie), Exp 3 .78\u2013.82, Exp 5 \u22120.74 to \u22120.80, Exp 7 .65\u2013.70, Exp 8 .46\u2013.51, Exp 9 \u2265 .35, Exp 10 metric in [\u22120.06, +0.05], Exp 12 .10\u2013.18, Exp 14 .46\u2013.52, Exp 15 in [\u22120.03, +0.04], Exp 16 in [+0.01, +0.07]. Target: convert \u22480.08 of Exp-6 error and \u22480.04 of Exp-13/2 error into at most \u22480.02 on Exp 12/4. Report Exp 6, 13, 2, 11 and 12 before making any further change.
+
+**Outcome of this advice:** iter 6 candidate loss=0.0773 -> next candidate accept-status=PENDING (this is the advice you are addressing now).
+
+
+## IMPLEMENTATION GUARDRAILS
+- The parameters should be within the specified ranges.
+- The model's predictions should be valid probability distributions (non-negative and sum to 1).
+- When converting logits to probabilities via softmax, always use the numerically stable form: subtract the max before exponentiating (`x = x - np.max(x); p = np.exp(x); p /= p.sum()`). A naive `np.exp(x) / np.sum(np.exp(x))` overflows to Inf/NaN for large logits. Alternatively, use `scipy.special.softmax`.
+
+
+## PROPOSAL — MINIMAL-DIFF EDIT (do NOT rewrite from scratch)
+The RUNNING-BEST (last ACCEPTED) candidate is shown verbatim above under `## PREVIOUS CANDIDATE (this loop)`. This is the base the loop's accept gate is currently keeping; the most recent critic feedback (see `## PRIOR FEEDBACK ITERATIONS`) should be applied on top of it. Apply the SMALLEST edit that addresses the critic's diagnosis while staying inside the arbiter's prescribed mechanism family:
+  - Re-emit the previous source verbatim, then change ONLY the lines needed to address the critic (a parameter range, a normalization, a softmax temperature, an attention scheme, a gating term, a buggy indexing line, etc.).
+  - Keep all unaffected functions, equations, parameter names, and the overall mechanism intact.
+  - Do NOT rewrite `predict` / `policy` end-to-end if a few lines would do, and do NOT switch mechanism families — that is the arbiter's decision, not yours in this loop.
+  - Briefly explain the minimal edit in `rationale`.
+If you genuinely believe a larger rewrite is required, you may do one, but justify in `rationale` why the minimal-diff path was insufficient.
+
+## RESPONSE FORMAT
+Return a JSON object with the following fields:
+- theory: The theoretical claim this theory makes about cognition.
+- predict: Python source defining def predict(parameters, state, history) -> np.ndarray.
+- policy: Python source defining def policy(probs) -> int.
+- parameters: Parameter ranges (e.g. "[1.0, 10.0]") or choices (e.g. "{1, 2}"), sampled per subject.
+- rationale: Reasoning behind this theory design; used to explain why this theory is better then the previous ones.
+
+
+## Response
+
+```json
+{
+  "theory": "**Chorus-Threshold Novelty Weighting, Balanced-Gradient variant (CTN-BG), residual/gate-balance recalibration.**\n\nPeople told the accuracies of a panel of binary expert ratings do not weight a rating by its accuracy; they weight it by how much *news* it carries, and news is loud only when it stands against a genuine CHORUS. Six commitments, all smooth and continuous (no mute band, no solo release, no discrete count switch).\n\n**(1) The count comparator is a parameter-free gate.** Before any expert identity is consulted, an unweighted feature-wise comparison asks: does one product win on strictly more attributes? If not \u2014 equal win counts, including wholly non-discriminating displays \u2014 the display is non-diagnostic and the subject flips a mental coin: exactly 0.5, with NO validity tie-break and NO take-the-best fallback, at every panel composition and size.\n\n**(2) Seniority is panel-relative; novelty is a smooth convex, monotonically DECREASING function of it, and the descent is STEEP.** s_j = (v_j \u2212 v_min)/(v_max \u2212 v_min); nov_j = (1 \u2212 s_j)^kappa with kappa \u2248 14\u201316.5. Nothing is muted by fiat and nothing is released by fiat, but the curve is sharp: only the panel's genuinely idiosyncratic BOTTOM voice speaks with nov \u2248 1; the second-from-bottom voice retains a real but small share; a mid voice essentially nothing; a star nothing at all. Novelty is never negative \u2014 a star is ignored, never counted against its own side.\n\n**(3) THE CORE CLAIM \u2014 a novel voice is loud only in proportion to the CHORUS it speaks into, and a chorus is measured in *mid-expert equivalents*.** Each other discriminating voice contributes a subjective unit u_i = (1 + tau\u00b7s_i)/(1 + tau/2): a mid-panel voice counts as exactly one unit, a star \u2248 1.4, a bottom voice \u2248 0.6. The chorus a cue j faces is Q_j = \u03a3_{opposing} u_i + lam_own\u00b7\u03a3_{own side, i\u2260j} u_i \u2014 voices it contradicts counted in full, voices it merely stands beside echoed at a discount (the echo is real, not spurious: a low voice standing inside a majority genuinely makes that majority compelling). Loudness is a smooth logistic of that chorus, g_j = Gmax\u00b7\u03c3((Q_j \u2212 q0)/wid), with a narrow but continuous threshold at roughly two-and-a-half mid-equivalents.\n\n**(4) The ungated panel gradient is VERY THIN and only mildly convex \u2014 a bare ordinal pull.** Every discriminating cue contributes r_j = eta + c\u00b7(1 \u2212 s_j)^nu with small eta, small c and a moderate exponent nu \u2248 1.7\u20132.05. The scale is now small enough that displays whose every discriminating voice is upper-band drift close to chance at any count margin (the residual alone must not make an all-star majority followable), and the exponent is flat enough that a single floor cue's residual is worth about the same as two mid cues' residuals \u2014 so a floor voice opposed by a mid PAIR is a dead heat, while a floor voice opposed by a three-cue upper bloc is carried past chance by the chorus gate.\n\n**(5) Integration is Luce-like and saturating, with a STEEP slope applied to a thin gradient.** w_j = r_j + nov_j\u00b7g_j; E = \u03a3 dir_j w_j; z = beta\u00b7E/((c_n + \u03a3_j w_j)\u00b7D^gamma). Because the constant of indecision c_n dominates the accumulated weight on sparse residual-only displays, a steep beta acting on a thin residual leaves ungated (all-upper) displays near chance while amplifying the gated, floor-voice-driven displays. An attention lapse epsilon mixes the result with a coin flip.\n\n**(6) Capacity is a near-total collapse of the chorus construal past ~7 voices, with only mild extra noise.** For n > 7 the amplification essentially vanishes (Gmax \u00d7 (1 \u2212 psi\u00b7(n\u22127))) while integration noise grows only slightly, so eight-expert star-backed majorities sit near chance rather than being reversed, and eight-expert plain tally adherence survives on the residual gradient.\n\n**Cross-design signature:** exact chance on tally ties at any composition; near-chance on displays whose every discriminating voice is upper-band, at every margin; moderate adherence to majorities containing no bottom voice; a bottom voice facing two MID voices lands at chance, facing a three-cue upper bloc reverses to \u2248.10\u2013.15; near-ceiling following of majorities that contain the bottom voice; attenuated integration on eight-expert panels.",
+  "predict": "def predict(parameters, state, history):\n    import numpy as np\n\n    # ---------------- parse the stimulus ----------------\n    a = None\n    b = None\n    if isinstance(state, dict):\n        for ka, kb in (('option_a_ratings', 'option_b_ratings'),\n                       ('a_ratings', 'b_ratings'),\n                       ('A', 'B'), ('a', 'b')):\n            if ka in state and kb in state:\n                try:\n                    a = np.asarray(list(state[ka]), dtype=float).ravel()\n                    b = np.asarray(list(state[kb]), dtype=float).ravel()\n                except Exception:\n                    a = None\n                    b = None\n                break\n    if a is None or b is None:\n        try:\n            arr = np.asarray(state, dtype=float).reshape(2, -1)\n            a = np.asarray(arr[0], dtype=float).ravel()\n            b = np.asarray(arr[1], dtype=float).ravel()\n        except Exception:\n            return np.array([0.5, 0.5], dtype=float)\n\n    if a is None or b is None or a.size == 0 or a.size != b.size:\n        return np.array([0.5, 0.5], dtype=float)\n\n    n = int(a.size)\n\n    # ---------- Commitment 1: parameter-free count gate ----------\n    d = np.sign(a - b)\n    iA = np.where(d > 0)[0]\n    iB = np.where(d < 0)[0]\n    mA = int(iA.size)\n    mB = int(iB.size)\n    if mA == mB:                      # includes wholly non-discriminating displays\n        return np.array([0.5, 0.5], dtype=float)\n\n    D = float(mA + mB)\n\n    # ---------------- parameters ----------------\n    def _g(name, default, lo, hi):\n        try:\n            x = float(parameters.get(name, default))\n        except Exception:\n            x = float(default)\n        if not np.isfinite(x):\n            x = float(default)\n        return float(min(max(x, lo), hi))\n\n    eta = _g('eta', 0.029, 0.0, 0.5)\n    c_res = _g('c_res', 0.090, 0.0, 1.5)\n    nu = _g('nu', 1.88, 0.5, 5.0)\n    kappa = _g('kappa', 15.0, 1.0, 30.0)\n    tau = _g('tau', 1.2, 0.0, 4.0)\n    lam_own = _g('lam_own', 0.60, 0.0, 1.0)\n    gmax = _g('gmax', 1.90, 0.0, 5.0)\n    q0 = _g('q0', 2.45, 0.20, 8.0)\n    wid = _g('wid', 0.14, 0.02, 1.0)\n    c_n = _g('c_n', 2.9, 0.10, 12.0)\n    beta = _g('beta', 50.0, 0.0, 150.0)\n    gamma = _g('gamma', 0.96, 0.0, 2.0)\n    eps = _g('epsilon', 0.12, 0.0, 0.6)\n    psi = _g('psi', 0.88, 0.0, 1.0)\n    chi = _g('chi', 0.05, 0.0, 3.0)\n\n    # ---------------- stated validities ----------------\n    v = None\n    try:\n        vr = parameters.get('validities', None) if hasattr(parameters, 'get') else None\n        if vr is not None:\n            v = np.asarray(vr, dtype=float).ravel()\n    except Exception:\n        v = None\n    if v is None or v.size != n:\n        v = np.linspace(0.95, 0.55, n) if n > 1 else np.array([0.75], dtype=float)\n\n    v_min = float(np.min(v))\n    v_max = float(np.max(v))\n    span = v_max - v_min\n    if (not np.isfinite(span)) or span <= 1e-9:\n        s = np.zeros(n, dtype=float)\n    else:\n        s = np.clip((v - v_min) / span, 0.0, 1.0)\n\n    one_minus = np.clip(1.0 - s, 0.0, 1.0)\n\n    # ---------- Commitment 2: smooth convex novelty, steep descent ----------\n    nov = np.power(one_minus, kappa)\n    nov = np.where(np.isfinite(nov), nov, 0.0)\n\n    # ---------- Commitment 4: THIN, mildly convex panel gradient ----------\n    resid = eta + c_res * np.power(one_minus, nu)\n    resid = np.where(np.isfinite(resid), resid, eta)\n\n    # ---------- Commitment 3: chorus measured in MID-EXPERT EQUIVALENTS ----------\n    denom_u = 1.0 + 0.5 * tau\n    if (not np.isfinite(denom_u)) or denom_u <= 0.0:\n        denom_u = 1.0\n    u = (1.0 + tau * s) / denom_u        # mid voice == 1 unit, star ~1.4, floor ~0.6\n    u = np.where(np.isfinite(u), u, 1.0)\n\n    U_A = float(np.sum(u[iA])) if mA > 0 else 0.0\n    U_B = float(np.sum(u[iB])) if mB > 0 else 0.0\n\n    Q = np.zeros(n, dtype=float)\n    if mA > 0:\n        Q[iA] = U_B + lam_own * (U_A - u[iA])\n    if mB > 0:\n        Q[iB] = U_A + lam_own * (U_B - u[iB])\n    Q = np.clip(Q, 0.0, None)\n\n    # ---------- Commitment 6: capacity limit past ~7 voices ----------\n    over = max(0.0, float(n) - 7.0)\n    gmax_eff = gmax * max(0.0, 1.0 - psi * over)\n    noise = 1.0 + chi * over\n    if (not np.isfinite(noise)) or noise <= 0.0:\n        noise = 1.0\n\n    # smooth logistic threshold in the chorus size\n    xg = (Q - q0) / max(wid, 1e-6)\n    xg = np.clip(xg, -60.0, 60.0)\n    gate = gmax_eff / (1.0 + np.exp(-xg))\n    gate = np.where(np.isfinite(gate), gate, 0.0)\n\n    # ---------- weights ----------\n    w = resid + nov * gate\n    w = np.where(np.isfinite(w), w, 0.0)\n    w = np.clip(w, 0.0, None)\n\n    E = 0.0\n    if mA > 0:\n        E += float(np.sum(w[iA]))\n    if mB > 0:\n        E -= float(np.sum(w[iB]))\n    if not np.isfinite(E):\n        E = 0.0\n\n    W_tot = 0.0\n    if mA > 0:\n        W_tot += float(np.sum(w[iA]))\n    if mB > 0:\n        W_tot += float(np.sum(w[iB]))\n    if (not np.isfinite(W_tot)) or W_tot < 0.0:\n        W_tot = 0.0\n\n    # ---------- Commitment 5: Luce-like saturating integration ----------\n    den = (c_n + W_tot) * (float(D) ** gamma) * noise\n    if (not np.isfinite(den)) or den <= 0.0:\n        den = 1.0\n\n    z = beta * E / den\n    if not np.isfinite(z):\n        z = 0.0\n    z = float(min(max(z, -30.0), 30.0))\n\n    p_a = 1.0 / (1.0 + np.exp(-z))\n    p_a = (1.0 - eps) * p_a + eps * 0.5\n    p_a = float(min(max(p_a, 1e-9), 1.0 - 1e-9))\n\n    p = np.array([p_a, 1.0 - p_a], dtype=float)\n    p = np.clip(p, 1e-12, 1.0)\n    return p / p.sum()",
+  "policy": "def policy(probs):\n    import numpy as np\n    probs = np.asarray(probs, dtype=np.float64)\n    probs = np.clip(probs, 0.0, None)\n    s = probs.sum()\n    if (not np.isfinite(s)) or s <= 0:\n        probs = np.ones_like(probs) / float(len(probs))\n    else:\n        probs = probs / s\n    return int(np.random.choice(len(probs), p=probs))",
+  "parameters": {
+    "eta": "[0.022, 0.036]",
+    "c_res": "[0.075, 0.108]",
+    "nu": "[1.70, 2.05]",
+    "kappa": "[14.0, 16.5]",
+    "tau": "[1.0, 1.5]",
+    "lam_own": "[0.50, 0.70]",
+    "gmax": "[1.70, 2.10]",
+    "q0": "[2.38, 2.52]",
+    "wid": "[0.11, 0.17]",
+    "c_n": "[2.70, 3.05]",
+    "beta": "[44, 58]",
+    "gamma": "[0.88, 1.05]",
+    "epsilon": "[0.09, 0.15]",
+    "psi": "[0.80, 0.95]",
+    "chi": "[0.02, 0.08]",
+    "validities": "validities"
+  },
+  "rationale": "**Minimal diff: exactly three parameter ranges changed (eta, c_res, beta) plus their matching in-code defaults. Every equation, variable name, gate, and structural line is byte-identical to the accepted iter-5 base.** This is the critic's iteration-6 STEP 1 — the joint 'residual down, beta up' rescale — and nothing else.\n\n**1. Why this specific combination, and why it is not a repeat of any rejected lever.** The corpus error now splits by MECHANISM, not by experiment: residual-only cells (every discriminating voice upper-band, so nov≈0 for all of them) are over-followed — Exp 13 .573 vs .489, Exp 2 .758 vs .654, Exp 3 .810 vs .794 — while gated cells (drive carried by nov·gate on a genuine floor voice) are under-driven — Exp 6 −0.761 vs −0.938, Exp 11 .658 vs .698. A third uniform c_res cut alone cannot fix both (it feeds straight into Exp 6/11/4); a beta raise alone cannot either (it inflates Exp 2/13). Scaling the ungated gradient by ≈0.75 while scaling the logistic slope by ≈1.25 moves the two classes in OPPOSITE directions, because z = beta·E/((c_n + W_tot)·D^gamma) and the gated term (nov·gate ≈ 1.7–2.1) is left untouched: residual-only cells see net ≈×0.94 on z, gated cells see ≈×1.25.\n\n**2. Worked check on the two classes.** Exp 13's typical 2-vs-1 all-upper display: residuals currently ≈.040–.083, E ≈ .05, W_tot ≈ .18, den ≈ (2.9+.18)·3^0.96 ≈ 8.8, z ≈ 41·.05/8.8 ≈ 0.23 → p ≈ .555 post-lapse. After the edit residuals become ≈.030–.062, E ≈ .0375, z ≈ 50·.0375/8.7 ≈ 0.215 → p ≈ .55 — plus the same ≈6% shave compounds across Exp 13's denser cells, landing it ≈.53–.55 and Exp 2 ≈.72–.74. Exp 6's conflicting cells, by contrast, are carried by a floor voice at w ≈ 2.0 whose value does not scale at all, so z rises ≈×1.22 and the metric should go to ≈−0.83 or stronger, cutting the single largest error in the corpus (0.176) roughly in half. Exp 11's e4 and (1−a1) cells move the same way (→ ≈.68–.70).\n\n**3. Why I did NOT re-apply the lam_own cut.** The gate rejected iter 6 precisely because cutting the own-side echo broke Exp 6/11/5/10 for a small Exp-2 gain. lam_own stays exactly at the iter-5 setting [0.50, 0.70]; the echo is a genuine part of the low-voice drive, not a spurious term.\n\n**4. Why nu, kappa, gamma, epsilon, q0, wid, tau, c_n, psi, chi and gmax are all untouched.** nu/c_res's SHAPE balance is what currently makes a floor cue and a mid pair a dead heat (Exp 10-C4); gamma/epsilon hold the Exp 15/16 solo-vs-flat sign and Exp 1/8 at data; q0/wid both re-inflate Exp 10-C4 if moved; psi pins Exp 8 at .494 vs real .485; c_n raises z most on small-W_tot displays, which is exactly where Exp 13's sparse all-upper cells live, so cutting it would undo step 1. I deliberately kept the residual SHAPE fixed and changed only its SCALE relative to the gate — the one balance knob that has never been tried.\n\n**5. Accepted risk, bounded.** The beta rise pushes the one already-over-driven gated cell, Exp 12-K4 (.113 vs .145), down toward ≈.09–.10 and Exp 5 toward ≈−0.78; both stay inside the critic's guard-rails ([.10,.18] and [−0.74,−0.80] respectively, with Exp 12 at worst marginally outside), and together they cost ≈0.04 against ≈0.17 of expected gain on Exp 6/13/2/11. I did NOT pre-emptively trim gmax to protect Exp 12, because that would scale the gated term back down and cancel exactly the Exp-6/11 recovery this edit is for; if Exp 12 falls below .095 the correct next step is a ~5% gmax trim, not a q0/wid move.\n\n**6. Untouched and invariant:** the parameter-free count gate — exact chance on every tally tie at every panel composition and size, with no validity tie-break and no take-the-best fallback. That remains the cleanest experiment-invariant prediction in the corpus and is unaffected by any parameter in this edit."
+}
+```
+
+## Usage
+
+```json
+{
+  "input_tokens": 71126,
+  "output_tokens": 10462
+}
+```
