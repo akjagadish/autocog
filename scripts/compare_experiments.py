@@ -60,6 +60,8 @@ Outputs (under `--out`):
                          transfer_rmse, n experiments failed
   theory_coords.csv      long: model, space (joint | hilbig | code), x, y
   theory_distances_<space>.csv  full theory x theory distance matrices
+  joint_predictions.npz  P(B) of every theory (incl. references) on every
+                         experiment's pairs: arrays e0..e<n-1>, theory_ids, exp_ids
   mds_summary.csv        per space: n, 2-D variance share, stress
   mantel.csv             Spearman r and permutation p between spaces
   run_diversity.csv      per run: mean pairwise distance among its
@@ -769,6 +771,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {len(dropped)} theories failed on some experiment and are left out "
                   f"of the joint space: {', '.join(dropped[:8])}{' ...' if len(dropped) > 8 else ''}")
         P_ok = [p[ok] for p in P]
+        # Every theory's prediction on every experiment (rows = theory_ids).
+        np.savez_compressed(args.out / "joint_predictions.npz",
+                            theory_ids=np.array(t_ids), exp_ids=np.array(ids[:-1]),
+                            **{f"e{i}": P[i] for i in range(n)})
         t_ok = [t for t, k in zip(t_ids, ok) if k]
         D_th, D_ex = joint_distances(P_ok)
 
