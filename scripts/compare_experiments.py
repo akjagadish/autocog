@@ -36,7 +36,15 @@ cues, 3-32 pairs), so they are compared through size-free representations:
    Each family's ground-truth model (prior-predictive mean, the fit target)
    is placed in the theory map, and `transfer_rmse` is each theory's RMS
    distance from its own ground truth across all proposed experiments —
-   generalization beyond the stimuli it was fit on.
+   generalization beyond the stimuli it was fit on. For a human run (no
+   ground-truth model) the reference is the participants' observed share
+   choosing B on each pair of that run's experiments.
+
+   Two more theory spaces sit beside the joint one: best-fit predictions on
+   the Hilbig & Moshagen pairs alone, and **code** — symmetrised normalized
+   compression distance between `predict()` sources with comments and
+   docstrings stripped (ground truths enter with their canonical code). The
+   code map shows how theories are written; the others, how they behave.
 
 Every distance matrix is embedded with classical (Torgerson) MDS; each map
 reports the share of positive eigenvalue mass in its 2 dimensions and
@@ -50,7 +58,8 @@ Outputs (under `--out`):
   experiment_coords.csv  long: exp_id, space, x, y
   theories.csv           joint-space theories: fit_mse (from --models-dir),
                          transfer_rmse, n experiments failed
-  theory_coords.csv      long: model, space (joint | hilbig), x, y
+  theory_coords.csv      long: model, space (joint | hilbig | code), x, y
+  theory_distances_<space>.csv  full theory x theory distance matrices
   mds_summary.csv        per space: n, 2-D variance share, stress
   mantel.csv             Spearman r and permutation p between spaces
   run_diversity.csv      per run: mean pairwise distance among its
@@ -99,6 +108,7 @@ from scripts.compare_models import (  # noqa: E402
     _ordered,
     _run_name,
     _slug,
+    _strip_comments_and_docstrings,
     family_label,
     FAMILY_LABELS,
     human_counts,
@@ -106,6 +116,7 @@ from scripts.compare_models import (  # noqa: E402
     llm_styles,
     LLM_LABELS,
     load_models,
+    ncd,
     parameter_space,
     parse_run_dir,
     predict_p_b,
@@ -144,6 +155,27 @@ class Experiment:
     pairs: tuple[Pair, ...]
     rationale: str = ""
     metric_source: str = ""
+    human: bool = False  # run with real participants (no ground-truth model)
+    observed_p_b: tuple[float, ...] = ()  # human runs: share choosing B, per pair
+    observed_n: tuple[int, ...] = ()
+
+
+def _observed_choices(path: Path, pairs: tuple[Pair, ...]) -> tuple[tuple[float, ...], tuple[int, ...]]:
+    """Share of trials choosing B (response 1) on each of `pairs`, from a
+    run's per-trial JSONL (dropped participants are already excluded)."""
+    k = {p: 0 for p in pairs}
+    n = {p: 0 for p in pairs}
+    for line in path.read_text().splitlines():
+        if not line.strip():
+            continue
+        t = json.loads(line)
+        key = (tuple(int(x) for x in t["option_a_ratings"]),
+               tuple(int(x) for x in t["option_b_ratings"]))
+        if key in n:
+            n[key] += 1
+            k[key] += int(t["response"])
+    return (tuple(k[p] / n[p] if n[p] else float("nan") for p in pairs),
+            tuple(n[p] for p in pairs))
 
 
 def _as_pairs(a_rows: list[list[int]], b_rows: list[list[int]]) -> tuple[Pair, ...]:
@@ -162,6 +194,7 @@ def load_experiments(run_dirs: list[Path], *, max_rounds: int | None = None) -> 
             print(f"  skipping {rd}: no observations/state.json")
             continue
         info = parse_run_dir(rd)
+        human = info["noise"] is None
         short = f"{info['llm']}/{info['family']}/run{info['replicate']}"
         rounds = json.loads(path.read_text())["rounds"]
         if max_rounds is not None:
@@ -169,15 +202,21 @@ def load_experiments(run_dirs: list[Path], *, max_rounds: int | None = None) -> 
         for r, rnd in enumerate(rounds):
             for i, ob in enumerate(rnd["observations"]):
                 e = ob["experiment"]
+                pairs = _as_pairs(e["trial_a_ratings"], e["trial_b_ratings"])
+                obs_p, obs_n = (), ()
+                data = rd / "observations" / ob.get("data_path", "")
+                if human and ob.get("data_path") and data.is_file():
+                    obs_p, obs_n = _observed_choices(data, pairs)
                 out.append(Experiment(
                     exp_id=f"{short}/r{r}e{i}", run=_run_name(rd), llm=info["llm"],
                     family=info["family"], replicate=info["replicate"], round=r, index=i,
                     proposer=ob.get("proposer_label", ""),
                     proposer_model=f"{short}/{ob.get('proposer_label', '')}",
                     validities=tuple(float(v) for v in e["validities"]),
-                    pairs=_as_pairs(e["trial_a_ratings"], e["trial_b_ratings"]),
+                    pairs=pairs,
                     rationale=e.get("rationale", ""),
                     metric_source=(ob.get("metric") or {}).get("metric_source", ""),
+                    human=human, observed_p_b=obs_p, observed_n=obs_n,
                 ))
     return out
 
@@ -383,20 +422,68 @@ def mantel(D1: np.ndarray, D2: np.ndarray, *, n_perm: int = 999,
 # ---------------------------------------------------------------------------
 
 
+def _is_random(v: Any) -> bool:
+    """Whether a resolved parameter value still contains a leaf that
+    `draw_parameter_samples` would draw at random."""
+    if isinstance(v, tuple) and len(v) == 2 and all(isinstance(x, (int, float)) for x in v):
+        return float(v[0]) != float(v[1])
+    if isinstance(v, dict):
+        if set(v) == {"interval"}:
+            iv = v["interval"]
+            return not (isinstance(iv, list) and len(iv) == 2 and float(iv[0]) == float(iv[1]))
+        if set(v) == {"choices"}:
+            return len(v["choices"]) > 1
+        return any(_is_random(x) for x in v.values())
+    if isinstance(v, list):
+        return any(_is_random(x) for x in v)
+    return False
+
+
 def predict_on_experiment(theory: Theory, best_params: dict[str, Any],
-                          validities: Any, pairs: Any) -> np.ndarray:
+                          validities: Any, pairs: Any, *, n_draws: int = 50,
+                          seed: int = 0) -> np.ndarray:
     """P(B) per pair on a new design: context-derived values (validities,
-    per-cue vectors sized by n_features, fixed constants) are re-resolved
-    for the experiment; free parameters take their best-fit values."""
+    fixed constants) are re-resolved for the experiment and free parameters
+    take their best-fit values. Nested random leaves (e.g. per-cue weight
+    vectors `[(0, 1)] * n_features`) are not fit and cannot carry over to a
+    design with a different number of cues, so they are averaged over
+    `n_draws` seeded draws."""
     ctx = task_context(list(validities))
     fixed, free = parameter_space(theory, ctx)
-    params = dict(fixed)
-    for p in free:
-        if p.name in best_params:
-            params[p.name] = best_params[p.name]
-    with warnings.catch_warnings(), np.errstate(all="ignore"):
-        warnings.simplefilter("ignore")
-        return predict_p_b(theory, params, list(pairs))
+    free_vals = {p.name: best_params[p.name] for p in free if p.name in best_params}
+    resolved = resolve_parameters(theory.parameters, ctx)
+    nested = [k for k in fixed if k not in ("validities", "rating_max")
+              and _is_random(resolved.get(k))]
+    rng_state = random.getstate()
+    random.seed(seed)
+    rows = []
+    try:
+        for _ in range(n_draws if nested else 1):
+            params = dict(fixed)
+            params.update({k: draw_parameter_samples(resolved[k]) for k in nested})
+            params.update(free_vals)
+            with warnings.catch_warnings(), np.errstate(all="ignore"):
+                warnings.simplefilter("ignore")
+                rows.append(predict_p_b(theory, params, list(pairs)))
+    finally:
+        random.setstate(rng_state)
+    return np.vstack(rows).mean(axis=0)
+
+
+def code_distances(sources: list[str]) -> np.ndarray:
+    """Symmetrised normalized compression distance between source texts."""
+    n = len(sources)
+    D = np.zeros((n, n))
+    for i, j in itertools.combinations(range(n), 2):
+        D[i, j] = D[j, i] = (ncd(sources[i], sources[j]) + ncd(sources[j], sources[i])) / 2
+    return D
+
+
+def _clean_source(src: str) -> str:
+    try:
+        return _strip_comments_and_docstrings(src)
+    except SyntaxError:
+        return src
 
 
 def complete_theories(P: list[np.ndarray]) -> np.ndarray:
@@ -495,7 +582,7 @@ def _plot_map(coords: pd.DataFrame, *, out_base: Path, title: str, kind: str,
     d = coords
     fams = _ordered(d["family"], FAMILY_LABELS)
     styles = llm_styles(d["llm"].unique())
-    fig, axes = plt.subplots(1, len(fams), figsize=(5.2 * len(fams), 5.2),
+    fig, axes = plt.subplots(1, len(fams), figsize=(max(5.2 * len(fams), 9.0), 5.2),
                              sharex=True, sharey=True, squeeze=False)
     for ax, fam in zip(axes[0], fams):
         ax.scatter(d["x"], d["y"], s=10, color=GRAY, alpha=0.15, lw=0, zorder=1)
@@ -581,12 +668,16 @@ def main(argv: list[str] | None = None) -> int:
     ref = hilbig_experiment(args.human_data)
     all_exps = exps + [ref]
     families = sorted({e.family for e in exps})
+    # Simulated families are judged against their ground-truth model; human
+    # families against the participants' observed choices on each experiment.
+    human_fams = sorted({e.family for e in exps if e.human})
+    gt_fams = [f for f in families if f not in human_fams]
     print(f"{len(exps)} experiments from {len({e.run for e in exps})} runs "
           f"(+ the Hilbig & Moshagen reference).")
 
     # Panel profiles and ground-truth predictions, per experiment.
     jobs = [{"validities": list(e.validities), "pairs": [list(map(list, p)) for p in e.pairs],
-             "panel": list(PANEL_NAMES), "gt_families": families,
+             "panel": list(PANEL_NAMES), "gt_families": gt_fams,
              "n_draws": args.n_draws, "seed": args.seed} for e in all_exps]
     ex_res = _run_pool(_experiment_job, jobs, args.workers, "panel")
 
@@ -658,13 +749,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Joint space: {len(keep)} theories x {len(exps)} experiments.")
         th_res = _run_pool(_theory_job, tjobs, args.workers, "theories")
 
-        # Ground truths join as theories: their prior-mean predictions.
-        gt_ids = [f"ground_truth/{f}" for f in families]
+        # References join as theories: each ground truth's prior-mean
+        # predictions, and for human runs the observed share choosing B
+        # (defined only on that family's own experiments).
+        ref_ids = {f: f"ground_truth/{f}" for f in gt_fams}
+        ref_ids |= {f: f"humans/{f}" for f in human_fams}
         P = []
-        for e_i in range(n):
+        for e_i, e in enumerate(exps):
             rows = [r["preds"][e_i] for r in th_res]
-            rows += [ex_res[e_i]["gt"][f] for f in families]
+            rows += [ex_res[e_i]["gt"][f] for f in gt_fams]
+            rows += [list(e.observed_p_b) if e.family == f and e.observed_p_b
+                     else [float("nan")] * len(e.pairs) for f in human_fams]
             P.append(np.asarray(rows, dtype=float))
+        gt_ids = [ref_ids[f] for f in gt_fams + human_fams]
         t_ids = [m.model_id for m in keep] + gt_ids
         ok = complete_theories(P)
         dropped = [t for t, k in zip(t_ids, ok) if not k]
@@ -676,7 +773,8 @@ def main(argv: list[str] | None = None) -> int:
         D_th, D_ex = joint_distances(P_ok)
 
         th_meta = {m.model_id: m for m in keep}
-        gt_pos = {f: t_ok.index(g) for f, g in zip(families, gt_ids) if g in t_ok}
+        gt_pos = {f: t_ok.index(ref_ids[f]) for f in families if ref_ids[f] in t_ok}
+        gt_full = {f: t_ids.index(ref_ids[f]) for f in families}
         fam_of = exp_df["family"].to_numpy()[:n]
         rows = []
         for i, t in enumerate(t_ok):
@@ -684,14 +782,16 @@ def main(argv: list[str] | None = None) -> int:
             row = {"model": t, "llm": m.llm if m else "ground_truth",
                    "family": m.family if m else t.split("/", 1)[1],
                    "run": m.run if m else "ground_truth",
-                   "label": m.label if m else "ground_truth",
+                   "label": m.label if m else t.split("/", 1)[0],
                    "generation": m.generation if m else -1}
             gi = gt_pos.get(row["family"])
-            if gi is not None and m is not None:
-                row["transfer_rmse"] = float(D_th[i, gi])
-                own = fam_of == row["family"]
+            if m is not None:
+                if gi is not None:
+                    row["transfer_rmse"] = float(D_th[i, gi])
+                fi, gf = t_ids.index(t), gt_full[row["family"]]
                 row["transfer_rmse_own_family"] = float(np.sqrt(np.mean(
-                    [np.mean((P_ok[e][i] - P_ok[e][gi]) ** 2) for e in np.where(own)[0]])))
+                    [np.nanmean((P[e][fi] - P[e][gf]) ** 2)
+                     for e in np.where(fam_of == row["family"])[0]])))
             rows.append(row)
         th_df = pd.DataFrame(rows)
         fails = {r["model"]: (r["n_failed"], r["truncated"]) for r in th_res}
@@ -701,6 +801,7 @@ def main(argv: list[str] | None = None) -> int:
         th_df.to_csv(args.out / "theories.csv", index=False)
 
         theory_coords.append(_space_coords(D_th, t_ok, "joint", "model", summary))
+        pd.DataFrame(D_th, index=t_ok, columns=t_ok).to_csv(args.out / "theory_distances_joint.csv")
         coords.append(_space_coords(D_ex, ids[:-1], "joint", "exp_id", summary))
         _mantel("experiment:profile", "experiment:joint", Dp, D_ex)
 
@@ -716,16 +817,42 @@ def main(argv: list[str] | None = None) -> int:
                                 values="p_b_target")
             tg.index = [f"ground_truth/{f}" for f in tg.index]
             wide = pd.concat([wide, tg[wide.columns]])
+        # Human families were fit to the Hilbig & Moshagen choices themselves.
+        hc = human_counts(args.human_data)
+        hk = pd.Series(hc["k"].to_numpy() / hc["n"].to_numpy(),
+                       index=pd.MultiIndex.from_arrays(
+                           [["".join(map(str, x)) for x in hc[c]] for c in ("option_a", "option_b")]))
+        for f in human_fams:
+            if ref_ids[f] not in wide.index:
+                wide.loc[ref_ids[f]] = hk.reindex(wide.columns).to_numpy()
         hil_ids = [t for t in t_ok if t in wide.index]
         Xh = wide.loc[hil_ids].to_numpy(dtype=float)
         D_hil = euclidean_distances(Xh) / np.sqrt(Xh.shape[1])
         theory_coords.append(_space_coords(D_hil, hil_ids, "hilbig", "model", summary))
+        pd.DataFrame(D_hil, index=hil_ids, columns=hil_ids).to_csv(
+            args.out / "theory_distances_hilbig.csv")
         sel = [t_ok.index(t) for t in hil_ids]
         _mantel("theory:joint", "theory:hilbig", D_th[np.ix_(sel, sel)], D_hil)
 
+        # Theory code: compression distance between predict() sources (comments
+        # and docstrings stripped); ground truths join with their canonical code.
+        src = {m.model_id: m.theory.predict_source for m in keep}
+        for f in gt_fams:
+            src[ref_ids[f]] = Theory.from_yaml(CANONICAL_YAML_DIR / f"{f}.yaml").predict_source
+        code_ids = [t for t in t_ok if t in src]
+        D_code = code_distances([_clean_source(src[t]) for t in code_ids])
+        theory_coords.append(_space_coords(D_code, code_ids, "code", "model", summary))
+        pd.DataFrame(D_code, index=code_ids, columns=code_ids).to_csv(
+            args.out / "theory_distances_code.csv")
+        sel = [t_ok.index(t) for t in code_ids]
+        _mantel("theory:joint", "theory:code", D_th[np.ix_(sel, sel)], D_code)
+
         # Do experiments resemble each other when their proposers do?
+        # (Model ids are bare labels for a single run, so look up by run + label.)
         pos = {t: i for i, t in enumerate(t_ok)}
-        prop = [alias.get(p, p) for p in exp_df["proposer_model"].iloc[:n]]
+        by_label = {(m.run, m.label): m.model_id for m in models}
+        prop = [alias.get(by_label.get((e.run, e.proposer), ""), by_label.get((e.run, e.proposer), ""))
+                for e in exps]
         has = [i for i in range(n) if prop[i] in pos]
         pi = [pos[prop[i]] for i in has]
         _mantel("experiment:profile", "proposer theory:joint",
@@ -776,13 +903,16 @@ def main(argv: list[str] | None = None) -> int:
                 columns={"generation": "order"})
             tm["seed"] = tm["order"] == 0
             for space, word in (("joint", "predictions on every proposed experiment"),
-                                ("hilbig", "best-fit predictions on the Hilbig & Moshagen pairs")):
+                                ("hilbig", "best-fit predictions on the Hilbig & Moshagen pairs"),
+                                ("code", "code (compression distance between predict() sources)")):
                 c = tc[tc["space"] == space].merge(tm, on="model")
                 gt = c[c["llm"] == "ground_truth"]
                 ref_xy = {r.family: (r.x, r.y) for r in gt.itertuples()}
                 s = share[("theories", space)]
+                ref_label = ("Human choices" if not gt_fams else
+                             "Ground truth" if not human_fams else "Ground truth / human choices")
                 _plot_map(c[c["llm"] != "ground_truth"], out_base=args.out / f"theory_map_{space}",
-                          kind="theory", ref=ref_xy, ref_label="Ground truth",
+                          kind="theory", ref=ref_xy, ref_label=ref_label,
                           title=f"Theories by {word}  (classical MDS; 2-D share "
                                 f"{s['variance_2d']:.0%}, stress {s['stress']:.2f})")
     print(f"wrote {args.out}")

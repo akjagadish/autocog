@@ -215,3 +215,66 @@ def test_theory_on_experiment_uses_experiment_validities():
     pairs = [((0, 0, 0, 0, 1, 0), (0, 0, 0, 0, 0, 1))]
     p = predict_on_experiment(th, best, [0.5, 0.5, 0.5, 0.5, 0.6, 0.9], pairs)
     assert p[0] > 0.99  # cue 5 (validity 0.9) favours B
+
+
+# ---------------------------------------------------------------------------
+# 7. Human runs: observed P(B) per pair is the reference.
+# ---------------------------------------------------------------------------
+
+
+def test_load_experiments_reads_observed_choices(tmp_path):
+    from scripts.compare_experiments import load_experiments
+
+    run = tmp_path / "ttb+wadd"
+    (run / "observations" / "data").mkdir(parents=True)
+    (run / "run_meta.json").write_text(json.dumps({"llm_model": "llm-y", "run_id": "p1"}))
+    ob = _obs("pi_1", [0.9, 0.6], [[1, 0], [0, 0]], [[0, 1], [1, 1]])
+    ob["data_path"] = "data/round_000_obs_00.jsonl"
+    (run / "observations" / "state.json").write_text(json.dumps({"rounds": [{"observations": [ob]}]}))
+    # Pair 0: 3 of 4 chose B; pair 1: 0 of 2 chose B.
+    rows = [([1, 0], [0, 1], 1), ([1, 0], [0, 1], 1), ([1, 0], [0, 1], 0), ([1, 0], [0, 1], 1),
+            ([0, 0], [1, 1], 0), ([0, 0], [1, 1], 0)]
+    (run / "observations" / "data" / "round_000_obs_00.jsonl").write_text("\n".join(
+        json.dumps({"option_a_ratings": a, "option_b_ratings": b, "response": r})
+        for a, b, r in rows))
+    (e,) = load_experiments([run])
+    assert e.human
+    assert e.observed_p_b == pytest.approx((0.75, 0.0))
+    assert e.observed_n == (4, 2)
+
+
+def test_simulated_runs_have_no_observed_reference(tmp_path):
+    from scripts.compare_experiments import load_experiments
+
+    (e, *_) = load_experiments([_write_run(tmp_path, n_rounds=1)])
+    assert not e.human and e.observed_p_b == ()
+
+
+def test_nested_per_cue_draws_are_averaged_not_resampled():
+    """Per-cue weight vectors (`[(0, 1)] * n_features`) are not fit; on a
+    new design they are marginalised over seeded draws, so predictions are
+    reproducible and, on a symmetric pair, indifferent."""
+    from scripts.compare_experiments import predict_on_experiment
+
+    th = Theory.from_yaml(YAML_DIR / "wadd.yaml")
+    best = {"beta": 20.0, "epsilon": 0.0, "weights": [0.1, 0.9, 0.5, 0.5]}
+    v = [0.7, 0.7, 0.6]
+    pairs = [((1, 0, 0), (0, 1, 0)), ((1, 1, 0), (0, 0, 1))]
+    p1 = predict_on_experiment(th, best, v, pairs)
+    p2 = predict_on_experiment(th, best, v, pairs)
+    np.testing.assert_array_equal(p1, p2)
+    assert p1[0] == pytest.approx(0.5, abs=0.05)
+    assert p1[1] < 0.2
+
+
+def test_code_distances_symmetric_ncd():
+    from scripts.compare_experiments import code_distances
+    from scripts.compare_models import ncd
+
+    a = "def predict(p, s, h):\n    return 0.5\n"
+    b = "def predict(p, s, h):\n    x = s[0] @ p['w']\n    return 1 / (1 + x)\n"
+    D = code_distances([a, a, b])
+    np.testing.assert_allclose(D, D.T)
+    assert np.all(np.diag(D) == 0)
+    assert D[0, 1] < D[0, 2]
+    assert D[0, 2] == pytest.approx((ncd(a, b) + ncd(b, a)) / 2)
